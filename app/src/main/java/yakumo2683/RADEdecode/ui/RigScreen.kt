@@ -244,10 +244,12 @@ fun RigScreen(viewModel: TransceiverViewModel = viewModel()) {
     var selectedRigIndex by remember { mutableIntStateOf(0) }  // index into rigModels
     var rigModelExpanded by remember { mutableStateOf(false) }
 
-    // Sync freq display when rig updates
+    // Sync freq display when rig updates (show as kHz)
     LaunchedEffect(rigState.freqHz) {
         if (rigState.freqHz > 0) {
-            freqInput = rigState.freqHz.toString()
+            val khz = rigState.freqHz / 1000.0
+            freqInput = if (khz == khz.toLong().toDouble()) khz.toLong().toString()
+                        else String.format("%.1f", khz)
         }
     }
 
@@ -537,8 +539,8 @@ fun RigScreen(viewModel: TransceiverViewModel = viewModel()) {
                 ) {
                     OutlinedTextField(
                         value = freqInput,
-                        onValueChange = { freqInput = it.filter { c -> c.isDigit() } },
-                        label = { Text("Freq (Hz)") },
+                        onValueChange = { freqInput = it.filter { c -> c.isDigit() || c == '.' } },
+                        label = { Text("Freq (kHz)") },
                         singleLine = true,
                         enabled = rigState.connected,
                         modifier = Modifier.weight(1f),
@@ -548,7 +550,7 @@ fun RigScreen(viewModel: TransceiverViewModel = viewModel()) {
                         ),
                         keyboardActions = KeyboardActions(
                             onSend = {
-                                freqInput.toLongOrNull()?.let { viewModel.rigSetFreq(it) }
+                                freqInput.toDoubleOrNull()?.let { viewModel.rigSetFreq((it * 1000).toLong()) }
                                 focusManager.clearFocus()
                             }
                         ),
@@ -563,7 +565,7 @@ fun RigScreen(viewModel: TransceiverViewModel = viewModel()) {
                     )
                     Button(
                         onClick = {
-                            freqInput.toLongOrNull()?.let { viewModel.rigSetFreq(it) }
+                            freqInput.toDoubleOrNull()?.let { viewModel.rigSetFreq((it * 1000).toLong()) }
                             focusManager.clearFocus()
                         },
                         enabled = rigState.connected,
@@ -683,14 +685,11 @@ private fun SectionLabel(text: String) {
     )
 }
 
-/** Format frequency as "14.250.000" style display */
+/** Format frequency as "14,250.0 kHz" style display */
 private fun formatFreq(hz: Long): String {
-    if (hz <= 0) return "----.----.---"
-    val s = hz.toString().padStart(9, ' ')
-    val mhz = s.dropLast(6).trimStart()
-    val khz = s.takeLast(6).take(3)
-    val sub = s.takeLast(3)
-    return "$mhz.$khz.$sub"
+    if (hz <= 0) return "-----.-- kHz"
+    val khz = hz / 1000.0
+    return "%,.1f kHz".format(khz)
 }
 
 /** Convert dB relative to S9 to S-unit string */
