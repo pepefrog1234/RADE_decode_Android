@@ -11,9 +11,11 @@ import androidx.compose.material.icons.filled.CellTower
 import androidx.compose.material.icons.filled.History
 import androidx.compose.material.icons.filled.Radio
 import androidx.compose.material.icons.filled.Settings
+import androidx.compose.material.icons.filled.SettingsRemote
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.unit.dp
@@ -42,6 +44,7 @@ private data class NavItem(val route: String, val label: String, val icon: Image
 
 private val navItems = listOf(
     NavItem("receiver", "Receiver", Icons.Default.Radio),
+    NavItem("rig", "Rig", Icons.Default.SettingsRemote),
     NavItem("stations", "Stations", Icons.Default.CellTower),
     NavItem("log", "Log", Icons.Default.History),
     NavItem("settings", "Settings", Icons.Default.Settings),
@@ -53,6 +56,18 @@ fun RADEDecodeApp() {
     val navController = rememberNavController()
     val navBackStackEntry by navController.currentBackStackEntryAsState()
     val currentRoute = navBackStackEntry?.destination?.route
+    val context = LocalContext.current
+
+    // First-launch battery optimization dialog
+    var showBatteryDialog by remember { mutableStateOf(shouldShowBatteryDialog(context)) }
+    if (showBatteryDialog) {
+        BatteryOptimizationDialog(
+            onDismiss = {
+                markBatteryDialogDismissed(context)
+                showBatteryDialog = false
+            }
+        )
+    }
 
     Scaffold(
         modifier = Modifier.fillMaxSize(),
@@ -117,6 +132,7 @@ fun RADEDecodeApp() {
             modifier = Modifier.padding(innerPadding)
         ) {
             composable("receiver") { TransceiverScreen() }
+            composable("rig") { RigScreen() }
             composable("stations") { StationsScreen() }
             composable("log") {
                 LogScreen(onSessionClick = { sessionId ->

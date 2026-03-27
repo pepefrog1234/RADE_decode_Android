@@ -13,9 +13,16 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import yakumo2683.RADEdecode.AudioBridge
+import yakumo2683.RADEdecode.network.RigController
+import yakumo2683.RADEdecode.network.RigctldProcess
 import yakumo2683.RADEdecode.service.AudioService
 
 class TransceiverViewModel(application: Application) : AndroidViewModel(application) {
+
+    /* ── Rig controller (rigctld TCP) ──────────────────────── */
+    private val rigController = RigController()
+    private val rigctldProcess = RigctldProcess(application)
+    val rigState: StateFlow<RigController.RigState> = rigController.state
 
     data class UiState(
         val isRunning: Boolean = false,    // RX is active
@@ -124,16 +131,24 @@ class TransceiverViewModel(application: Application) : AndroidViewModel(applicat
 
     /* ── Mode switching (while engine is active) ────────────── */
 
-    /** Switch from RX → TX (stops RX, starts TX, keeps service alive) */
+    /** Switch from RX → TX (stops RX, starts TX, keys PTT) */
     fun switchToTx() {
         if (!_uiState.value.isRunning) return
         stopReceiving()
         startTransmitting()
+        // Auto-PTT via rigctld
+        if (rigController.isConnected) {
+            viewModelScope.launch { rigController.setPtt(true) }
+        }
     }
 
-    /** Switch from TX → RX (stops TX, resumes RX) */
+    /** Switch from TX → RX (unkeys PTT, stops TX, resumes RX) */
     fun switchToRx() {
         if (!_uiState.value.isTx) return
+        // Auto-PTT off
+        if (rigController.isConnected) {
+            viewModelScope.launch { rigController.setPtt(false) }
+        }
         stopTransmitting()
         // Resume RX
         viewModelScope.launch {
@@ -196,6 +211,41 @@ class TransceiverViewModel(application: Application) : AndroidViewModel(applicat
         )
     }
 
+    /* ── Rig control (rigctld) ─────────────────────────────── */
+
+    fun rigConnect(host: String, port: Int) {
+        viewModelScope.launch { rigController.connect(host, port) }
+    }
+
+    fun rigDisconnect() {
+        rigController.disconnect()
+        rigctldProcess.stop()
+    }
+
+    /** Start local rigctld process (serial mode) then connect to it */
+    fun rigStartLocal(model: Int, device: String, speed: Int) {
+        viewModelScope.launch(Dispatchers.IO) {
+            rigctldProcess.stop()
+            val ok = rigctldProcess.start(model = model, device = device, speed = speed)
+            if (ok) {
+                delay(800) // wait for rigctld to be ready
+                rigController.connect("127.0.0.1", 4532)
+            }
+        }
+    }
+
+    fun rigSetFreq(hz: Long) {
+        viewModelScope.launch { rigController.setFreq(hz) }
+    }
+
+    fun rigSetMode(mode: String) {
+        viewModelScope.launch { rigController.setMode(mode) }
+    }
+
+    fun rigSetPtt(on: Boolean) {
+        viewModelScope.launch { rigController.setPtt(on) }
+    }
+
     /* ── Service binding ───────────────────────────────────── */
 
     private fun bindToService() {
@@ -226,6 +276,8 @@ class TransceiverViewModel(application: Application) : AndroidViewModel(applicat
     override fun onCleared() {
         super.onCleared()
         serviceCollectJob?.cancel()
+        rigController.destroy()
+        rigctldProcess.destroy()
         try {
             getApplication<Application>().unbindService(serviceConnection)
         } catch (_: Exception) { }
