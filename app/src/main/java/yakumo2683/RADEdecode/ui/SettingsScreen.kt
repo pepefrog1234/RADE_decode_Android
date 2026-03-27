@@ -317,8 +317,8 @@ fun SettingsScreen(viewModel: TransceiverViewModel = viewModel()) {
                     color = MaterialTheme.colorScheme.onSurface
                 )
                 Text(
-                    "HF digital voice SWL receiver. Decodes RADE OFDM signals into " +
-                    "speech using on-device FARGAN neural vocoder.",
+                    "HF digital voice transceiver. Decodes and encodes RADE OFDM signals " +
+                    "using on-device FARGAN neural vocoder.",
                     fontSize = 13.sp, color = OnSurfaceDim, lineHeight = 18.sp
                 )
                 HorizontalDivider(color = MaterialTheme.colorScheme.outline)
@@ -327,6 +327,49 @@ fun SettingsScreen(viewModel: TransceiverViewModel = viewModel()) {
                 InfoRow("Project", "FreeDV / Codec2")
             }
         }
+
+        SectionHeader("LICENSE")
+
+        Surface(
+            shape = RoundedCornerShape(12.dp),
+            color = SurfaceCard,
+            modifier = Modifier
+                .fillMaxWidth()
+                .border(1.dp, MaterialTheme.colorScheme.outline, RoundedCornerShape(12.dp))
+        ) {
+            Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Text(
+                    "LGPL-2.1 License",
+                    fontWeight = FontWeight.Bold,
+                    fontSize = 14.sp,
+                    color = MaterialTheme.colorScheme.onSurface
+                )
+                Text(
+                    "This application is licensed under the GNU Lesser General Public License v2.1.",
+                    fontSize = 12.sp, color = OnSurfaceDim, lineHeight = 16.sp
+                )
+                HorizontalDivider(color = MaterialTheme.colorScheme.outline)
+                Text(
+                    "Third-Party Libraries",
+                    fontWeight = FontWeight.Bold,
+                    fontSize = 13.sp,
+                    color = MaterialTheme.colorScheme.onSurface,
+                    modifier = Modifier.padding(top = 4.dp)
+                )
+                LicenseRow("RADE Modem", "David Rowe", "BSD 2-Clause")
+                LicenseRow("Opus / FARGAN Vocoder", "Xiph.Org", "BSD 3-Clause")
+                LicenseRow("EOO Callsign Codec", "Codec2 / FreeDV", "LGPL-2.1")
+                LicenseRow("kiss_fft", "Mark Borgerding", "BSD 3-Clause")
+                LicenseRow("Hamlib (rigctld)", "The Hamlib Group", "LGPL-2.1+")
+                LicenseRow("Oboe Audio", "Google", "Apache 2.0")
+                LicenseRow("OkHttp", "Square", "Apache 2.0")
+                LicenseRow("Jetpack Compose", "Google", "Apache 2.0")
+                LicenseRow("AndroidX Libraries", "Google", "Apache 2.0")
+                LicenseRow("Play Services Location", "Google", "Proprietary")
+            }
+        }
+
+        Spacer(Modifier.height(16.dp))
     }
 }
 
@@ -347,5 +390,25 @@ private fun InfoRow(label: String, value: String) {
     Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
         Text(label, fontSize = 13.sp, color = OnSurfaceDim)
         Text(value, fontSize = 13.sp, fontFamily = FontFamily.Monospace, color = MaterialTheme.colorScheme.onSurface)
+    }
+}
+
+@Composable
+private fun LicenseRow(name: String, author: String, license: String) {
+    Row(
+        modifier = Modifier.fillMaxWidth().padding(vertical = 2.dp),
+        horizontalArrangement = Arrangement.SpaceBetween,
+        verticalAlignment = Alignment.Top
+    ) {
+        Column(modifier = Modifier.weight(1f)) {
+            Text(name, fontSize = 12.sp, fontWeight = FontWeight.Medium, color = MaterialTheme.colorScheme.onSurface)
+            Text(author, fontSize = 10.sp, color = OnSurfaceDim)
+        }
+        Text(
+            license,
+            fontSize = 11.sp,
+            fontFamily = FontFamily.Monospace,
+            color = Cyan400
+        )
     }
 }
