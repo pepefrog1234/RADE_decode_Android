@@ -1,0 +1,23 @@
+*.iml
+.gradle
+/local.properties
+/.idea/caches
+/.idea/libraries
+/.idea/modules.xml
+/.idea/workspace.xml
+/.idea/navEditor.xml
+/.idea/assetWizardSettings.xml
+.DS_Store
+/build
+/captures
+.externalNativeBuild
+.cxx
+local.properties
+
+# C++ library build artifacts (iOS prebuilt, not needed for Android)
+app/src/main/cpp/opus/build-ios-arm64/
+app/src/main/cpp/opus/lib/*.a
+app/src/main/cpp/opus/lib/*.bak*
+
+# Claude Code
+.claude/
