@@ -29,8 +29,43 @@ import androidx.compose.ui.unit.sp
 import androidx.lifecycle.viewmodel.compose.viewModel
 import yakumo2683.RADEdecode.ui.theme.*
 
-private val modes = listOf("USB", "LSB", "CW", "CWR", "AM", "FM", "RTTY", "PKTUSB")
+private val modes = listOf("USB", "LSB", "PKTUSB", "PKTLSB", "CW", "CWR", "AM", "FM")
 
+/** Common hamlib rig models — (model_id, display_name) */
+private val rigModels = listOf(
+    1 to "Dummy (test)",
+    2 to "NET rigctl",
+    // Icom
+    3014 to "Icom IC-7300",
+    3073 to "Icom IC-705",
+    3070 to "Icom IC-7610",
+    3081 to "Icom IC-905",
+    3060 to "Icom IC-9700",
+    3013 to "Icom IC-7200",
+    3024 to "Icom IC-7100",
+    3078 to "Icom IC-7851",
+    // Yaesu
+    1035 to "Yaesu FT-991A",
+    1036 to "Yaesu FT-DX10",
+    1037 to "Yaesu FT-710",
+    1038 to "Yaesu FT-DX101",
+    1031 to "Yaesu FT-950",
+    1024 to "Yaesu FT-891",
+    // Kenwood / Elecraft
+    2048 to "Kenwood TS-890S",
+    2044 to "Kenwood TS-590SG",
+    2042 to "Kenwood TS-480",
+    2028 to "Elecraft K3",
+    2043 to "Elecraft KX3",
+    2045 to "Elecraft K4",
+    // FlexRadio
+    2036 to "FlexRadio 6xxx",
+    // Xiegu
+    3079 to "Xiegu G90",
+    3080 to "Xiegu X6100",
+)
+
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun RigScreen(viewModel: TransceiverViewModel = viewModel()) {
     val state by viewModel.uiState.collectAsState()
@@ -45,7 +80,8 @@ fun RigScreen(viewModel: TransceiverViewModel = viewModel()) {
     // Serial mode fields
     var serialDevice by remember { mutableStateOf("/dev/ttyUSB0") }
     var serialSpeed by remember { mutableStateOf("9600") }
-    var rigModel by remember { mutableStateOf("1") }  // 1=Dummy for testing
+    var selectedRigIndex by remember { mutableIntStateOf(0) }  // index into rigModels
+    var rigModelExpanded by remember { mutableStateOf(false) }
 
     // Sync freq display when rig updates
     LaunchedEffect(rigState.freqHz) {
@@ -141,21 +177,52 @@ fun RigScreen(viewModel: TransceiverViewModel = viewModel()) {
                         )
                     }
                 } else {
-                    // Serial mode
-                    OutlinedTextField(
-                        value = rigModel,
-                        onValueChange = { rigModel = it.filter { c -> c.isDigit() } },
-                        label = { Text("Rig Model #") },
-                        singleLine = true,
-                        enabled = !rigState.connected,
-                        modifier = Modifier.fillMaxWidth(),
-                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
-                        textStyle = androidx.compose.ui.text.TextStyle(fontFamily = FontFamily.Monospace, fontSize = 14.sp),
-                        supportingText = { Text("e.g. 3014=IC-7300, 3073=IC-705, 1035=FT-991A") },
-                        colors = OutlinedTextFieldDefaults.colors(
-                            focusedBorderColor = Cyan400, focusedLabelColor = Cyan400, cursorColor = Cyan400
+                    // Serial mode — rig model dropdown
+                    ExposedDropdownMenuBox(
+                        expanded = rigModelExpanded,
+                        onExpandedChange = { if (!rigState.connected) rigModelExpanded = it }
+                    ) {
+                        OutlinedTextField(
+                            value = rigModels[selectedRigIndex].let { "${it.second} (${it.first})" },
+                            onValueChange = {},
+                            readOnly = true,
+                            enabled = !rigState.connected,
+                            label = { Text("Rig Model") },
+                            trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded = rigModelExpanded) },
+                            modifier = Modifier.fillMaxWidth().menuAnchor(),
+                            textStyle = androidx.compose.ui.text.TextStyle(fontFamily = FontFamily.Monospace, fontSize = 14.sp),
+                            colors = OutlinedTextFieldDefaults.colors(
+                                focusedBorderColor = Cyan400, focusedLabelColor = Cyan400, cursorColor = Cyan400
+                            )
                         )
-                    )
+                        ExposedDropdownMenu(
+                            expanded = rigModelExpanded,
+                            onDismissRequest = { rigModelExpanded = false }
+                        ) {
+                            rigModels.forEachIndexed { index, (id, name) ->
+                                DropdownMenuItem(
+                                    text = {
+                                        Row(
+                                            modifier = Modifier.fillMaxWidth(),
+                                            horizontalArrangement = Arrangement.SpaceBetween
+                                        ) {
+                                            Text(name, fontSize = 14.sp)
+                                            Text(
+                                                "#$id",
+                                                fontSize = 12.sp,
+                                                fontFamily = FontFamily.Monospace,
+                                                color = OnSurfaceDim
+                                            )
+                                        }
+                                    },
+                                    onClick = {
+                                        selectedRigIndex = index
+                                        rigModelExpanded = false
+                                    }
+                                )
+                            }
+                        }
+                    }
                     Row(
                         modifier = Modifier.fillMaxWidth(),
                         horizontalArrangement = Arrangement.spacedBy(10.dp)
@@ -197,7 +264,7 @@ fun RigScreen(viewModel: TransceiverViewModel = viewModel()) {
                             val port = portInput.toIntOrNull() ?: 4532
                             viewModel.rigConnect(hostInput, port)
                         } else {
-                            val model = rigModel.toIntOrNull() ?: 1
+                            val model = rigModels[selectedRigIndex].first
                             val speed = serialSpeed.toIntOrNull() ?: 9600
                             viewModel.rigStartLocal(model, serialDevice, speed)
                         }

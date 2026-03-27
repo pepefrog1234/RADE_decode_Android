@@ -235,7 +235,12 @@ class TransceiverViewModel(application: Application) : AndroidViewModel(applicat
     }
 
     fun rigSetFreq(hz: Long) {
-        viewModelScope.launch { rigController.setFreq(hz) }
+        viewModelScope.launch {
+            rigController.setFreq(hz)
+            // Auto-mode: PKTLSB below 10 MHz, PKTUSB at 10 MHz and above
+            val autoMode = if (hz < 10_000_000L) "PKTLSB" else "PKTUSB"
+            rigController.setMode(autoMode)
+        }
     }
 
     fun rigSetMode(mode: String) {
