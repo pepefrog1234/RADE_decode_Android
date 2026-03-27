@@ -29,7 +29,7 @@ import androidx.compose.ui.unit.sp
 import androidx.lifecycle.viewmodel.compose.viewModel
 import yakumo2683.RADEdecode.ui.theme.*
 
-private val modes = listOf("USB", "LSB", "PKTUSB", "PKTLSB", "CW", "CWR", "AM", "FM")
+private val modes = listOf("PKTUSB", "PKTLSB")
 
 data class RigModel(val id: Int, val mfg: String, val name: String) {
     val displayName: String get() = "$mfg $name"
