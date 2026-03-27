@@ -92,8 +92,30 @@ class AudioBridge(private val context: Context) {
     /** Release native resources. Call when done. */
     fun release() {
         stop()
+        stopTx()
         nativeDestroy()
     }
+
+    /* ── TX (Transmit) ───────────────────────────────────────── */
+
+    /** Start transmitting: mic → RADE encoder → output device. */
+    fun startTx(inputDeviceId: Int = -1, outputDeviceId: Int = -1): Boolean =
+        nativeStartTx(inputDeviceId, outputDeviceId)
+
+    /** Stop transmitting (sends EOO frame, then stops). */
+    fun stopTx() = nativeStopTx()
+
+    /** Check if TX is currently running. */
+    val isTxRunning: Boolean get() = nativeIsTxRunning()
+
+    /** Set the callsign to embed in the EOO frame. */
+    fun setTxCallsign(callsign: String) = nativeSetTxCallsign(callsign)
+
+    /** TX microphone input level in dB (RMS). */
+    val txLevel: Float get() = nativeGetTxLevel()
+
+    /** Set the output device for TX. */
+    fun setTxOutputDevice(deviceId: Int) = nativeSetTxOutputDevice(deviceId)
 
     /* ── USB Audio Device Discovery ──────────────────────────── */
 
@@ -101,27 +123,53 @@ class AudioBridge(private val context: Context) {
         val id: Int,
         val name: String,
         val type: Int,
+        val typeName: String,
         val isUsb: Boolean
     )
 
-    /** List available audio input devices. */
+    /** List available audio input devices, deduplicated by type. */
     fun getInputDevices(): List<AudioDevice> {
         val am = context.getSystemService(Context.AUDIO_SERVICE) as AudioManager
-        return am.getDevices(AudioManager.GET_DEVICES_INPUTS).map { info ->
-            AudioDevice(
-                id = info.id,
-                name = info.productName?.toString() ?: "Unknown",
-                type = info.type,
-                isUsb = info.type == AudioDeviceInfo.TYPE_USB_DEVICE ||
-                        info.type == AudioDeviceInfo.TYPE_USB_ACCESSORY ||
-                        info.type == AudioDeviceInfo.TYPE_USB_HEADSET
-            )
-        }
+        return am.getDevices(AudioManager.GET_DEVICES_INPUTS)
+            .groupBy { it.type }
+            .map { (_, devices) -> devices.first() }  // one per type
+            .map { info ->
+                AudioDevice(
+                    id = info.id,
+                    name = info.productName?.toString() ?: "Unknown",
+                    type = info.type,
+                    typeName = deviceTypeName(info.type),
+                    isUsb = info.type == AudioDeviceInfo.TYPE_USB_DEVICE ||
+                            info.type == AudioDeviceInfo.TYPE_USB_ACCESSORY ||
+                            info.type == AudioDeviceInfo.TYPE_USB_HEADSET
+                )
+            }
+            .sortedByDescending { it.isUsb }  // USB devices first
     }
 
     /** Find the first USB audio input device, or null. */
     fun findUsbInputDevice(): AudioDevice? {
         return getInputDevices().firstOrNull { it.isUsb }
+    }
+
+    /** List available audio output devices, deduplicated by type. */
+    fun getOutputDevices(): List<AudioDevice> {
+        val am = context.getSystemService(Context.AUDIO_SERVICE) as AudioManager
+        return am.getDevices(AudioManager.GET_DEVICES_OUTPUTS)
+            .groupBy { it.type }
+            .map { (_, devices) -> devices.first() }
+            .map { info ->
+                AudioDevice(
+                    id = info.id,
+                    name = info.productName?.toString() ?: "Unknown",
+                    type = info.type,
+                    typeName = deviceTypeName(info.type),
+                    isUsb = info.type == AudioDeviceInfo.TYPE_USB_DEVICE ||
+                            info.type == AudioDeviceInfo.TYPE_USB_ACCESSORY ||
+                            info.type == AudioDeviceInfo.TYPE_USB_HEADSET
+                )
+            }
+            .sortedByDescending { it.isUsb }
     }
 
     /* ── Native methods ──────────────────────────────────────── */
@@ -145,6 +193,29 @@ class AudioBridge(private val context: Context) {
     private external fun nativeGetOutputLevel(): Float
     private external fun nativeGetSpectrum(out: FloatArray)
     private external fun nativeGetLastCallsign(): String
+
+    /* TX native methods */
+    private external fun nativeStartTx(inputDeviceId: Int, outputDeviceId: Int): Boolean
+    private external fun nativeStopTx()
+    private external fun nativeIsTxRunning(): Boolean
+    private external fun nativeSetTxCallsign(callsign: String)
+    private external fun nativeGetTxLevel(): Float
+    private external fun nativeSetTxOutputDevice(deviceId: Int)
+
+    private fun deviceTypeName(type: Int): String = when (type) {
+        AudioDeviceInfo.TYPE_BUILTIN_MIC -> "Built-in Mic"
+        AudioDeviceInfo.TYPE_BUILTIN_SPEAKER -> "Built-in Speaker"
+        AudioDeviceInfo.TYPE_BUILTIN_EARPIECE -> "Earpiece"
+        AudioDeviceInfo.TYPE_USB_DEVICE -> "USB Audio"
+        AudioDeviceInfo.TYPE_USB_ACCESSORY -> "USB Accessory"
+        AudioDeviceInfo.TYPE_USB_HEADSET -> "USB Headset"
+        AudioDeviceInfo.TYPE_WIRED_HEADSET -> "Wired Headset"
+        AudioDeviceInfo.TYPE_WIRED_HEADPHONES -> "Wired Headphones"
+        AudioDeviceInfo.TYPE_BLUETOOTH_SCO -> "Bluetooth SCO"
+        AudioDeviceInfo.TYPE_BLUETOOTH_A2DP -> "Bluetooth A2DP"
+        AudioDeviceInfo.TYPE_TELEPHONY -> "Telephony"
+        else -> "Type $type"
+    }
 
     companion object {
         init {

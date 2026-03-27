@@ -57,11 +57,13 @@ class AudioService : LifecycleService() {
 
     data class ServiceState(
         val isRunning: Boolean = false,
+        val isTx: Boolean = false,
         val syncState: Int = 0,
         val snrDb: Int = 0,
         val freqOffsetHz: Float = 0f,
         val inputLevelDb: Float = -100f,
         val outputLevelDb: Float = -100f,
+        val txLevelDb: Float = -100f,
         val lastCallsign: String = "",
         val spectrum: FloatArray = FloatArray(AudioBridge.SPECTRUM_BINS) { -100f }
     )
@@ -86,7 +88,8 @@ class AudioService : LifecycleService() {
         super.onStartCommand(intent, flags, startId)
 
         if (intent?.action == ACTION_STOP) {
-            stopDecoding()
+            if (_state.value.isTx) stopTransmitting()
+            else stopDecoding()
             stopSelf()
             return START_NOT_STICKY
         }
@@ -115,7 +118,8 @@ class AudioService : LifecycleService() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
             startForeground(
                 NOTIFICATION_ID, notification,
-                ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PLAYBACK
+                ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE or
+                    ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PLAYBACK
             )
         } else {
             startForeground(NOTIFICATION_ID, notification)
@@ -196,6 +200,84 @@ class AudioService : LifecycleService() {
 
     fun getInputDevices(): List<AudioBridge.AudioDevice> {
         return audioBridge?.getInputDevices() ?: emptyList()
+    }
+
+    fun getOutputDevices(): List<AudioBridge.AudioDevice> {
+        return audioBridge?.getOutputDevices() ?: emptyList()
+    }
+
+    /* ── TX (Transmit) ──────────────────────────────────────── */
+
+    fun startTransmitting(
+        inputDeviceId: Int = -1,
+        outputDeviceId: Int = -1,
+        callsign: String = ""
+    ) {
+        if (_state.value.isTx) return
+
+        // Stop RX if running
+        if (_state.value.isRunning) stopDecoding()
+
+        val bridge = AudioBridge(applicationContext)
+        audioBridge = bridge
+
+        // Start as foreground service
+        val notification = buildNotification("TX", 0, callsign)
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            startForeground(
+                NOTIFICATION_ID, notification,
+                ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE or
+                    ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PLAYBACK
+            )
+        } else {
+            startForeground(NOTIFICATION_ID, notification)
+        }
+
+        if (callsign.isNotEmpty()) {
+            bridge.setTxCallsign(callsign)
+        }
+
+        if (!bridge.startTx(inputDeviceId, outputDeviceId)) {
+            bridge.release()
+            audioBridge = null
+            stopSelf()
+            return
+        }
+
+        _state.value = _state.value.copy(isTx = true, isRunning = false)
+        startTxPolling()
+        startNotificationUpdates()
+    }
+
+    fun stopTransmitting() {
+        stopTxPolling()
+        stopNotificationUpdates()
+
+        audioBridge?.stopTx()
+        audioBridge?.release()
+        audioBridge = null
+
+        _state.value = ServiceState()
+        stopForeground(STOP_FOREGROUND_REMOVE)
+    }
+
+    private var txPollingJob: Job? = null
+
+    private fun startTxPolling() {
+        txPollingJob = lifecycleScope.launch {
+            while (isActive) {
+                val bridge = audioBridge ?: break
+                _state.value = _state.value.copy(
+                    txLevelDb = bridge.txLevel
+                )
+                delay(100)
+            }
+        }
+    }
+
+    private fun stopTxPolling() {
+        txPollingJob?.cancel()
+        txPollingJob = null
     }
 
     /* ── Session management ──────────────────────────────────── */
@@ -379,10 +461,14 @@ class AudioService : LifecycleService() {
 
     private fun updateNotification() {
         val s = _state.value
-        val syncText = when (s.syncState) {
-            2 -> "SYNC"
-            1 -> "CANDIDATE"
-            else -> "SEARCH"
+        val syncText = if (s.isTx) {
+            "TRANSMITTING"
+        } else {
+            when (s.syncState) {
+                2 -> "SYNC"
+                1 -> "CANDIDATE"
+                else -> "SEARCH"
+            }
         }
         val notification = buildNotification(syncText, s.snrDb, s.lastCallsign)
         val nm = getSystemService(NotificationManager::class.java)
@@ -404,7 +490,8 @@ class AudioService : LifecycleService() {
     }
 
     override fun onDestroy() {
-        stopDecoding()
+        if (_state.value.isTx) stopTransmitting()
+        else stopDecoding()
         super.onDestroy()
     }
 }

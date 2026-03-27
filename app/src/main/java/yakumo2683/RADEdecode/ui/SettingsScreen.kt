@@ -86,13 +86,13 @@ fun SettingsScreen(viewModel: TransceiverViewModel = viewModel()) {
                             }
                             Column {
                                 Text(
-                                    device.name,
+                                    device.typeName,
                                     fontWeight = FontWeight.Medium,
                                     fontSize = 14.sp,
                                     color = MaterialTheme.colorScheme.onSurface
                                 )
                                 Text(
-                                    "ID ${device.id} | Type ${device.type}${if (device.isUsb) " (USB)" else ""}",
+                                    device.name,
                                     fontSize = 11.sp,
                                     fontFamily = FontFamily.Monospace,
                                     color = OnSurfaceDim
@@ -139,7 +139,7 @@ fun SettingsScreen(viewModel: TransceiverViewModel = viewModel()) {
             }
         }
 
-        SectionHeader("OUTPUT")
+        SectionHeader("RX OUTPUT")
 
         Surface(
             shape = RoundedCornerShape(12.dp),
@@ -175,6 +175,122 @@ fun SettingsScreen(viewModel: TransceiverViewModel = viewModel()) {
                         activeTrackColor = Cyan400
                     )
                 )
+            }
+        }
+
+        SectionHeader("TX CALLSIGN")
+
+        Surface(
+            shape = RoundedCornerShape(12.dp),
+            color = SurfaceCard,
+            modifier = Modifier
+                .fillMaxWidth()
+                .border(1.dp, MaterialTheme.colorScheme.outline, RoundedCornerShape(12.dp))
+        ) {
+            Column(modifier = Modifier.padding(16.dp)) {
+                var callsignInput by remember { mutableStateOf(state.txCallsign) }
+                OutlinedTextField(
+                    value = callsignInput,
+                    onValueChange = {
+                        val upper = it.uppercase().take(8)
+                        callsignInput = upper
+                        viewModel.setTxCallsign(upper)
+                    },
+                    label = { Text("Callsign (EOO)") },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth(),
+                    textStyle = androidx.compose.ui.text.TextStyle(
+                        fontFamily = FontFamily.Monospace,
+                        fontSize = 20.sp,
+                        fontWeight = FontWeight.Bold,
+                        letterSpacing = 2.sp
+                    ),
+                    colors = OutlinedTextFieldDefaults.colors(
+                        focusedBorderColor = Cyan400,
+                        focusedLabelColor = Cyan400,
+                        cursorColor = Cyan400
+                    )
+                )
+                Spacer(Modifier.height(8.dp))
+                Text(
+                    "Your callsign will be encoded in the EOO (End-of-Over) frame during TX.",
+                    fontSize = 11.sp, color = OnSurfaceDim
+                )
+            }
+        }
+
+        SectionHeader("TX OUTPUT DEVICE")
+
+        Surface(
+            shape = RoundedCornerShape(12.dp),
+            color = SurfaceCard,
+            modifier = Modifier
+                .fillMaxWidth()
+                .border(1.dp, MaterialTheme.colorScheme.outline, RoundedCornerShape(12.dp))
+        ) {
+            Column(modifier = Modifier.padding(16.dp)) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text("Output Devices", fontWeight = FontWeight.Medium, color = MaterialTheme.colorScheme.onSurface)
+                    IconButton(onClick = { viewModel.refreshDevices() }) {
+                        Icon(Icons.Default.Refresh, contentDescription = "Refresh", tint = Cyan400)
+                    }
+                }
+
+                Text(
+                    "Select the audio interface for RADE TX modulated output.",
+                    fontSize = 11.sp, color = OnSurfaceDim,
+                    modifier = Modifier.padding(bottom = 8.dp)
+                )
+
+                if (state.outputDevices.isEmpty()) {
+                    Text(
+                        "No audio output devices found",
+                        color = OnSurfaceDim,
+                        fontSize = 14.sp,
+                        modifier = Modifier.padding(vertical = 8.dp)
+                    )
+                } else {
+                    state.outputDevices.forEach { device ->
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(vertical = 6.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            RadioButton(
+                                selected = device.id == state.selectedOutputDeviceId,
+                                onClick = { viewModel.selectOutputDevice(device.id) },
+                                colors = RadioButtonDefaults.colors(selectedColor = Cyan400)
+                            )
+                            if (device.isUsb) {
+                                Icon(
+                                    Icons.Default.Usb, null,
+                                    modifier = Modifier.size(16.dp),
+                                    tint = Cyan400
+                                )
+                                Spacer(Modifier.width(6.dp))
+                            }
+                            Column {
+                                Text(
+                                    device.typeName,
+                                    fontWeight = FontWeight.Medium,
+                                    fontSize = 14.sp,
+                                    color = MaterialTheme.colorScheme.onSurface
+                                )
+                                Text(
+                                    device.name,
+                                    fontSize = 11.sp,
+                                    fontFamily = FontFamily.Monospace,
+                                    color = OnSurfaceDim
+                                )
+                            }
+                        }
+                    }
+                }
             }
         }
 

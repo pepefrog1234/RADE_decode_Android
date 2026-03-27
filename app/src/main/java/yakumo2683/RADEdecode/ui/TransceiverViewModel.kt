@@ -18,16 +18,21 @@ import yakumo2683.RADEdecode.service.AudioService
 class TransceiverViewModel(application: Application) : AndroidViewModel(application) {
 
     data class UiState(
-        val isRunning: Boolean = false,
+        val isRunning: Boolean = false,    // RX is active
+        val isTx: Boolean = false,         // TX is active
         val syncState: Int = 0,
         val snrDb: Int = 0,
         val freqOffsetHz: Float = 0f,
         val inputLevelDb: Float = -100f,
         val outputLevelDb: Float = -100f,
+        val txLevelDb: Float = -100f,
         val lastCallsign: String = "",
+        val txCallsign: String = "",
         val spectrum: FloatArray = FloatArray(AudioBridge.SPECTRUM_BINS) { -100f },
         val devices: List<AudioBridge.AudioDevice> = emptyList(),
+        val outputDevices: List<AudioBridge.AudioDevice> = emptyList(),
         val selectedDeviceId: Int = -1,
+        val selectedOutputDeviceId: Int = -1,
         val serviceBound: Boolean = false
     ) {
         val syncText: String get() = when (syncState) {
@@ -57,29 +62,25 @@ class TransceiverViewModel(application: Application) : AndroidViewModel(applicat
         override fun onServiceDisconnected(name: ComponentName?) {
             audioService = null
             serviceCollectJob?.cancel()
-            _uiState.value = _uiState.value.copy(serviceBound = false, isRunning = false)
+            _uiState.value = _uiState.value.copy(serviceBound = false, isRunning = false, isTx = false)
         }
     }
 
     init {
-        // Bind to service if already running
         bindToService()
         refreshDevices()
     }
 
+    /* ── RX ─────────────────────────────────────────────────── */
+
     fun startReceiving() {
         val app = getApplication<Application>()
 
-        // Start the foreground service
         val intent = Intent(app, AudioService::class.java)
         app.startForegroundService(intent)
-
-        // Bind to it
         bindToService()
 
-        // Wait for bind, then start decoding
         viewModelScope.launch {
-            // Wait until bound
             var attempts = 0
             while (audioService == null && attempts < 20) {
                 delay(100)
@@ -92,22 +93,85 @@ class TransceiverViewModel(application: Application) : AndroidViewModel(applicat
         }
     }
 
-    fun stopReceiving() {
+    private fun stopReceiving() {
         audioService?.stopDecoding()
+    }
+
+    /* ── TX ─────────────────────────────────────────────────── */
+
+    fun setTxCallsign(callsign: String) {
+        _uiState.value = _uiState.value.copy(txCallsign = callsign)
+    }
+
+    private fun startTransmitting() {
+        viewModelScope.launch {
+            var attempts = 0
+            while (audioService == null && attempts < 20) {
+                delay(100)
+                attempts++
+            }
+            audioService?.startTransmitting(
+                inputDeviceId = _uiState.value.selectedDeviceId,
+                outputDeviceId = _uiState.value.selectedOutputDeviceId,
+                callsign = _uiState.value.txCallsign
+            )
+        }
+    }
+
+    private fun stopTransmitting() {
+        audioService?.stopTransmitting()
+    }
+
+    /* ── Mode switching (while engine is active) ────────────── */
+
+    /** Switch from RX → TX (stops RX, starts TX, keeps service alive) */
+    fun switchToTx() {
+        if (!_uiState.value.isRunning) return
+        stopReceiving()
+        startTransmitting()
+    }
+
+    /** Switch from TX → RX (stops TX, resumes RX) */
+    fun switchToRx() {
+        if (!_uiState.value.isTx) return
+        stopTransmitting()
+        // Resume RX
+        viewModelScope.launch {
+            delay(100) // brief pause for clean transition
+            audioService?.startDecoding(
+                inputDeviceId = _uiState.value.selectedDeviceId,
+                recordWav = false
+            )
+        }
+    }
+
+    /** Stop everything and tear down the service */
+    fun stopAll() {
+        if (_uiState.value.isTx) stopTransmitting()
+        else stopReceiving()
+
         val app = getApplication<Application>()
         app.stopService(Intent(app, AudioService::class.java))
         _uiState.value = _uiState.value.copy(
             isRunning = false,
+            isTx = false,
             syncState = 0,
             snrDb = 0,
             freqOffsetHz = 0f,
             inputLevelDb = -100f,
-            outputLevelDb = -100f
+            outputLevelDb = -100f,
+            txLevelDb = -100f
         )
     }
 
+    /* ── Device / settings ─────────────────────────────────── */
+
     fun selectDevice(deviceId: Int) {
         _uiState.value = _uiState.value.copy(selectedDeviceId = deviceId)
+    }
+
+    fun selectOutputDevice(deviceId: Int) {
+        _uiState.value = _uiState.value.copy(selectedOutputDeviceId = deviceId)
     }
 
     fun setInputGain(gain: Float) {
@@ -119,17 +183,20 @@ class TransceiverViewModel(application: Application) : AndroidViewModel(applicat
     }
 
     fun refreshDevices() {
-        // Use a temporary AudioBridge just for device enumeration
         val bridge = AudioBridge(getApplication())
         val devices = bridge.getInputDevices()
+        val outputDevices = bridge.getOutputDevices()
         val usbDevice = bridge.findUsbInputDevice()
         bridge.release()
 
         _uiState.value = _uiState.value.copy(
             devices = devices,
+            outputDevices = outputDevices,
             selectedDeviceId = usbDevice?.id ?: _uiState.value.selectedDeviceId
         )
     }
+
+    /* ── Service binding ───────────────────────────────────── */
 
     private fun bindToService() {
         val app = getApplication<Application>()
@@ -142,11 +209,13 @@ class TransceiverViewModel(application: Application) : AndroidViewModel(applicat
             audioService?.state?.collect { svcState ->
                 _uiState.value = _uiState.value.copy(
                     isRunning = svcState.isRunning,
+                    isTx = svcState.isTx,
                     syncState = svcState.syncState,
                     snrDb = svcState.snrDb,
                     freqOffsetHz = svcState.freqOffsetHz,
                     inputLevelDb = svcState.inputLevelDb,
                     outputLevelDb = svcState.outputLevelDb,
+                    txLevelDb = svcState.txLevelDb,
                     lastCallsign = svcState.lastCallsign,
                     spectrum = svcState.spectrum
                 )

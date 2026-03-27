@@ -477,4 +477,43 @@ JNI_AUDIO(nativeStopRecording)(JNIEnv *env, jobject /* this */) {
     if (g_audioEngine) g_audioEngine->stopRecording();
 }
 
+/* ── TX (Transmit) JNI methods ───────────────────────────────── */
+
+JNIEXPORT jboolean JNICALL
+JNI_AUDIO(nativeStartTx)(JNIEnv *env, jobject /* this */,
+                          jint inputDeviceId, jint outputDeviceId) {
+    if (!g_audioEngine) return JNI_FALSE;
+    return g_audioEngine->startTx(inputDeviceId, outputDeviceId) ? JNI_TRUE : JNI_FALSE;
+}
+
+JNIEXPORT void JNICALL
+JNI_AUDIO(nativeStopTx)(JNIEnv *env, jobject /* this */) {
+    if (g_audioEngine) g_audioEngine->stopTx();
+}
+
+JNIEXPORT void JNICALL
+JNI_AUDIO(nativeSetTxCallsign)(JNIEnv *env, jobject /* this */, jstring callsign) {
+    if (!g_audioEngine) return;
+    const char *cs = env->GetStringUTFChars(callsign, nullptr);
+    g_audioEngine->setTxCallsign(cs);
+    env->ReleaseStringUTFChars(callsign, cs);
+}
+
+JNIEXPORT jfloat JNICALL
+JNI_AUDIO(nativeGetTxLevel)(JNIEnv *env, jobject /* this */) {
+    if (!g_audioEngine) return -100.0f;
+    return g_audioEngine->getTxLevel();
+}
+
+JNIEXPORT void JNICALL
+JNI_AUDIO(nativeSetTxOutputDevice)(JNIEnv *env, jobject /* this */, jint deviceId) {
+    if (g_audioEngine) g_audioEngine->setTxOutputDevice(deviceId);
+}
+
+JNIEXPORT jboolean JNICALL
+JNI_AUDIO(nativeIsTxRunning)(JNIEnv *env, jobject /* this */) {
+    if (!g_audioEngine) return JNI_FALSE;
+    return g_audioEngine->isTxRunning() ? JNI_TRUE : JNI_FALSE;
+}
+
 } /* extern "C" */

@@ -10,10 +10,10 @@ import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.*
-import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.FiberManualRecord
+import androidx.compose.material.icons.filled.Mic
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Stop
 import androidx.compose.material3.*
@@ -57,6 +57,8 @@ fun TransceiverScreen(viewModel: TransceiverViewModel = viewModel()) {
         if (granted) viewModel.startReceiving()
     }
 
+    val isActive = state.isRunning || state.isTx  // engine is doing something
+
     Column(
         modifier = Modifier
             .fillMaxSize()
@@ -64,52 +66,74 @@ fun TransceiverScreen(viewModel: TransceiverViewModel = viewModel()) {
             .padding(horizontal = 16.dp, vertical = 8.dp),
         verticalArrangement = Arrangement.spacedBy(10.dp)
     ) {
-        // ── Sync + Callsign header ──
-        SyncHeader(state)
-
-        // ── Signal info cards ──
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.spacedBy(10.dp)
-        ) {
-            InfoCard("SNR", "${state.snrDb}", "dB", Modifier.weight(1f))
-            InfoCard("FREQ", String.format("%.1f", state.freqOffsetHz), "Hz", Modifier.weight(1f))
+        // ── Status header — shows TX state when transmitting, RX state otherwise ──
+        if (state.isTx) {
+            TxHeader()
+        } else {
+            SyncHeader(state)
         }
 
-        // ── Spectrum ──
-        SpectrumChart(
-            spectrum = state.spectrum,
-            isSynced = state.isSynced,
-            modifier = Modifier
-                .fillMaxWidth()
-                .height(130.dp)
-        )
+        // ── Signal info cards (RX) ──
+        if (!state.isTx) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(10.dp)
+            ) {
+                InfoCard("SNR", "${state.snrDb}", "dB", Modifier.weight(1f))
+                InfoCard("FREQ", String.format("%.1f", state.freqOffsetHz), "Hz", Modifier.weight(1f))
+            }
+        }
 
-        // ── Waterfall ──
-        WaterfallView(
-            spectrum = state.spectrum,
-            modifier = Modifier
-                .fillMaxWidth()
-                .height(90.dp)
-        )
+        // ── Spectrum (RX) ──
+        if (!state.isTx) {
+            SpectrumChart(
+                spectrum = state.spectrum,
+                isSynced = state.isSynced,
+                modifier = Modifier.fillMaxWidth().height(130.dp)
+            )
+
+            WaterfallView(
+                spectrum = state.spectrum,
+                modifier = Modifier.fillMaxWidth().height(90.dp)
+            )
+        }
 
         // ── Level meters ──
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.spacedBy(10.dp)
-        ) {
-            LevelMeter("INPUT", state.inputLevelDb, Modifier.weight(1f))
-            LevelMeter("OUTPUT", state.outputLevelDb, Modifier.weight(1f))
+        if (state.isTx) {
+            LevelMeter("MIC INPUT", state.txLevelDb, Modifier.fillMaxWidth())
+        } else {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(10.dp)
+            ) {
+                LevelMeter("INPUT", state.inputLevelDb, Modifier.weight(1f))
+                LevelMeter("OUTPUT", state.outputLevelDb, Modifier.weight(1f))
+            }
         }
 
         Spacer(Modifier.weight(1f))
 
+        // ── TX button — only visible when engine is active ──
+        if (isActive) {
+            TxButton(
+                isTx = state.isTx,
+                onClick = {
+                    if (state.isTx) {
+                        viewModel.switchToRx()
+                    } else {
+                        viewModel.switchToTx()
+                    }
+                }
+            )
+            Spacer(Modifier.height(6.dp))
+        }
+
         // ── Start / Stop button ──
         StartStopButton(
-            isRunning = state.isRunning,
+            isRunning = isActive,
             onClick = {
-                if (state.isRunning) {
-                    viewModel.stopReceiving()
+                if (isActive) {
+                    viewModel.stopAll()
                 } else {
                     if (hasAudioPermission) viewModel.startReceiving()
                     else permissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
@@ -119,7 +143,7 @@ fun TransceiverScreen(viewModel: TransceiverViewModel = viewModel()) {
     }
 }
 
-/* ── Sync Header ──────────────────────────────────────────────── */
+/* ── Sync Header (RX) ────────────────────────────────────────── */
 
 @Composable
 private fun SyncHeader(state: TransceiverViewModel.UiState) {
@@ -174,6 +198,40 @@ private fun SyncHeader(state: TransceiverViewModel.UiState) {
                 fontFamily = FontFamily.Monospace,
                 letterSpacing = 2.sp,
                 textAlign = TextAlign.Center
+            )
+        }
+    }
+}
+
+/* ── TX Header ───────────────────────────────────────────────── */
+
+@Composable
+private fun TxHeader() {
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(12.dp))
+            .background(Brush.horizontalGradient(
+                listOf(Color(0xFF3D0000), Color(0xFF5E1B1B), Color(0xFF3D0000))
+            ))
+            .border(1.dp, Red400.copy(alpha = 0.3f), RoundedCornerShape(12.dp))
+            .padding(vertical = 14.dp),
+        horizontalAlignment = Alignment.CenterHorizontally
+    ) {
+        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            Icon(
+                Icons.Default.FiberManualRecord,
+                contentDescription = null,
+                tint = Red400,
+                modifier = Modifier.size(12.dp)
+            )
+            Text(
+                text = "TRANSMITTING",
+                color = Red400,
+                fontSize = 18.sp,
+                fontWeight = FontWeight.Black,
+                fontFamily = FontFamily.Monospace,
+                letterSpacing = 4.sp
             )
         }
     }
@@ -338,22 +396,22 @@ fun WaterfallView(spectrum: FloatArray, modifier: Modifier = Modifier) {
 
 private fun waterfallColor(v: Float): Color {
     return when {
-        v < 0.15f -> Color(0f, 0f, v / 0.15f * 0.4f)           // black → dark blue
+        v < 0.15f -> Color(0f, 0f, v / 0.15f * 0.4f)
         v < 0.35f -> {
             val t = (v - 0.15f) / 0.2f
-            Color(0f, t * 0.6f, 0.4f + t * 0.4f)                // dark blue → cyan
+            Color(0f, t * 0.6f, 0.4f + t * 0.4f)
         }
         v < 0.55f -> {
             val t = (v - 0.35f) / 0.2f
-            Color(t * 0.3f, 0.6f + t * 0.4f, 0.8f - t * 0.6f)  // cyan → green
+            Color(t * 0.3f, 0.6f + t * 0.4f, 0.8f - t * 0.6f)
         }
         v < 0.75f -> {
             val t = (v - 0.55f) / 0.2f
-            Color(0.3f + t * 0.7f, 1f - t * 0.2f, 0.2f - t * 0.2f) // green → yellow
+            Color(0.3f + t * 0.7f, 1f - t * 0.2f, 0.2f - t * 0.2f)
         }
         else -> {
             val t = (v - 0.75f) / 0.25f
-            Color(1f, 0.8f - t * 0.8f, 0f)                      // yellow → red
+            Color(1f, 0.8f - t * 0.8f, 0f)
         }
     }
 }
@@ -404,6 +462,38 @@ fun LevelMeter(label: String, levelDb: Float, modifier: Modifier = Modifier) {
                 )
             }
         }
+    }
+}
+
+/* ── TX Button ───────────────────────────────────────────────── */
+
+@Composable
+private fun TxButton(isTx: Boolean, onClick: () -> Unit) {
+    val containerColor by animateColorAsState(
+        targetValue = if (isTx) Color(0xFF880000) else Red400,
+        animationSpec = tween(300), label = "txbtn"
+    )
+
+    Button(
+        onClick = onClick,
+        modifier = Modifier
+            .fillMaxWidth()
+            .height(54.dp),
+        shape = RoundedCornerShape(14.dp),
+        colors = ButtonDefaults.buttonColors(containerColor = containerColor)
+    ) {
+        Icon(
+            imageVector = if (isTx) Icons.Default.Stop else Icons.Default.Mic,
+            contentDescription = null,
+            modifier = Modifier.size(26.dp)
+        )
+        Spacer(Modifier.width(10.dp))
+        Text(
+            text = if (isTx) "BACK TO RX" else "TX",
+            fontSize = 16.sp,
+            fontWeight = FontWeight.Black,
+            letterSpacing = 3.sp
+        )
     }
 }
 

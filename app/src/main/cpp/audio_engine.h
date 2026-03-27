@@ -20,6 +20,7 @@
 extern "C" {
 #include "rade_api.h"
 #include "fargan.h"
+#include "lpcnet.h"
 #include "eoo_callsign_codec_c.h"
 }
 
@@ -30,6 +31,8 @@ constexpr int FFT_SIZE            = 1024;
 constexpr int FFT_BINS            = FFT_SIZE / 2;
 constexpr int FARGAN_WARMUP_FRAMES = 5;
 constexpr int RING_BUFFER_SIZE    = 32000;
+constexpr int TX_SPEECH_FRAME     = 160;   // 10ms @ 16kHz (== LPCNET_FRAME_SIZE)
+constexpr int INTERP_FIR_TAPS     = 48;    // taps per phase for interpolation
 
 /* Polyphase FIR decimation filter */
 constexpr int DECIM_FIR_TAPS      = 48;   // taps per phase
@@ -42,18 +45,31 @@ struct AudioEngineCallback {
 
 class InputCallback;
 class OutputCallback;
+class TxInputCallback;
+class TxOutputCallback;
 
 class AudioEngine {
     friend class InputCallback;
     friend class OutputCallback;
+    friend class TxInputCallback;
+    friend class TxOutputCallback;
 
 public:
     AudioEngine();
     ~AudioEngine();
 
+    /* RX mode */
     bool start(int inputDeviceId = 0);
     void stop();
     bool isRunning() const { return running_.load(); }
+
+    /* TX mode */
+    bool startTx(int inputDeviceId, int outputDeviceId);
+    void stopTx();
+    bool isTxRunning() const { return txRunning_.load(); }
+    void setTxCallsign(const char *callsign);
+    void setTxOutputDevice(int deviceId);
+    float getTxLevel() const { return txInputLevelDb_.load(); }
 
     void setInputDevice(int deviceId);
     void setOutputVolume(float volume);
@@ -139,20 +155,96 @@ private:
 
     bool openInputStream();
     bool openOutputStream();
+    void restartInputStream();
+    void restartOutputStream();
+
+    /* ── TX pipeline ─────────────────────────────────────── */
+    std::shared_ptr<oboe::AudioStream> txInputStream_;
+    std::shared_ptr<oboe::AudioStream> txOutputStream_;
+    std::unique_ptr<TxInputCallback> txInputCb_;
+    std::unique_ptr<TxOutputCallback> txOutputCb_;
+
+    std::atomic<bool> txRunning_{false};
+    int txInputDeviceId_ = 0;
+    int txOutputDeviceId_ = 0;
+
+    LPCNetEncState *lpcnetEnc_ = nullptr;
+    AudioRingBuffer txPlaybackRing_{RING_BUFFER_SIZE};
+
+    /* Speech capture buffer (16kHz) */
+    int txActualInputRate_ = 16000;
+    int txDecimFactor_ = 1;
+    std::vector<float> txDecimCoeffs_;
+    std::vector<float> txDecimHistory_;
+    int txDecimHistPos_ = 0;
+    int txDecimPhase_ = 0;
+
+    /* LPCNet feature extraction */
+    std::vector<int16_t> txSpeechBuf_;
+    int txSpeechPos_ = 0;
+    std::vector<float> txFeatureAccum_;
+    int txFeatureFrames_ = 0;
+    int txFeaturesPerTx_ = 0;    // number of feature frames per rade_tx() call
+
+    /* TX output interpolation (8kHz → output device rate) */
+    int txOutputRate_ = 48000;
+    int txInterpFactor_ = 6;
+    std::vector<float> txInterpCoeffs_;
+
+    /* TX callsign for EOO */
+    std::string txCallsign_;
+    std::mutex txCallsignMutex_;
+
+    std::atomic<float> txInputLevelDb_{-100.0f};
+
+    bool initTxModem();
+    void releaseTxModem();
+    bool openTxInputStream();
+    bool openTxOutputStream();
+    void processTxInputFrames(const float *data, int32_t numFrames, int32_t channelCount);
+    void processTxFeatureFrame();
+    void generateTxOutput();
+    void sendTxEoo();
+    void renderTxOutput(float *data, int32_t numFrames);
+    void designTxInterpFilter(int inputRate, int outputRate);
 };
 
-class InputCallback : public oboe::AudioStreamDataCallback {
+class InputCallback : public oboe::AudioStreamDataCallback,
+                      public oboe::AudioStreamErrorCallback {
 public:
     explicit InputCallback(AudioEngine *e) : engine_(e) {}
     oboe::DataCallbackResult onAudioReady(oboe::AudioStream *s, void *d, int32_t n) override;
+    void onErrorAfterClose(oboe::AudioStream *s, oboe::Result error) override;
 private:
     AudioEngine *engine_;
 };
 
-class OutputCallback : public oboe::AudioStreamDataCallback {
+class OutputCallback : public oboe::AudioStreamDataCallback,
+                       public oboe::AudioStreamErrorCallback {
 public:
     explicit OutputCallback(AudioEngine *e) : engine_(e) {}
     oboe::DataCallbackResult onAudioReady(oboe::AudioStream *s, void *d, int32_t n) override;
+    void onErrorAfterClose(oboe::AudioStream *s, oboe::Result error) override;
+private:
+    AudioEngine *engine_;
+};
+
+class TxInputCallback : public oboe::AudioStreamDataCallback,
+                         public oboe::AudioStreamErrorCallback {
+public:
+    explicit TxInputCallback(AudioEngine *e) : engine_(e) {}
+    oboe::DataCallbackResult onAudioReady(oboe::AudioStream *s, void *d, int32_t n) override;
+    void onErrorAfterClose(oboe::AudioStream *s, oboe::Result error) override;
+private:
+    AudioEngine *engine_;
+};
+
+class TxOutputCallback : public oboe::AudioStreamDataCallback,
+                          public oboe::AudioStreamErrorCallback {
+public:
+    explicit TxOutputCallback(AudioEngine *e) : engine_(e) {}
+    oboe::DataCallbackResult onAudioReady(oboe::AudioStream *s, void *d, int32_t n) override;
+    void onErrorAfterClose(oboe::AudioStream *s, oboe::Result error) override;
 private:
     AudioEngine *engine_;
 };
