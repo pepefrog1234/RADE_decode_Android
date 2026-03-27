@@ -31,38 +31,199 @@ import yakumo2683.RADEdecode.ui.theme.*
 
 private val modes = listOf("USB", "LSB", "PKTUSB", "PKTLSB", "CW", "CWR", "AM", "FM")
 
-/** Common hamlib rig models — (model_id, display_name) */
+data class RigModel(val id: Int, val mfg: String, val name: String) {
+    val displayName: String get() = "$mfg $name"
+}
+
+/** All hamlib 4.5.5 rig models (348 rigs) */
 private val rigModels = listOf(
-    1 to "Dummy (test)",
-    2 to "NET rigctl",
-    // Icom
-    3014 to "Icom IC-7300",
-    3073 to "Icom IC-705",
-    3070 to "Icom IC-7610",
-    3081 to "Icom IC-905",
-    3060 to "Icom IC-9700",
-    3013 to "Icom IC-7200",
-    3024 to "Icom IC-7100",
-    3078 to "Icom IC-7851",
+    // Hamlib
+    RigModel(1, "Hamlib", "Dummy"),
+    RigModel(2, "Hamlib", "NET rigctl"),
+    RigModel(4, "Hamlib", "FLRig"),
+    RigModel(7, "Hamlib", "TCI 1.X"),
     // Yaesu
-    1035 to "Yaesu FT-991A",
-    1036 to "Yaesu FT-DX10",
-    1037 to "Yaesu FT-710",
-    1038 to "Yaesu FT-DX101",
-    1031 to "Yaesu FT-950",
-    1024 to "Yaesu FT-891",
-    // Kenwood / Elecraft
-    2048 to "Kenwood TS-890S",
-    2044 to "Kenwood TS-590SG",
-    2042 to "Kenwood TS-480",
-    2028 to "Elecraft K3",
-    2043 to "Elecraft KX3",
-    2045 to "Elecraft K4",
-    // FlexRadio
-    2036 to "FlexRadio 6xxx",
-    // Xiegu
-    3079 to "Xiegu G90",
-    3080 to "Xiegu X6100",
+    RigModel(1001, "Yaesu", "FT-847"),
+    RigModel(1002, "Yaesu", "FT-1000"),
+    RigModel(1003, "Yaesu", "FT-1000D"),
+    RigModel(1004, "Yaesu", "FT-1000MP MKV"),
+    RigModel(1005, "Yaesu", "FT-747"),
+    RigModel(1006, "Yaesu", "FT-757"),
+    RigModel(1007, "Yaesu", "FT-757GX II"),
+    RigModel(1008, "Yaesu", "FT-575"),
+    RigModel(1009, "Yaesu", "FT-767"),
+    RigModel(1010, "Yaesu", "FT-736R"),
+    RigModel(1011, "Yaesu", "FT-840"),
+    RigModel(1012, "Yaesu", "FT-820"),
+    RigModel(1013, "Yaesu", "FT-900"),
+    RigModel(1014, "Yaesu", "FT-920"),
+    RigModel(1015, "Yaesu", "FT-890"),
+    RigModel(1016, "Yaesu", "FT-990"),
+    RigModel(1017, "Yaesu", "FRG-100"),
+    RigModel(1018, "Yaesu", "FRG-9600"),
+    RigModel(1019, "Yaesu", "FRG-8800"),
+    RigModel(1020, "Yaesu", "FT-817"),
+    RigModel(1021, "Yaesu", "FT-100"),
+    RigModel(1022, "Yaesu", "FT-857"),
+    RigModel(1023, "Yaesu", "FT-897"),
+    RigModel(1024, "Yaesu", "FT-1000MP"),
+    RigModel(1025, "Yaesu", "FT-1000MP MKV Fld"),
+    RigModel(1026, "Yaesu", "VR-5000"),
+    RigModel(1027, "Yaesu", "FT-450"),
+    RigModel(1028, "Yaesu", "FT-950"),
+    RigModel(1029, "Yaesu", "FT-2000"),
+    RigModel(1030, "Yaesu", "FT-9000"),
+    RigModel(1031, "Yaesu", "FT-980"),
+    RigModel(1032, "Yaesu", "FTDX-5000"),
+    RigModel(1033, "Yaesu", "VX-1700"),
+    RigModel(1034, "Yaesu", "FTDX-1200"),
+    RigModel(1035, "Yaesu", "FT-991/A"),
+    RigModel(1036, "Yaesu", "FT-891"),
+    RigModel(1037, "Yaesu", "FTDX-3000"),
+    RigModel(1039, "Yaesu", "FT-600"),
+    RigModel(1040, "Yaesu", "FTDX-101D"),
+    RigModel(1041, "Yaesu", "FT-818"),
+    RigModel(1042, "Yaesu", "FTDX-10"),
+    RigModel(1043, "Yaesu", "FT-897D"),
+    RigModel(1044, "Yaesu", "FTDX-101MP"),
+    RigModel(1046, "Yaesu", "FT-450D"),
+    RigModel(1047, "Yaesu", "FT-650"),
+    RigModel(1049, "Yaesu", "FT-710"),
+    // Kenwood
+    RigModel(2001, "Kenwood", "TS-50"),
+    RigModel(2002, "Kenwood", "TS-440"),
+    RigModel(2003, "Kenwood", "TS-450S"),
+    RigModel(2004, "Kenwood", "TS-570D"),
+    RigModel(2005, "Kenwood", "TS-690S"),
+    RigModel(2006, "Kenwood", "TS-711"),
+    RigModel(2007, "Kenwood", "TS-790"),
+    RigModel(2009, "Kenwood", "TS-850"),
+    RigModel(2010, "Kenwood", "TS-870S"),
+    RigModel(2011, "Kenwood", "TS-940"),
+    RigModel(2012, "Kenwood", "TS-950S"),
+    RigModel(2013, "Kenwood", "TS-950SDX"),
+    RigModel(2014, "Kenwood", "TS-2000"),
+    RigModel(2015, "Kenwood", "R-5000"),
+    RigModel(2016, "Kenwood", "TS-570S"),
+    RigModel(2022, "Kenwood", "TS-930"),
+    RigModel(2024, "Kenwood", "TS-680S"),
+    RigModel(2025, "Kenwood", "TS-140S"),
+    RigModel(2028, "Kenwood", "TS-480"),
+    RigModel(2031, "Kenwood", "TS-590S"),
+    RigModel(2037, "Kenwood", "TS-590SG"),
+    RigModel(2039, "Kenwood", "TS-990S"),
+    RigModel(2041, "Kenwood", "TS-890S"),
+    // Elecraft (Kenwood backend)
+    RigModel(2021, "Elecraft", "K2"),
+    RigModel(2029, "Elecraft", "K3"),
+    RigModel(2043, "Elecraft", "K3S"),
+    RigModel(2044, "Elecraft", "KX2"),
+    RigModel(2045, "Elecraft", "KX3"),
+    RigModel(2047, "Elecraft", "K4"),
+    RigModel(2038, "Elecraft", "XG3"),
+    // FlexRadio (Kenwood backend)
+    RigModel(2036, "FlexRadio", "6xxx/SSDR"),
+    RigModel(2048, "FlexRadio", "PowerSDR"),
+    // Other Kenwood-protocol
+    RigModel(2040, "Apache Labs", "HPSDR"),
+    RigModel(2049, "Malahit", "Malachite DSP"),
+    RigModel(2050, "Lab599", "TX-500"),
+    RigModel(2051, "SDRplay", "SDRuno"),
+    RigModel(2052, "QRP Labs", "QMX/QDX"),
+    // Icom
+    RigModel(3001, "Icom", "IC-1271"),
+    RigModel(3003, "Icom", "IC-271"),
+    RigModel(3004, "Icom", "IC-275"),
+    RigModel(3008, "Icom", "IC-575"),
+    RigModel(3009, "Icom", "IC-706"),
+    RigModel(3010, "Icom", "IC-706MkII"),
+    RigModel(3011, "Icom", "IC-706MkIIG"),
+    RigModel(3012, "Icom", "IC-707"),
+    RigModel(3013, "Icom", "IC-718"),
+    RigModel(3014, "Icom", "IC-725"),
+    RigModel(3015, "Icom", "IC-726"),
+    RigModel(3016, "Icom", "IC-728"),
+    RigModel(3019, "Icom", "IC-735"),
+    RigModel(3020, "Icom", "IC-736"),
+    RigModel(3023, "Icom", "IC-746"),
+    RigModel(3024, "Icom", "IC-751"),
+    RigModel(3026, "Icom", "IC-756"),
+    RigModel(3027, "Icom", "IC-756PRO"),
+    RigModel(3028, "Icom", "IC-761"),
+    RigModel(3029, "Icom", "IC-765"),
+    RigModel(3030, "Icom", "IC-775"),
+    RigModel(3031, "Icom", "IC-781"),
+    RigModel(3035, "Icom", "IC-970"),
+    RigModel(3039, "Icom", "IC-R75"),
+    RigModel(3044, "Icom", "IC-910"),
+    RigModel(3046, "Icom", "IC-746PRO"),
+    RigModel(3047, "Icom", "IC-756PROII"),
+    RigModel(3055, "Icom", "IC-703"),
+    RigModel(3056, "Icom", "IC-7800"),
+    RigModel(3057, "Icom", "IC-756PROIII"),
+    RigModel(3060, "Icom", "IC-7000"),
+    RigModel(3061, "Icom", "IC-7200"),
+    RigModel(3062, "Icom", "IC-7700"),
+    RigModel(3063, "Icom", "IC-7600"),
+    RigModel(3067, "Icom", "IC-7410"),
+    RigModel(3068, "Icom", "IC-9100"),
+    RigModel(3070, "Icom", "IC-7100"),
+    RigModel(3073, "Icom", "IC-7300"),
+    RigModel(3075, "Icom", "IC-785x"),
+    RigModel(3078, "Icom", "IC-7610"),
+    RigModel(3081, "Icom", "IC-9700"),
+    RigModel(3085, "Icom", "IC-705"),
+    // Xiegu (Icom backend)
+    RigModel(3087, "Xiegu", "X6100"),
+    RigModel(3088, "Xiegu", "G90"),
+    RigModel(3089, "Xiegu", "X5105"),
+    RigModel(3076, "Xiegu", "X108G"),
+    // Icom Marine
+    RigModel(30001, "Icom Marine", "IC-M700PRO"),
+    RigModel(30002, "Icom Marine", "IC-M802"),
+    RigModel(30003, "Icom Marine", "IC-M710"),
+    RigModel(30004, "Icom Marine", "IC-M803"),
+    // Icom PCR
+    RigModel(4001, "Icom", "PCR-1000"),
+    RigModel(4002, "Icom", "PCR-100"),
+    RigModel(4003, "Icom", "PCR-1500"),
+    RigModel(4004, "Icom", "PCR-2500"),
+    // AOR
+    RigModel(5001, "AOR", "AR-8200"),
+    RigModel(5003, "AOR", "AR-7030"),
+    RigModel(5004, "AOR", "AR-5000"),
+    RigModel(5013, "AOR", "AR-8600"),
+    RigModel(5016, "AOR", "SR-2200"),
+    // JRC
+    RigModel(6001, "JRC", "JST-145"),
+    RigModel(6002, "JRC", "JST-245"),
+    RigModel(6006, "JRC", "NRD-535"),
+    RigModel(6007, "JRC", "NRD-545"),
+    // Ten-Tec
+    RigModel(16001, "Ten-Tec", "Orion (TT550)"),
+    RigModel(16002, "Ten-Tec", "Jupiter (TT538)"),
+    RigModel(16003, "Ten-Tec", "RX-320"),
+    RigModel(16008, "Ten-Tec", "Orion II (TT565)"),
+    RigModel(16011, "Ten-Tec", "Omni VII (TT588)"),
+    RigModel(16013, "Ten-Tec", "Eagle (TT599)"),
+    // Alinco
+    RigModel(17001, "Alinco", "DX-77"),
+    RigModel(17002, "Alinco", "DX-SR8"),
+    // Drake
+    RigModel(9001, "Drake", "R-8"),
+    RigModel(9002, "Drake", "R-8A"),
+    RigModel(9003, "Drake", "R-8B"),
+    // ELAD
+    RigModel(33001, "ELAD", "FDM-DUO"),
+    // Barrett
+    RigModel(32001, "Barrett", "2050"),
+    RigModel(32002, "Barrett", "950"),
+    RigModel(32003, "Barrett", "4050"),
+    // Codan
+    RigModel(34001, "Codan", "Envoy"),
+    RigModel(34002, "Codan", "NGT"),
+    // ADAT
+    RigModel(29001, "ADAT", "ADT-200A"),
 )
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -178,48 +339,63 @@ fun RigScreen(viewModel: TransceiverViewModel = viewModel()) {
                     }
                 } else {
                     // Serial mode — rig model dropdown
+                    // Searchable rig model dropdown
+                    var searchQuery by remember { mutableStateOf("") }
+                    val filteredModels = remember(searchQuery) {
+                        if (searchQuery.isBlank()) rigModels
+                        else rigModels.filter {
+                            it.displayName.contains(searchQuery, ignoreCase = true) ||
+                                it.id.toString().contains(searchQuery)
+                        }
+                    }
+
                     ExposedDropdownMenuBox(
                         expanded = rigModelExpanded,
                         onExpandedChange = { if (!rigState.connected) rigModelExpanded = it }
                     ) {
                         OutlinedTextField(
-                            value = rigModels[selectedRigIndex].let { "${it.second} (${it.first})" },
-                            onValueChange = {},
-                            readOnly = true,
+                            value = if (rigModelExpanded) searchQuery
+                                    else rigModels[selectedRigIndex].let { "${it.displayName} (#${it.id})" },
+                            onValueChange = { searchQuery = it },
                             enabled = !rigState.connected,
                             label = { Text("Rig Model") },
+                            placeholder = { Text("Search...") },
                             trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded = rigModelExpanded) },
                             modifier = Modifier.fillMaxWidth().menuAnchor(),
+                            singleLine = true,
                             textStyle = androidx.compose.ui.text.TextStyle(fontFamily = FontFamily.Monospace, fontSize = 14.sp),
                             colors = OutlinedTextFieldDefaults.colors(
                                 focusedBorderColor = Cyan400, focusedLabelColor = Cyan400, cursorColor = Cyan400
                             )
                         )
-                        ExposedDropdownMenu(
-                            expanded = rigModelExpanded,
-                            onDismissRequest = { rigModelExpanded = false }
-                        ) {
-                            rigModels.forEachIndexed { index, (id, name) ->
-                                DropdownMenuItem(
-                                    text = {
-                                        Row(
-                                            modifier = Modifier.fillMaxWidth(),
-                                            horizontalArrangement = Arrangement.SpaceBetween
-                                        ) {
-                                            Text(name, fontSize = 14.sp)
-                                            Text(
-                                                "#$id",
-                                                fontSize = 12.sp,
-                                                fontFamily = FontFamily.Monospace,
-                                                color = OnSurfaceDim
-                                            )
+                        if (filteredModels.isNotEmpty()) {
+                            ExposedDropdownMenu(
+                                expanded = rigModelExpanded,
+                                onDismissRequest = { rigModelExpanded = false; searchQuery = "" }
+                            ) {
+                                filteredModels.forEach { model ->
+                                    DropdownMenuItem(
+                                        text = {
+                                            Row(
+                                                modifier = Modifier.fillMaxWidth(),
+                                                horizontalArrangement = Arrangement.SpaceBetween
+                                            ) {
+                                                Text(model.displayName, fontSize = 14.sp)
+                                                Text(
+                                                    "#${model.id}",
+                                                    fontSize = 12.sp,
+                                                    fontFamily = FontFamily.Monospace,
+                                                    color = OnSurfaceDim
+                                                )
+                                            }
+                                        },
+                                        onClick = {
+                                            selectedRigIndex = rigModels.indexOf(model)
+                                            rigModelExpanded = false
+                                            searchQuery = ""
                                         }
-                                    },
-                                    onClick = {
-                                        selectedRigIndex = index
-                                        rigModelExpanded = false
-                                    }
-                                )
+                                    )
+                                }
                             }
                         }
                     }
@@ -264,7 +440,7 @@ fun RigScreen(viewModel: TransceiverViewModel = viewModel()) {
                             val port = portInput.toIntOrNull() ?: 4532
                             viewModel.rigConnect(hostInput, port)
                         } else {
-                            val model = rigModels[selectedRigIndex].first
+                            val model = rigModels[selectedRigIndex].id
                             val speed = serialSpeed.toIntOrNull() ?: 9600
                             viewModel.rigStartLocal(model, serialDevice, speed)
                         }
