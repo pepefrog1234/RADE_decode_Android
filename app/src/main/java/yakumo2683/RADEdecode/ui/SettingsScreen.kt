@@ -175,6 +175,12 @@ fun SettingsScreen(viewModel: TransceiverViewModel = viewModel()) {
                         activeTrackColor = Cyan400
                     )
                 )
+                Text(
+                    "TX output level also controlled here. Adjust so the radio's ALC meter " +
+                    "does NOT deflect — keep ALC in the linear region (no bar / no reading) " +
+                    "to avoid signal distortion and splatter.",
+                    fontSize = 11.sp, color = OnSurfaceDim, lineHeight = 16.sp
+                )
             }
         }
 
