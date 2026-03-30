@@ -18,6 +18,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.text.font.FontFamily
@@ -30,6 +31,7 @@ import androidx.lifecycle.viewmodel.compose.viewModel
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.launch
+import yakumo2683.RADEdecode.R
 import yakumo2683.RADEdecode.data.*
 import yakumo2683.RADEdecode.ui.theme.*
 import java.text.SimpleDateFormat
@@ -152,10 +154,10 @@ fun SessionDetailScreen(
         // Back + title
         Row(verticalAlignment = Alignment.CenterVertically) {
             IconButton(onClick = onBack) {
-                Icon(Icons.Default.ArrowBack, "Back", tint = Cyan400)
+                Icon(Icons.Default.ArrowBack, stringResource(R.string.btn_back), tint = Cyan400)
             }
             Text(
-                "SESSION DETAIL",
+                stringResource(R.string.header_session_detail),
                 fontSize = 11.sp, fontWeight = FontWeight.Bold,
                 letterSpacing = 2.sp, color = Cyan400
             )
@@ -175,14 +177,14 @@ fun SessionDetailScreen(
             val syncRatio = if (s.totalModemFrames > 0)
                 s.syncedFrames.toFloat() / s.totalModemFrames * 100f else 0f
 
-            DetailRow(Icons.Default.Schedule, "Start", dateFormat.format(Date(s.startTime)))
+            DetailRow(Icons.Default.Schedule, stringResource(R.string.detail_start), dateFormat.format(Date(s.startTime)))
             s.endTime?.let {
-                DetailRow(Icons.Default.Schedule, "End", dateFormat.format(Date(it)))
+                DetailRow(Icons.Default.Schedule, stringResource(R.string.detail_end), dateFormat.format(Date(it)))
             }
-            DetailRow(Icons.Default.Timer, "Duration", formatDetailDuration(duration))
-            DetailRow(Icons.Default.SignalCellularAlt, "Sync Ratio", "%.1f%%".format(syncRatio))
-            DetailRow(Icons.Default.Memory, "Modem Frames", "${s.totalModemFrames} (${s.syncedFrames} synced)")
-            DetailRow(Icons.Default.SettingsInputAntenna, "Device", s.audioDevice)
+            DetailRow(Icons.Default.Timer, stringResource(R.string.detail_duration), formatDetailDuration(duration))
+            DetailRow(Icons.Default.SignalCellularAlt, stringResource(R.string.detail_sync_ratio), "%.1f%%".format(syncRatio))
+            DetailRow(Icons.Default.Memory, stringResource(R.string.detail_modem_frames), stringResource(R.string.detail_synced_format, s.totalModemFrames, s.syncedFrames))
+            DetailRow(Icons.Default.SettingsInputAntenna, stringResource(R.string.detail_device), s.audioDevice)
         }
 
         // ── Audio playback ──
@@ -191,7 +193,7 @@ fun SessionDetailScreen(
             val isPlaying by viewModel.isPlaying.collectAsState()
             val progress by viewModel.playProgress.collectAsState()
 
-            SectionLabel("DECODED AUDIO")
+            SectionLabel(stringResource(R.string.header_decoded_audio))
             DetailCard {
                 Row(
                     modifier = Modifier.fillMaxWidth(),
@@ -207,7 +209,7 @@ fun SessionDetailScreen(
                     ) {
                         Icon(
                             if (isPlaying) Icons.Default.Stop else Icons.Default.PlayArrow,
-                            contentDescription = if (isPlaying) "Stop" else "Play"
+                            contentDescription = if (isPlaying) stringResource(R.string.btn_stop) else stringResource(R.string.btn_play)
                         )
                     }
 
@@ -228,7 +230,7 @@ fun SessionDetailScreen(
                             horizontalArrangement = Arrangement.SpaceBetween
                         ) {
                             Text(
-                                if (isPlaying) "Playing..." else wavFile.name,
+                                if (isPlaying) stringResource(R.string.audio_playing) else wavFile.name,
                                 fontSize = 11.sp,
                                 color = OnSurfaceDim
                             )
@@ -246,7 +248,7 @@ fun SessionDetailScreen(
 
         // ── Callsigns decoded ──
         if (callsignEvents.isNotEmpty()) {
-            SectionLabel("CALLSIGNS DECODED")
+            SectionLabel(stringResource(R.string.header_callsigns_decoded))
             DetailCard {
                 callsignEvents.forEach { ev ->
                     Row(
@@ -265,12 +267,12 @@ fun SessionDetailScreen(
                         )
                         Column(horizontalAlignment = Alignment.End) {
                             Text(
-                                "SNR ${ev.snrAtDecode} dB",
+                                stringResource(R.string.detail_snr_db, ev.snrAtDecode),
                                 fontSize = 12.sp, fontFamily = FontFamily.Monospace,
                                 color = Cyan400
                             )
                             Text(
-                                "+${ev.offsetMs / 1000}s | frame ${ev.modemFrame}",
+                                stringResource(R.string.detail_offset_frame, ev.offsetMs / 1000, ev.modemFrame),
                                 fontSize = 11.sp, fontFamily = FontFamily.Monospace,
                                 color = OnSurfaceDim
                             )
@@ -285,16 +287,16 @@ fun SessionDetailScreen(
 
         // ── SNR chart ──
         if (snapshots.isNotEmpty()) {
-            SectionLabel("SNR OVER TIME")
+            SectionLabel(stringResource(R.string.header_snr_over_time))
             SnrChart(snapshots, Modifier.fillMaxWidth().height(140.dp))
         }
 
         // ── Sync timeline ──
         if (syncEvents.isNotEmpty()) {
-            SectionLabel("SYNC EVENTS")
+            SectionLabel(stringResource(R.string.header_sync_events))
             DetailCard {
                 syncEvents.forEach { ev ->
-                    val stateNames = arrayOf("SEARCH", "CANDIDATE", "SYNC")
+                    val stateNames = arrayOf(stringResource(R.string.sync_search), stringResource(R.string.sync_candidate), stringResource(R.string.sync_sync))
                     val from = stateNames.getOrElse(ev.fromState) { "?" }
                     val to = stateNames.getOrElse(ev.toState) { "?" }
                     val toColor = when (ev.toState) {
@@ -328,18 +330,18 @@ fun SessionDetailScreen(
 
         // ── Signal snapshots summary ──
         if (snapshots.isNotEmpty()) {
-            SectionLabel("SIGNAL SUMMARY")
+            SectionLabel(stringResource(R.string.header_signal_summary))
             DetailCard {
                 val snrValues = snapshots.map { it.snr }
                 val peakSnr = snrValues.max()
                 val avgSnr = snrValues.average()
                 val freqValues = snapshots.map { it.freqOffset }
 
-                DetailRow(Icons.Default.TrendingUp, "Peak SNR", "%.1f dB".format(peakSnr))
-                DetailRow(Icons.Default.BarChart, "Avg SNR", "%.1f dB".format(avgSnr))
-                DetailRow(Icons.Default.Tune, "Freq Offset Range",
+                DetailRow(Icons.Default.TrendingUp, stringResource(R.string.detail_peak_snr), "%.1f dB".format(peakSnr))
+                DetailRow(Icons.Default.BarChart, stringResource(R.string.detail_avg_snr), "%.1f dB".format(avgSnr))
+                DetailRow(Icons.Default.Tune, stringResource(R.string.detail_freq_offset_range),
                     "%.1f ~ %.1f Hz".format(freqValues.min(), freqValues.max()))
-                DetailRow(Icons.Default.DataUsage, "Snapshots", "${snapshots.size}")
+                DetailRow(Icons.Default.DataUsage, stringResource(R.string.detail_snapshots), "${snapshots.size}")
             }
         }
 

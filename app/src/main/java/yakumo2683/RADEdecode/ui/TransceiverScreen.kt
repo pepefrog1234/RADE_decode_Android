@@ -29,7 +29,9 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontFamily
+import yakumo2683.RADEdecode.R
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
@@ -79,8 +81,8 @@ fun TransceiverScreen(viewModel: TransceiverViewModel = viewModel()) {
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.spacedBy(10.dp)
             ) {
-                InfoCard("SNR", "${state.snrDb}", "dB", Modifier.weight(1f))
-                InfoCard("FREQ", String.format("%.1f", state.freqOffsetHz), "Hz", Modifier.weight(1f))
+                InfoCard(stringResource(R.string.label_snr), "${state.snrDb}", stringResource(R.string.unit_db), Modifier.weight(1f))
+                InfoCard(stringResource(R.string.label_freq), String.format("%.1f", state.freqOffsetHz), stringResource(R.string.unit_hz), Modifier.weight(1f))
             }
         }
 
@@ -100,14 +102,14 @@ fun TransceiverScreen(viewModel: TransceiverViewModel = viewModel()) {
 
         // ── Level meters ──
         if (state.isTx) {
-            LevelMeter("MIC INPUT", state.txLevelDb, Modifier.fillMaxWidth())
+            LevelMeter(stringResource(R.string.label_mic_input), state.txLevelDb, Modifier.fillMaxWidth())
         } else {
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.spacedBy(10.dp)
             ) {
-                LevelMeter("INPUT", state.inputLevelDb, Modifier.weight(1f))
-                LevelMeter("OUTPUT", state.outputLevelDb, Modifier.weight(1f))
+                LevelMeter(stringResource(R.string.label_input), state.inputLevelDb, Modifier.weight(1f))
+                LevelMeter(stringResource(R.string.label_output), state.outputLevelDb, Modifier.weight(1f))
             }
         }
 
@@ -179,7 +181,12 @@ private fun SyncHeader(state: TransceiverViewModel.UiState) {
                 modifier = Modifier.size(12.dp)
             )
             Text(
-                text = state.syncText,
+                text = when (state.syncState) {
+                    0 -> stringResource(R.string.sync_search)
+                    1 -> stringResource(R.string.sync_candidate)
+                    2 -> stringResource(R.string.sync_sync)
+                    else -> stringResource(R.string.sync_unknown)
+                },
                 color = syncColor,
                 fontSize = 18.sp,
                 fontWeight = FontWeight.Black,
@@ -226,7 +233,7 @@ private fun TxHeader() {
                 modifier = Modifier.size(12.dp)
             )
             Text(
-                text = "TRANSMITTING",
+                text = stringResource(R.string.transmitting),
                 color = Red400,
                 fontSize = 18.sp,
                 fontWeight = FontWeight.Black,
@@ -489,7 +496,7 @@ private fun TxButton(isTx: Boolean, onClick: () -> Unit) {
         )
         Spacer(Modifier.width(10.dp))
         Text(
-            text = if (isTx) "BACK TO RX" else "TX",
+            text = if (isTx) stringResource(R.string.btn_back_to_rx) else stringResource(R.string.btn_tx),
             fontSize = 16.sp,
             fontWeight = FontWeight.Black,
             letterSpacing = 3.sp
@@ -521,7 +528,7 @@ private fun StartStopButton(isRunning: Boolean, onClick: () -> Unit) {
         )
         Spacer(Modifier.width(10.dp))
         Text(
-            text = if (isRunning) "STOP" else "START",
+            text = if (isRunning) stringResource(R.string.btn_stop) else stringResource(R.string.btn_start),
             fontSize = 16.sp,
             fontWeight = FontWeight.Black,
             letterSpacing = 3.sp

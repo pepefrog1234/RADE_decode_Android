@@ -16,6 +16,7 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
@@ -26,6 +27,7 @@ import androidx.lifecycle.viewmodel.compose.viewModel
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.launch
+import yakumo2683.RADEdecode.R
 import yakumo2683.RADEdecode.data.AppDatabase
 import yakumo2683.RADEdecode.data.ReceptionSession
 import yakumo2683.RADEdecode.ui.theme.*
@@ -75,8 +77,8 @@ fun LogScreen(
         AlertDialog(
             onDismissRequest = { showDeleteAllDialog = false },
             containerColor = SurfaceCard,
-            title = { Text("Delete All Sessions") },
-            text = { Text("This will permanently delete all reception logs. This cannot be undone.") },
+            title = { Text(stringResource(R.string.log_delete_all_title)) },
+            text = { Text(stringResource(R.string.log_delete_all_message)) },
             confirmButton = {
                 TextButton(
                     onClick = {
@@ -84,10 +86,10 @@ fun LogScreen(
                         showDeleteAllDialog = false
                     },
                     colors = ButtonDefaults.textButtonColors(contentColor = Red400)
-                ) { Text("Delete All") }
+                ) { Text(stringResource(R.string.log_delete_all_confirm)) }
             },
             dismissButton = {
-                TextButton(onClick = { showDeleteAllDialog = false }) { Text("Cancel") }
+                TextButton(onClick = { showDeleteAllDialog = false }) { Text(stringResource(R.string.btn_cancel)) }
             }
         )
     }
@@ -106,7 +108,7 @@ fun LogScreen(
             verticalAlignment = Alignment.CenterVertically
         ) {
             Text(
-                text = "RECEPTION LOG",
+                text = stringResource(R.string.header_reception_log),
                 fontSize = 11.sp,
                 fontWeight = FontWeight.Bold,
                 letterSpacing = 2.sp,
@@ -120,7 +122,7 @@ fun LogScreen(
                 ) {
                     Icon(Icons.Default.DeleteSweep, null, modifier = Modifier.size(16.dp))
                     Spacer(Modifier.width(4.dp))
-                    Text("Clear All", fontSize = 12.sp)
+                    Text(stringResource(R.string.log_clear_all), fontSize = 12.sp)
                 }
             }
         }
@@ -133,9 +135,9 @@ fun LogScreen(
                 Column(horizontalAlignment = Alignment.CenterHorizontally) {
                     Icon(Icons.Default.Schedule, null, modifier = Modifier.size(48.dp), tint = OnSurfaceDim)
                     Spacer(Modifier.height(12.dp))
-                    Text("No reception sessions yet", fontSize = 16.sp, color = OnSurfaceDim)
+                    Text(stringResource(R.string.log_no_sessions), fontSize = 16.sp, color = OnSurfaceDim)
                     Spacer(Modifier.height(4.dp))
-                    Text("Start receiving to create a session", fontSize = 13.sp, color = OnSurfaceDim.copy(alpha = 0.6f))
+                    Text(stringResource(R.string.log_start_hint), fontSize = 13.sp, color = OnSurfaceDim.copy(alpha = 0.6f))
                 }
             }
         } else {
@@ -167,7 +169,7 @@ fun LogScreen(
                                     .padding(end = 20.dp),
                                 contentAlignment = Alignment.CenterEnd
                             ) {
-                                Icon(Icons.Default.Delete, "Delete", tint = androidx.compose.ui.graphics.Color.White)
+                                Icon(Icons.Default.Delete, stringResource(R.string.log_delete), tint = androidx.compose.ui.graphics.Color.White)
                             }
                         },
                         enableDismissFromStartToEnd = false,
@@ -212,8 +214,9 @@ private fun SessionCard(
                     color = MaterialTheme.colorScheme.onSurface
                 )
                 Text(
-                    text = formatDuration(duration),
-                    fontFamily = FontFamily.Monospace, fontSize = 13.sp, color = Cyan400
+                    text = if (session.endTime != null) formatDuration(duration) else stringResource(R.string.log_incomplete),
+                    fontFamily = FontFamily.Monospace, fontSize = 13.sp,
+                    color = if (session.endTime != null) Cyan400 else OnSurfaceDim
                 )
             }
             Spacer(Modifier.height(8.dp))
@@ -228,9 +231,9 @@ private fun SessionCard(
                         tint = if (syncRatio > 50f) GreenBright else OnSurfaceDim
                     )
                     Spacer(Modifier.width(4.dp))
-                    Text("Sync %.0f%%".format(syncRatio), fontSize = 12.sp, fontFamily = FontFamily.Monospace, color = OnSurfaceDim)
+                    Text(stringResource(R.string.log_sync_percent).format(syncRatio), fontSize = 12.sp, fontFamily = FontFamily.Monospace, color = OnSurfaceDim)
                 }
-                Text("${session.totalModemFrames} frames", fontSize = 12.sp, fontFamily = FontFamily.Monospace, color = OnSurfaceDim)
+                Text(stringResource(R.string.log_frames, session.totalModemFrames), fontSize = 12.sp, fontFamily = FontFamily.Monospace, color = OnSurfaceDim)
                 if (session.audioDevice.isNotEmpty()) {
                     Text(session.audioDevice, fontSize = 12.sp, color = OnSurfaceDim)
                 }

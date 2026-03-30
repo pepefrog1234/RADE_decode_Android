@@ -19,6 +19,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalFocusManager
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
@@ -27,6 +28,7 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.viewmodel.compose.viewModel
+import yakumo2683.RADEdecode.R
 import yakumo2683.RADEdecode.ui.theme.*
 
 private val modes = listOf("PKTUSB", "PKTLSB")
@@ -261,13 +263,13 @@ fun RigScreen(viewModel: TransceiverViewModel = viewModel()) {
         verticalArrangement = Arrangement.spacedBy(14.dp)
     ) {
         // ── Connection mode selector ──
-        SectionLabel("CONNECTION")
+        SectionLabel(stringResource(R.string.header_connection))
 
         Row(
             modifier = Modifier.fillMaxWidth(),
             horizontalArrangement = Arrangement.spacedBy(8.dp)
         ) {
-            listOf("TCP (rigctld)" to 0, "Serial (local)" to 1).forEach { (label, idx) ->
+            listOf(stringResource(R.string.rig_tcp_mode) to 0, stringResource(R.string.rig_serial_mode) to 1).forEach { (label, idx) ->
                 val selected = connMode == idx
                 Surface(
                     onClick = { if (!rigState.connected) connMode = idx },
@@ -312,7 +314,7 @@ fun RigScreen(viewModel: TransceiverViewModel = viewModel()) {
                         OutlinedTextField(
                             value = hostInput,
                             onValueChange = { hostInput = it },
-                            label = { Text("Host") },
+                            label = { Text(stringResource(R.string.rig_host)) },
                             singleLine = true,
                             enabled = !rigState.connected,
                             modifier = Modifier.weight(2f),
@@ -326,7 +328,7 @@ fun RigScreen(viewModel: TransceiverViewModel = viewModel()) {
                         OutlinedTextField(
                             value = portInput,
                             onValueChange = { portInput = it.filter { c -> c.isDigit() }.take(5) },
-                            label = { Text("Port") },
+                            label = { Text(stringResource(R.string.rig_port)) },
                             singleLine = true,
                             enabled = !rigState.connected,
                             modifier = Modifier.weight(1f),
@@ -360,8 +362,8 @@ fun RigScreen(viewModel: TransceiverViewModel = viewModel()) {
                                     else rigModels[selectedRigIndex].let { "${it.displayName} (#${it.id})" },
                             onValueChange = { searchQuery = it },
                             enabled = !rigState.connected,
-                            label = { Text("Rig Model") },
-                            placeholder = { Text("Search...") },
+                            label = { Text(stringResource(R.string.rig_model)) },
+                            placeholder = { Text(stringResource(R.string.rig_search)) },
                             trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded = rigModelExpanded) },
                             modifier = Modifier.fillMaxWidth().menuAnchor(),
                             singleLine = true,
@@ -408,7 +410,7 @@ fun RigScreen(viewModel: TransceiverViewModel = viewModel()) {
                         OutlinedTextField(
                             value = serialDevice,
                             onValueChange = { serialDevice = it },
-                            label = { Text("Device") },
+                            label = { Text(stringResource(R.string.rig_device)) },
                             singleLine = true,
                             enabled = !rigState.connected,
                             modifier = Modifier.weight(2f),
@@ -420,7 +422,7 @@ fun RigScreen(viewModel: TransceiverViewModel = viewModel()) {
                         OutlinedTextField(
                             value = serialSpeed,
                             onValueChange = { serialSpeed = it.filter { c -> c.isDigit() } },
-                            label = { Text("Baud") },
+                            label = { Text(stringResource(R.string.rig_baud)) },
                             singleLine = true,
                             enabled = !rigState.connected,
                             modifier = Modifier.weight(1f),
@@ -460,7 +462,7 @@ fun RigScreen(viewModel: TransceiverViewModel = viewModel()) {
                     )
                     Spacer(Modifier.width(8.dp))
                     Text(
-                        if (rigState.connected) "DISCONNECT" else "CONNECT",
+                        if (rigState.connected) stringResource(R.string.btn_disconnect) else stringResource(R.string.btn_connect),
                         fontWeight = FontWeight.Bold,
                         letterSpacing = 2.sp
                     )
@@ -485,7 +487,7 @@ fun RigScreen(viewModel: TransceiverViewModel = viewModel()) {
                     .background(if (rigState.connected) GreenBright else Red400)
             )
             Text(
-                if (rigState.connected) "Connected to ${rigState.host}:${rigState.port}" else "Not connected",
+                if (rigState.connected) stringResource(R.string.rig_connected_to, rigState.host, rigState.port) else stringResource(R.string.rig_not_connected),
                 fontSize = 12.sp,
                 color = if (rigState.connected) GreenBright else OnSurfaceDim,
                 fontFamily = FontFamily.Monospace
@@ -504,7 +506,7 @@ fun RigScreen(viewModel: TransceiverViewModel = viewModel()) {
         }
 
         // ── Frequency ──
-        SectionLabel("FREQUENCY")
+        SectionLabel(stringResource(R.string.header_frequency))
 
         Surface(
             shape = RoundedCornerShape(12.dp),
@@ -540,7 +542,7 @@ fun RigScreen(viewModel: TransceiverViewModel = viewModel()) {
                     OutlinedTextField(
                         value = freqInput,
                         onValueChange = { freqInput = it.filter { c -> c.isDigit() || c == '.' } },
-                        label = { Text("Freq (kHz)") },
+                        label = { Text(stringResource(R.string.rig_freq_khz)) },
                         singleLine = true,
                         enabled = rigState.connected,
                         modifier = Modifier.weight(1f),
@@ -572,14 +574,14 @@ fun RigScreen(viewModel: TransceiverViewModel = viewModel()) {
                         shape = RoundedCornerShape(10.dp),
                         colors = ButtonDefaults.buttonColors(containerColor = Cyan600)
                     ) {
-                        Text("SET", fontWeight = FontWeight.Bold)
+                        Text(stringResource(R.string.btn_set), fontWeight = FontWeight.Bold)
                     }
                 }
             }
         }
 
         // ── Mode ──
-        SectionLabel("MODE")
+        SectionLabel(stringResource(R.string.header_mode))
 
         Surface(
             shape = RoundedCornerShape(12.dp),
@@ -591,7 +593,7 @@ fun RigScreen(viewModel: TransceiverViewModel = viewModel()) {
             Column(modifier = Modifier.padding(16.dp)) {
                 // Current mode display
                 Text(
-                    text = rigState.mode.ifEmpty { "---" },
+                    text = rigState.mode.ifEmpty { stringResource(R.string.rig_no_mode) },
                     fontSize = 22.sp,
                     fontWeight = FontWeight.Bold,
                     fontFamily = FontFamily.Monospace,
@@ -639,7 +641,7 @@ fun RigScreen(viewModel: TransceiverViewModel = viewModel()) {
         }
 
         // ── S-Meter ──
-        SectionLabel("S-METER")
+        SectionLabel(stringResource(R.string.header_s_meter))
 
         Surface(
             shape = RoundedCornerShape(12.dp),
@@ -687,7 +689,7 @@ private fun SectionLabel(text: String) {
 
 /** Format frequency as "14,250.0 kHz" style display */
 private fun formatFreq(hz: Long): String {
-    if (hz <= 0) return "-----.-- kHz"
+    if (hz <= 0) return "-----.-- kHz"  // static placeholder, no i18n needed
     val khz = hz / 1000.0
     return "%,.1f kHz".format(khz)
 }

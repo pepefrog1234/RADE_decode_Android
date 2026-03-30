@@ -13,10 +13,12 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import yakumo2683.RADEdecode.R
 import yakumo2683.RADEdecode.network.FreeDVReporter
 import yakumo2683.RADEdecode.ui.theme.*
 
@@ -33,7 +35,7 @@ fun StationsScreen(reporter: FreeDVReporter? = null) {
             .padding(horizontal = 16.dp, vertical = 8.dp)
     ) {
         Text(
-            text = "FREEDV REPORTER",
+            text = stringResource(R.string.header_freedv_reporter),
             fontSize = 11.sp,
             fontWeight = FontWeight.Bold,
             letterSpacing = 2.sp,
@@ -65,8 +67,8 @@ fun StationsScreen(reporter: FreeDVReporter? = null) {
                     modifier = Modifier.size(18.dp)
                 )
                 Text(
-                    text = if (isConnected) "Connected — ${stations.size} stations online"
-                           else "Not connected to FreeDV Reporter",
+                    text = if (isConnected) stringResource(R.string.stations_connected, stations.size)
+                           else stringResource(R.string.stations_not_connected),
                     fontSize = 13.sp,
                     color = if (isConnected) GreenBright else OnSurfaceDim
                 )
@@ -88,14 +90,14 @@ fun StationsScreen(reporter: FreeDVReporter? = null) {
                     )
                     Spacer(Modifier.height(12.dp))
                     Text(
-                        text = if (isConnected) "No stations online"
-                               else "Enable Reporter in Settings",
+                        text = if (isConnected) stringResource(R.string.stations_no_stations)
+                               else stringResource(R.string.stations_enable_reporter),
                         fontSize = 16.sp,
                         color = OnSurfaceDim
                     )
                     Spacer(Modifier.height(4.dp))
                     Text(
-                        text = "Connect to qso.freedv.org to see active stations",
+                        text = stringResource(R.string.stations_connect_hint),
                         fontSize = 13.sp,
                         color = OnSurfaceDim.copy(alpha = 0.6f)
                     )
@@ -134,7 +136,7 @@ private fun StationCard(station: FreeDVReporter.ReporterStation) {
                     horizontalArrangement = Arrangement.spacedBy(6.dp)
                 ) {
                     Text(
-                        text = station.callsign.ifEmpty { "Anonymous" },
+                        text = station.callsign.ifEmpty { stringResource(R.string.stations_anonymous) },
                         fontWeight = FontWeight.Bold,
                         fontSize = 16.sp,
                         fontFamily = FontFamily.Monospace,
@@ -142,7 +144,7 @@ private fun StationCard(station: FreeDVReporter.ReporterStation) {
                     )
                     if (station.rxOnly) {
                         Icon(
-                            Icons.Default.Headset, "RX Only",
+                            Icons.Default.Headset, stringResource(R.string.stations_rx_only),
                             modifier = Modifier.size(14.dp),
                             tint = Cyan400
                         )

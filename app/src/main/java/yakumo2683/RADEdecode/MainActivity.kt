@@ -17,6 +17,7 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.text.font.FontWeight
@@ -40,14 +41,14 @@ class MainActivity : ComponentActivity() {
     }
 }
 
-private data class NavItem(val route: String, val label: String, val icon: ImageVector)
+private data class NavItem(val route: String, val labelResId: Int, val icon: ImageVector)
 
 private val navItems = listOf(
-    NavItem("receiver", "Receiver", Icons.Default.Radio),
-    NavItem("rig", "Rig", Icons.Default.SettingsRemote),
-    NavItem("stations", "Stations", Icons.Default.CellTower),
-    NavItem("log", "Log", Icons.Default.History),
-    NavItem("settings", "Settings", Icons.Default.Settings),
+    NavItem("receiver", R.string.nav_receiver, Icons.Default.Radio),
+    NavItem("rig", R.string.nav_rig, Icons.Default.SettingsRemote),
+    NavItem("stations", R.string.nav_stations, Icons.Default.CellTower),
+    NavItem("log", R.string.nav_log, Icons.Default.History),
+    NavItem("settings", R.string.nav_settings, Icons.Default.Settings),
 )
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -76,7 +77,7 @@ fun RADEDecodeApp() {
             TopAppBar(
                 title = {
                     Text(
-                        "RADE DECODE",
+                        stringResource(R.string.top_bar_title),
                         fontFamily = FontFamily.Monospace,
                         fontWeight = FontWeight.Black,
                         fontSize = 18.sp,
@@ -96,10 +97,10 @@ fun RADEDecodeApp() {
             ) {
                 navItems.forEach { item ->
                     NavigationBarItem(
-                        icon = { Icon(item.icon, contentDescription = item.label) },
+                        icon = { Icon(item.icon, contentDescription = stringResource(item.labelResId)) },
                         label = {
                             Text(
-                                item.label,
+                                stringResource(item.labelResId),
                                 fontSize = 11.sp,
                                 fontWeight = FontWeight.Medium
                             )

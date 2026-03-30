@@ -358,7 +358,9 @@ void AudioEngine::processModemFrame() {
 
     int result = rade_rx(rade_, features.data(), &hasEoo, eooBits.data(), rxIn.data());
 
-    int newSync = rade_sync(rade_);
+    // rade_sync() returns boolean: 1 = synced, 0 = not synced.
+    // Map to app states: 0=SEARCH, 2=SYNC (no CANDIDATE from this API).
+    int newSync = rade_sync(rade_) ? 2 : 0;
     int oldSync = syncState_.exchange(newSync);
     snrEstimate_.store(rade_snrdB_3k_est(rade_));
     freqOffset_.store(rade_freq_offset(rade_));

@@ -135,6 +135,13 @@ class AppDatabase private constructor(context: Context) :
             writableDatabase.update("reception_sessions", cv, "id = ?", arrayOf(sessionId.toString()))
         }
 
+    suspend fun closeOrphanedSessions() = withContext(Dispatchers.IO) {
+        val cv = ContentValues().apply {
+            put("endTime", System.currentTimeMillis())
+        }
+        writableDatabase.update("reception_sessions", cv, "endTime IS NULL", null)
+    }
+
     suspend fun updateSessionAudio(sessionId: Long, filename: String, fileSize: Long) =
         withContext(Dispatchers.IO) {
             val cv = ContentValues().apply {

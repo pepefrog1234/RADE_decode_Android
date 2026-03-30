@@ -18,10 +18,12 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import yakumo2683.RADEdecode.R
 import yakumo2683.RADEdecode.ui.theme.*
 
 /**
@@ -44,7 +46,7 @@ fun BatteryOptimizationDialog(
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Icon(Icons.Default.BatteryAlert, null, tint = Amber400, modifier = Modifier.size(24.dp))
                 Spacer(Modifier.width(8.dp))
-                Text("Background Decoding Setup", fontSize = 18.sp, fontWeight = FontWeight.Bold)
+                Text(stringResource(R.string.battery_dialog_title), fontSize = 18.sp, fontWeight = FontWeight.Bold)
             }
         },
         text = {
@@ -53,8 +55,7 @@ fun BatteryOptimizationDialog(
                 verticalArrangement = Arrangement.spacedBy(12.dp)
             ) {
                 Text(
-                    "RADE Decode needs to run in the background to continuously receive and decode signals. " +
-                    "Some devices restrict background activity which may interrupt decoding.",
+                    stringResource(R.string.battery_dialog_description),
                     fontSize = 14.sp, color = MaterialTheme.colorScheme.onSurface, lineHeight = 20.sp
                 )
 
@@ -80,8 +81,8 @@ fun BatteryOptimizationDialog(
                         )
                         Spacer(Modifier.width(8.dp))
                         Text(
-                            if (isIgnoring) "Battery optimization is disabled — good!"
-                            else "Battery optimization is enabled — may interrupt decoding",
+                            if (isIgnoring) stringResource(R.string.battery_opt_disabled)
+                            else stringResource(R.string.battery_opt_enabled),
                             fontSize = 13.sp,
                             color = if (isIgnoring) GreenBright else Red400
                         )
@@ -101,7 +102,7 @@ fun BatteryOptimizationDialog(
                     ) {
                         Icon(Icons.Default.BatteryChargingFull, null, modifier = Modifier.size(18.dp))
                         Spacer(Modifier.width(8.dp))
-                        Text("Disable Battery Optimization")
+                        Text(stringResource(R.string.battery_disable_btn))
                     }
                 }
 
@@ -109,16 +110,16 @@ fun BatteryOptimizationDialog(
                 HorizontalDivider(color = MaterialTheme.colorScheme.outline)
 
                 Text(
-                    "ADDITIONAL STEPS",
+                    stringResource(R.string.battery_additional_steps),
                     fontSize = 11.sp, fontWeight = FontWeight.Bold,
                     letterSpacing = 2.sp, color = Cyan400
                 )
 
-                val tips = getVendorTips(brand)
-                tips.forEach { tip ->
+                val tipResIds = getVendorTipResIds(brand)
+                tipResIds.forEach { resId ->
                     Row(modifier = Modifier.fillMaxWidth()) {
                         Text("•", color = OnSurfaceDim, modifier = Modifier.padding(end = 8.dp, top = 2.dp))
-                        Text(tip, fontSize = 13.sp, color = OnSurfaceDim, lineHeight = 18.sp)
+                        Text(stringResource(resId), fontSize = 13.sp, color = OnSurfaceDim, lineHeight = 18.sp)
                     }
                 }
 
@@ -134,7 +135,7 @@ fun BatteryOptimizationDialog(
                 ) {
                     Icon(Icons.Default.Settings, null, modifier = Modifier.size(18.dp))
                     Spacer(Modifier.width(8.dp))
-                    Text("Open App Settings")
+                    Text(stringResource(R.string.battery_open_app_settings))
                 }
 
                 // Warning
@@ -149,10 +150,7 @@ fun BatteryOptimizationDialog(
                         Icon(Icons.Default.Info, null, tint = Amber400, modifier = Modifier.size(18.dp))
                         Spacer(Modifier.width(8.dp))
                         Text(
-                            "Disabling battery optimization will increase power consumption " +
-                            "while RADE Decode is running. The app only uses significant power " +
-                            "when actively decoding (Start is pressed). You can re-enable " +
-                            "optimization anytime in system settings.",
+                            stringResource(R.string.battery_warning),
                             fontSize = 12.sp, color = Amber400.copy(alpha = 0.8f), lineHeight = 16.sp
                         )
                     }
@@ -161,49 +159,49 @@ fun BatteryOptimizationDialog(
         },
         confirmButton = {
             TextButton(onClick = onDismiss) {
-                Text("Got it", color = Cyan400)
+                Text(stringResource(R.string.btn_got_it), color = Cyan400)
             }
         }
     )
 }
 
-private fun getVendorTips(brand: String): List<String> {
+private fun getVendorTipResIds(brand: String): List<Int> {
     val common = listOf(
-        "Ensure \"Allow background activity\" is enabled in App Settings → Battery.",
-        "If using \"Battery Saver\" mode, add RADE Decode to the exception list."
+        R.string.battery_tip_allow_background,
+        R.string.battery_tip_battery_saver
     )
 
     val vendorSpecific = when {
         brand.contains("samsung") -> listOf(
-            "Samsung: Settings → Battery → Background usage limits → Never sleeping apps → Add RADE Decode.",
-            "Samsung: Disable \"Adaptive battery\" or add app to \"Unmonitored apps\".",
-            "Samsung: Settings → Apps → RADE Decode → Battery → Unrestricted."
+            R.string.battery_tip_samsung_1,
+            R.string.battery_tip_samsung_2,
+            R.string.battery_tip_samsung_3
         )
         brand.contains("xiaomi") || brand.contains("redmi") || brand.contains("poco") -> listOf(
-            "Xiaomi/POCO: Settings → Apps → RADE Decode → Battery saver → No restrictions.",
-            "Xiaomi/POCO: Settings → Battery → App battery saver → RADE Decode → No restrictions.",
-            "Xiaomi/POCO: Security app → Battery → App battery saver → RADE Decode → No restrictions.",
-            "Xiaomi/POCO: Enable \"Autostart\" for RADE Decode in Security settings."
+            R.string.battery_tip_xiaomi_1,
+            R.string.battery_tip_xiaomi_2,
+            R.string.battery_tip_xiaomi_3,
+            R.string.battery_tip_xiaomi_4
         )
         brand.contains("huawei") || brand.contains("honor") -> listOf(
-            "Huawei/Honor: Settings → Battery → App launch → RADE Decode → Set to \"Manage manually\" and enable all toggles.",
-            "Huawei/Honor: Settings → Apps → RADE Decode → Battery → Enable \"Run in background\".",
-            "Huawei/Honor: Disable \"Power-intensive prompt\" for this app."
+            R.string.battery_tip_huawei_1,
+            R.string.battery_tip_huawei_2,
+            R.string.battery_tip_huawei_3
         )
         brand.contains("oppo") || brand.contains("realme") || brand.contains("oneplus") -> listOf(
-            "OPPO/Realme/OnePlus: Settings → Battery → More settings → Optimize battery use → RADE Decode → Don't optimize.",
-            "OnePlus: Settings → Battery → Battery optimization → RADE Decode → Don't optimize.",
-            "OPPO/Realme: Enable \"Allow auto-launch\" and \"Allow background activity\"."
+            R.string.battery_tip_oppo_1,
+            R.string.battery_tip_oppo_2,
+            R.string.battery_tip_oppo_3
         )
         brand.contains("vivo") || brand.contains("iqoo") -> listOf(
-            "vivo/iQOO: Settings → Battery → Background power consumption management → RADE Decode → Allow.",
-            "vivo/iQOO: i Manager → App manager → Autostart manager → Enable RADE Decode."
+            R.string.battery_tip_vivo_1,
+            R.string.battery_tip_vivo_2
         )
         brand.contains("asus") -> listOf(
-            "ASUS: Settings → Battery → PowerMaster → Auto-start manager → Enable RADE Decode."
+            R.string.battery_tip_asus
         )
         brand.contains("sony") -> listOf(
-            "Sony: Settings → Battery → Adaptive battery → Exceptions → Add RADE Decode."
+            R.string.battery_tip_sony
         )
         else -> emptyList()
     }

@@ -77,6 +77,10 @@ class AudioService : LifecycleService() {
         super.onCreate()
         createNotificationChannel()
         db = AppDatabase.getInstance(applicationContext)
+        // Close any sessions left open from a previous crash/kill
+        lifecycleScope.launch(Dispatchers.IO) {
+            db?.closeOrphanedSessions()
+        }
     }
 
     override fun onBind(intent: Intent): IBinder {
@@ -114,7 +118,7 @@ class AudioService : LifecycleService() {
         }
 
         // Start as foreground service
-        val notification = buildNotification("Starting...", 0, "")
+        val notification = buildNotification(getString(R.string.notification_starting), 0, "")
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
             startForeground(
                 NOTIFICATION_ID, notification,
@@ -160,32 +164,40 @@ class AudioService : LifecycleService() {
         audioBridge?.release()
         audioBridge = null
 
+        // Capture end time and frame counts immediately before async DB work
+        val endTime = System.currentTimeMillis()
+        val finalTotalFrames = totalModemFrames
+        val finalSyncedFrames = syncedFrames
+
         // Update session with WAV file info + finalize (synchronous)
         val wavPath = currentWavPath
         val session = currentSession
-        val latch = java.util.concurrent.CountDownLatch(1)
-        lifecycleScope.launch(Dispatchers.IO) {
-            if (session != null) {
-                // Update WAV info
-                if (wavPath != null) {
-                    val wavFile = java.io.File(wavPath)
-                    if (wavFile.exists() && wavFile.length() > 44) {
-                        db?.updateSessionAudio(session.id, wavFile.name, wavFile.length())
-                    } else if (wavFile.exists()) {
-                        wavFile.delete()
+        if (session != null) {
+            val latch = java.util.concurrent.CountDownLatch(1)
+            lifecycleScope.launch(Dispatchers.IO) {
+                try {
+                    // Update WAV info
+                    if (wavPath != null) {
+                        val wavFile = java.io.File(wavPath)
+                        if (wavFile.exists() && wavFile.length() > 44) {
+                            db?.updateSessionAudio(session.id, wavFile.name, wavFile.length())
+                        } else if (wavFile.exists()) {
+                            wavFile.delete()
+                        }
                     }
+                    // Finalize session end time
+                    db?.updateSessionEnd(
+                        sessionId = session.id,
+                        endTime = endTime,
+                        totalFrames = finalTotalFrames,
+                        syncedFrames = finalSyncedFrames
+                    )
+                } finally {
+                    latch.countDown()
                 }
-                // Finalize session end time
-                db?.updateSessionEnd(
-                    sessionId = session.id,
-                    endTime = System.currentTimeMillis(),
-                    totalFrames = totalModemFrames,
-                    syncedFrames = syncedFrames
-                )
             }
-            latch.countDown()
+            latch.await(5, java.util.concurrent.TimeUnit.SECONDS)
         }
-        latch.await(2, java.util.concurrent.TimeUnit.SECONDS)
 
         currentWavPath = null
         currentSession = null
@@ -222,7 +234,7 @@ class AudioService : LifecycleService() {
         audioBridge = bridge
 
         // Start as foreground service
-        val notification = buildNotification("TX", 0, callsign)
+        val notification = buildNotification(getString(R.string.btn_tx), 0, callsign)
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
             startForeground(
                 NOTIFICATION_ID, notification,
@@ -305,10 +317,13 @@ class AudioService : LifecycleService() {
     }
 
     private fun handleSyncChange(newState: Int) {
-        val session = currentSession ?: return
-        val offsetMs = System.currentTimeMillis() - sessionStartTime
+        // Always update UI state regardless of session
+        _state.value = _state.value.copy(syncState = newState)
 
+        // Log to DB only if we have an active session
+        val session = currentSession ?: return
         if (newState != lastSyncState) {
+            val offsetMs = System.currentTimeMillis() - sessionStartTime
             val event = SyncEvent(
                 sessionId = session.id,
                 offsetMs = offsetMs,
@@ -322,8 +337,6 @@ class AudioService : LifecycleService() {
             }
             lastSyncState = newState
         }
-
-        _state.value = _state.value.copy(syncState = newState)
     }
 
     private fun handleCallsignDecoded(callsign: String) {
@@ -354,17 +367,17 @@ class AudioService : LifecycleService() {
                 val bridge = audioBridge ?: break
                 bridge.getSpectrum(spectrumBuffer)
 
-                val syncState = bridge.syncState
                 totalModemFrames++
-                if (syncState == 2) syncedFrames++
+                if (_state.value.syncState == 2) syncedFrames++
 
                 // Log signal snapshot every ~1 second (every 7th poll at 150ms)
                 if (totalModemFrames % 7 == 0) {
                     logSignalSnapshot()
                 }
 
+                // syncState is updated via callback (handleSyncChange) only —
+                // polling must not overwrite it to avoid race conditions
                 _state.value = _state.value.copy(
-                    syncState = syncState,
                     snrDb = bridge.snrEstimate,
                     freqOffsetHz = bridge.freqOffset,
                     inputLevelDb = bridge.inputLevel,
@@ -422,10 +435,10 @@ class AudioService : LifecycleService() {
     private fun createNotificationChannel() {
         val channel = NotificationChannel(
             CHANNEL_ID,
-            "RADE Decode",
+            getString(R.string.notification_channel_name),
             NotificationManager.IMPORTANCE_LOW
         ).apply {
-            description = "Background audio decoding status"
+            description = getString(R.string.notification_channel_description)
             setShowBadge(false)
         }
         val nm = getSystemService(NotificationManager::class.java)
@@ -445,15 +458,16 @@ class AudioService : LifecycleService() {
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
         )
 
-        val title = if (callsign.isNotEmpty()) "RADE: $callsign" else "RADE Decode"
-        val text = "$syncText | SNR: ${snr}dB"
+        val title = if (callsign.isNotEmpty()) getString(R.string.notification_title_with_callsign, callsign)
+                    else getString(R.string.notification_title_default)
+        val text = getString(R.string.notification_text, syncText, snr)
 
         return NotificationCompat.Builder(this, CHANNEL_ID)
             .setContentTitle(title)
             .setContentText(text)
             .setSmallIcon(R.mipmap.ic_launcher)
             .setContentIntent(contentIntent)
-            .addAction(android.R.drawable.ic_media_pause, "Stop", stopIntent)
+            .addAction(android.R.drawable.ic_media_pause, getString(R.string.notification_stop), stopIntent)
             .setOngoing(true)
             .setSilent(true)
             .build()
@@ -462,12 +476,12 @@ class AudioService : LifecycleService() {
     private fun updateNotification() {
         val s = _state.value
         val syncText = if (s.isTx) {
-            "TRANSMITTING"
+            getString(R.string.transmitting)
         } else {
             when (s.syncState) {
-                2 -> "SYNC"
-                1 -> "CANDIDATE"
-                else -> "SEARCH"
+                2 -> getString(R.string.sync_sync)
+                1 -> getString(R.string.sync_candidate)
+                else -> getString(R.string.sync_search)
             }
         }
         val notification = buildNotification(syncText, s.snrDb, s.lastCallsign)
