@@ -140,9 +140,8 @@ class AudioService : LifecycleService() {
             return
         }
 
-        // Start a new reception session (also starts WAV recording)
+        // Session will be created on first sync (in polling loop)
         currentInputDeviceId = inputDeviceId
-        startNewSession(inputDeviceId)
 
         _state.value = _state.value.copy(isRunning = true)
         startPolling()
