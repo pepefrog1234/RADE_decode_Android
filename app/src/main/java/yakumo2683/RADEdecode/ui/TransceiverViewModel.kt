@@ -134,8 +134,12 @@ class TransceiverViewModel(application: Application) : AndroidViewModel(applicat
     /** Switch from RX → TX (stops RX, starts TX, keys PTT) */
     fun switchToTx() {
         if (!_uiState.value.isRunning) return
-        stopReceiving()
-        startTransmitting()
+        // startTransmitting handles stopping RX internally (atomic transition)
+        audioService?.startTransmitting(
+            inputDeviceId = _uiState.value.selectedDeviceId,
+            outputDeviceId = _uiState.value.selectedOutputDeviceId,
+            callsign = _uiState.value.txCallsign
+        )
         // Auto-PTT via rigctld
         if (rigController.isConnected) {
             viewModelScope.launch { rigController.setPtt(true) }

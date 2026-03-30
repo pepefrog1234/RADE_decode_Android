@@ -194,13 +194,27 @@ class AudioService : LifecycleService() {
     ) {
         if (_state.value.isTx) return
 
-        // Stop RX if running
-        if (_state.value.isRunning) stopDecoding()
+        // Stop RX immediately: mute output, stop bridge, finalize session
+        // — but do NOT call stopForeground to keep foreground status during transition
+        if (_state.value.isRunning) {
+            stopPolling()
+            stopNotificationUpdates()
+            sessionSplitJob?.cancel()
+            sessionSplitJob = null
+
+            audioBridge?.setOutputVolume(0f)  // mute immediately to prevent feedback
+            audioBridge?.stopRecording()
+            audioBridge?.stop()
+            audioBridge?.release()
+            audioBridge = null
+
+            finalizeCurrentSession()
+        }
 
         val bridge = AudioBridge(applicationContext)
         audioBridge = bridge
 
-        // Start as foreground service
+        // Start/update foreground service (no gap in foreground status)
         val notification = buildNotification(getString(R.string.btn_tx), 0, callsign)
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
             startForeground(
