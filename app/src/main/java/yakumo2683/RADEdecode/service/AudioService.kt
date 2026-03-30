@@ -52,8 +52,8 @@ class AudioService : LifecycleService() {
     private var currentInputDeviceId: Int = -1
 
     // Session splitting: finalize session when sync lost > 2 seconds
-    private var syncLostTime: Long = 0          // timestamp when sync was lost (0 = not lost)
-    private var sessionSplitJob: Job? = null
+    private var lastSyncedTime: Long = 0   // last time syncState was 2 (0 = never synced this session)
+
     companion object {
         const val CHANNEL_ID = "rade_decode_channel"
         const val NOTIFICATION_ID = 1
@@ -156,8 +156,6 @@ class AudioService : LifecycleService() {
     fun stopDecoding() {
         stopPolling()
         stopNotificationUpdates()
-        sessionSplitJob?.cancel()
-        sessionSplitJob = null
 
         // Stop native WAV recording
         audioBridge?.stopRecording()
@@ -199,8 +197,6 @@ class AudioService : LifecycleService() {
         if (_state.value.isRunning) {
             stopPolling()
             stopNotificationUpdates()
-            sessionSplitJob?.cancel()
-            sessionSplitJob = null
 
             audioBridge?.setOutputVolume(0f)  // mute immediately to prevent feedback
             audioBridge?.stopRecording()
@@ -283,7 +279,7 @@ class AudioService : LifecycleService() {
         totalModemFrames = 0
         syncedFrames = 0
         lastSyncState = 0
-        syncLostTime = 0
+        lastSyncedTime = 0
 
         // Start new WAV recording
         audioBridge?.let { bridge ->
@@ -350,30 +346,6 @@ class AudioService : LifecycleService() {
         // Always update UI state regardless of session (atomic update)
         _state.update { it.copy(syncState = newState) }
 
-        // Session splitting: track sync loss duration
-        if (newState == 2) {
-            // Sync regained — cancel any pending split
-            syncLostTime = 0
-            sessionSplitJob?.cancel()
-            sessionSplitJob = null
-
-            // If no active session, start a new one (sync regained after split)
-            if (currentSession == null && _state.value.isRunning) {
-                startNewSession(currentInputDeviceId)
-            }
-        } else if (newState == 0 && syncLostTime == 0L && currentSession != null) {
-            // Sync just lost — start timeout
-            syncLostTime = System.currentTimeMillis()
-            sessionSplitJob = lifecycleScope.launch {
-                delay(SYNC_LOST_TIMEOUT_MS)
-                // Still no sync after timeout → finalize session
-                if (syncLostTime > 0 && currentSession != null) {
-                    finalizeCurrentSession()
-                    syncLostTime = 0
-                }
-            }
-        }
-
         // Log to DB only if we have an active session
         val session = currentSession ?: return
         if (newState != lastSyncState) {
@@ -422,11 +394,29 @@ class AudioService : LifecycleService() {
                 val bridge = audioBridge ?: break
                 bridge.getSpectrum(spectrumBuffer)
 
+                val now = System.currentTimeMillis()
+                val isSynced = _state.value.syncState == 2
+
                 totalModemFrames++
-                if (_state.value.syncState == 2) syncedFrames++
+                if (isSynced) {
+                    syncedFrames++
+                    lastSyncedTime = now
+                }
+
+                // Session splitting: finalize if sync lost > 2 seconds
+                if (currentSession != null && lastSyncedTime > 0 && !isSynced &&
+                    now - lastSyncedTime > SYNC_LOST_TIMEOUT_MS) {
+                    finalizeCurrentSession()
+                    lastSyncedTime = 0
+                }
+
+                // Start new session when sync regained after a split
+                if (currentSession == null && isSynced) {
+                    startNewSession(currentInputDeviceId)
+                }
 
                 // Log signal snapshot every ~1 second (every 7th poll at 150ms)
-                if (totalModemFrames % 7 == 0) {
+                if (totalModemFrames % 7 == 0 && currentSession != null) {
                     logSignalSnapshot()
                 }
 
