@@ -16,6 +16,7 @@ import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.update
 import yakumo2683.RADEdecode.AudioBridge
 import yakumo2683.RADEdecode.MainActivity
 import yakumo2683.RADEdecode.R
@@ -29,12 +30,6 @@ import yakumo2683.RADEdecode.data.*
  * the app is backgrounded. The notification shows live sync state and SNR.
  */
 class AudioService : LifecycleService() {
-
-    companion object {
-        const val CHANNEL_ID = "rade_decode_channel"
-        const val NOTIFICATION_ID = 1
-        const val ACTION_STOP = "yakumo2683.RADEdecode.STOP"
-    }
 
     inner class LocalBinder : Binder() {
         val service: AudioService get() = this@AudioService
@@ -54,6 +49,17 @@ class AudioService : LifecycleService() {
     private var lastSyncState: Int = 0
     private var totalModemFrames: Int = 0
     private var syncedFrames: Int = 0
+    private var currentInputDeviceId: Int = -1
+
+    // Session splitting: finalize session when sync lost > 2 seconds
+    private var syncLostTime: Long = 0          // timestamp when sync was lost (0 = not lost)
+    private var sessionSplitJob: Job? = null
+    companion object {
+        const val CHANNEL_ID = "rade_decode_channel"
+        const val NOTIFICATION_ID = 1
+        const val ACTION_STOP = "yakumo2683.RADEdecode.STOP"
+        private const val SYNC_LOST_TIMEOUT_MS = 2000L
+    }
 
     data class ServiceState(
         val isRunning: Boolean = false,
@@ -134,15 +140,9 @@ class AudioService : LifecycleService() {
             return
         }
 
-        // Start a new reception session
+        // Start a new reception session (also starts WAV recording)
+        currentInputDeviceId = inputDeviceId
         startNewSession(inputDeviceId)
-
-        // Always record decoded audio to WAV (native C++ recorder)
-        val dir = java.io.File(applicationContext.filesDir, "recordings")
-        if (!dir.exists()) dir.mkdirs()
-        val wavPath = java.io.File(dir, "session_${System.currentTimeMillis()}.wav").absolutePath
-        bridge.startRecording(wavPath)
-        currentWavPath = wavPath
 
         _state.value = _state.value.copy(isRunning = true)
         startPolling()
@@ -156,6 +156,8 @@ class AudioService : LifecycleService() {
     fun stopDecoding() {
         stopPolling()
         stopNotificationUpdates()
+        sessionSplitJob?.cancel()
+        sessionSplitJob = null
 
         // Stop native WAV recording
         audioBridge?.stopRecording()
@@ -164,43 +166,8 @@ class AudioService : LifecycleService() {
         audioBridge?.release()
         audioBridge = null
 
-        // Capture end time and frame counts immediately before async DB work
-        val endTime = System.currentTimeMillis()
-        val finalTotalFrames = totalModemFrames
-        val finalSyncedFrames = syncedFrames
-
-        // Update session with WAV file info + finalize (synchronous)
-        val wavPath = currentWavPath
-        val session = currentSession
-        if (session != null) {
-            val latch = java.util.concurrent.CountDownLatch(1)
-            lifecycleScope.launch(Dispatchers.IO) {
-                try {
-                    // Update WAV info
-                    if (wavPath != null) {
-                        val wavFile = java.io.File(wavPath)
-                        if (wavFile.exists() && wavFile.length() > 44) {
-                            db?.updateSessionAudio(session.id, wavFile.name, wavFile.length())
-                        } else if (wavFile.exists()) {
-                            wavFile.delete()
-                        }
-                    }
-                    // Finalize session end time
-                    db?.updateSessionEnd(
-                        sessionId = session.id,
-                        endTime = endTime,
-                        totalFrames = finalTotalFrames,
-                        syncedFrames = finalSyncedFrames
-                    )
-                } finally {
-                    latch.countDown()
-                }
-            }
-            latch.await(5, java.util.concurrent.TimeUnit.SECONDS)
-        }
-
-        currentWavPath = null
-        currentSession = null
+        // Finalize current session to DB
+        finalizeCurrentSession()
 
         _state.value = ServiceState()
         stopForeground(STOP_FOREGROUND_REMOVE)
@@ -295,10 +262,24 @@ class AudioService : LifecycleService() {
     /* ── Session management ──────────────────────────────────── */
 
     private fun startNewSession(deviceId: Int) {
+        // Finalize previous session if exists
+        finalizeCurrentSession()
+
         sessionStartTime = System.currentTimeMillis()
         totalModemFrames = 0
         syncedFrames = 0
         lastSyncState = 0
+        syncLostTime = 0
+
+        // Start new WAV recording
+        audioBridge?.let { bridge ->
+            bridge.stopRecording()
+            val dir = java.io.File(applicationContext.filesDir, "recordings")
+            if (!dir.exists()) dir.mkdirs()
+            val wavPath = java.io.File(dir, "session_${System.currentTimeMillis()}.wav").absolutePath
+            bridge.startRecording(wavPath)
+            currentWavPath = wavPath
+        }
 
         val session = ReceptionSession(
             startTime = sessionStartTime,
@@ -316,21 +297,81 @@ class AudioService : LifecycleService() {
         latch.await(2, java.util.concurrent.TimeUnit.SECONDS)
     }
 
+    /** Finalize the current session to DB (endTime + frame counts). */
+    private fun finalizeCurrentSession() {
+        val session = currentSession ?: return
+        val endTime = System.currentTimeMillis()
+        val finalTotalFrames = totalModemFrames
+        val finalSyncedFrames = syncedFrames
+        val wavPath = currentWavPath
+
+        val latch = java.util.concurrent.CountDownLatch(1)
+        lifecycleScope.launch(Dispatchers.IO) {
+            try {
+                if (wavPath != null) {
+                    val wavFile = java.io.File(wavPath)
+                    if (wavFile.exists() && wavFile.length() > 44) {
+                        db?.updateSessionAudio(session.id, wavFile.name, wavFile.length())
+                    } else if (wavFile.exists()) {
+                        wavFile.delete()
+                    }
+                }
+                db?.updateSessionEnd(
+                    sessionId = session.id,
+                    endTime = endTime,
+                    totalFrames = finalTotalFrames,
+                    syncedFrames = finalSyncedFrames
+                )
+            } finally {
+                latch.countDown()
+            }
+        }
+        latch.await(5, java.util.concurrent.TimeUnit.SECONDS)
+
+        currentSession = null
+        currentWavPath = null
+    }
+
     private fun handleSyncChange(newState: Int) {
-        // Always update UI state regardless of session
-        _state.value = _state.value.copy(syncState = newState)
+        // Always update UI state regardless of session (atomic update)
+        _state.update { it.copy(syncState = newState) }
+
+        // Session splitting: track sync loss duration
+        if (newState == 2) {
+            // Sync regained — cancel any pending split
+            syncLostTime = 0
+            sessionSplitJob?.cancel()
+            sessionSplitJob = null
+
+            // If no active session, start a new one (sync regained after split)
+            if (currentSession == null && _state.value.isRunning) {
+                startNewSession(currentInputDeviceId)
+            }
+        } else if (newState == 0 && syncLostTime == 0L && currentSession != null) {
+            // Sync just lost — start timeout
+            syncLostTime = System.currentTimeMillis()
+            sessionSplitJob = lifecycleScope.launch {
+                delay(SYNC_LOST_TIMEOUT_MS)
+                // Still no sync after timeout → finalize session
+                if (syncLostTime > 0 && currentSession != null) {
+                    finalizeCurrentSession()
+                    syncLostTime = 0
+                }
+            }
+        }
 
         // Log to DB only if we have an active session
         val session = currentSession ?: return
         if (newState != lastSyncState) {
             val offsetMs = System.currentTimeMillis() - sessionStartTime
+            val currentState = _state.value
             val event = SyncEvent(
                 sessionId = session.id,
                 offsetMs = offsetMs,
                 fromState = lastSyncState,
                 toState = newState,
-                snrAtEvent = _state.value.snrDb,
-                freqOffsetAtEvent = _state.value.freqOffsetHz
+                snrAtEvent = currentState.snrDb,
+                freqOffsetAtEvent = currentState.freqOffsetHz
             )
             lifecycleScope.launch(Dispatchers.IO) {
                 db?.insertSyncEvent(event)
@@ -355,7 +396,7 @@ class AudioService : LifecycleService() {
             db?.insertCallsignEvent(event)
         }
 
-        _state.value = _state.value.copy(lastCallsign = callsign)
+        _state.update { it.copy(lastCallsign = callsign) }
         updateNotification()
     }
 
@@ -375,16 +416,22 @@ class AudioService : LifecycleService() {
                     logSignalSnapshot()
                 }
 
-                // syncState is updated via callback (handleSyncChange) only —
-                // polling must not overwrite it to avoid race conditions
-                _state.value = _state.value.copy(
-                    snrDb = bridge.snrEstimate,
-                    freqOffsetHz = bridge.freqOffset,
-                    inputLevelDb = bridge.inputLevel,
-                    outputLevelDb = bridge.outputLevel,
-                    lastCallsign = bridge.lastCallsign,
-                    spectrum = spectrumBuffer.copyOf()
-                )
+                // Atomic update — syncState is set by callback only;
+                // polling updates other fields without clobbering it
+                val snr = bridge.snrEstimate
+                val freq = bridge.freqOffset
+                val inLvl = bridge.inputLevel
+                val outLvl = bridge.outputLevel
+                val cs = bridge.lastCallsign
+                val spec = spectrumBuffer.copyOf()
+                _state.update { it.copy(
+                    snrDb = snr,
+                    freqOffsetHz = freq,
+                    inputLevelDb = inLvl,
+                    outputLevelDb = outLvl,
+                    lastCallsign = cs,
+                    spectrum = spec
+                ) }
 
                 // Periodically update DB with current WAV size (~every 3 seconds)
                 if (totalModemFrames % 20 == 0) {
