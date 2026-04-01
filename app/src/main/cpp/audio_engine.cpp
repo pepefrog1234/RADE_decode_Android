@@ -677,11 +677,22 @@ bool AudioEngine::startTx(int inputDeviceId, int outputDeviceId) {
 void AudioEngine::stopTx() {
     if (!txRunning_.load()) return;
 
-    // Send EOO frame before stopping
+    // Stop accepting new mic input
+    if (txInputStream_) { txInputStream_->stop(); txInputStream_->close(); txInputStream_.reset(); }
+
+    // Send EOO frame — writes encoded callsign into txPlaybackRing_
     sendTxEoo();
 
+    // Wait for the output stream to drain the EOO data from the ring buffer
+    // (8kHz output ≈ 125ms per 1000 samples; EOO frame is typically ~2000-4000 samples)
+    int waitMs = 0;
+    while (txPlaybackRing_.availableToRead() > 0 && waitMs < 2000) {
+        usleep(10000);  // 10ms
+        waitMs += 10;
+    }
+    LOGI("TX: EOO drain waited %dms, remaining=%d", waitMs, txPlaybackRing_.availableToRead());
+
     txRunning_.store(false);
-    if (txInputStream_)  { txInputStream_->stop();  txInputStream_->close();  txInputStream_.reset(); }
     if (txOutputStream_) { txOutputStream_->stop(); txOutputStream_->close(); txOutputStream_.reset(); }
     releaseTxModem();
     LOGI("TX: stopped");
