@@ -73,7 +73,14 @@ class TransceiverViewModel(application: Application) : AndroidViewModel(applicat
         }
     }
 
+    private val prefs = application.getSharedPreferences("rade_prefs", Context.MODE_PRIVATE)
+
     init {
+        // Restore persisted callsign
+        val savedCallsign = prefs.getString("tx_callsign", "") ?: ""
+        if (savedCallsign.isNotEmpty()) {
+            _uiState.value = _uiState.value.copy(txCallsign = savedCallsign)
+        }
         bindToService()
         refreshDevices()
     }
@@ -108,6 +115,7 @@ class TransceiverViewModel(application: Application) : AndroidViewModel(applicat
 
     fun setTxCallsign(callsign: String) {
         _uiState.value = _uiState.value.copy(txCallsign = callsign)
+        prefs.edit().putString("tx_callsign", callsign).apply()
     }
 
     private fun startTransmitting() {
