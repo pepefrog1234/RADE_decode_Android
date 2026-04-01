@@ -874,13 +874,23 @@ void AudioEngine::sendTxEoo() {
     std::vector<RADE_COMP> eooOut(nEooOut);
     int produced = rade_tx_eoo(rade_, eooOut.data());
 
+    // Measure EOO RMS and scale to match normal TX level (~0.2 real-part RMS)
+    float eooRms = 0.0f;
+    for (int i = 0; i < produced; i++) eooRms += eooOut[i].real * eooOut[i].real;
+    eooRms = sqrtf(eooRms / (float)produced);
+
+    // Target RMS matches typical RADE TX voice frames (~0.2)
+    constexpr float targetRms = 0.20f;
+    float gain = (eooRms > 1e-6f) ? (targetRms / eooRms) : 1.0f;
+    LOGI("TX: EOO rms=%.4f gain=%.2f", eooRms, gain);
+
     for (int i = 0; i < produced; i++) {
-        float sample = std::clamp(eooOut[i].real, -0.999f, 0.999f);
+        float sample = std::clamp(eooOut[i].real * gain, -0.999f, 0.999f);
         int16_t s16 = (int16_t)(sample * 32767.0f);
         txPlaybackRing_.write(&s16, 1);
     }
 
-    LOGI("TX: EOO sent, %d samples", produced);
+    LOGI("TX: EOO sent, %d samples (gain=%.2f)", produced, gain);
 }
 
 void AudioEngine::renderTxOutput(float *output, int32_t numFrames) {
