@@ -26,6 +26,7 @@ import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.navigation.compose.currentBackStackEntryAsState
 import androidx.navigation.compose.rememberNavController
+import androidx.lifecycle.viewmodel.compose.viewModel
 import yakumo2683.RADEdecode.ui.*
 import yakumo2683.RADEdecode.ui.theme.RADEDecodeTheme
 
@@ -53,7 +54,7 @@ private val navItems = listOf(
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun RADEDecodeApp() {
+fun RADEDecodeApp(viewModel: TransceiverViewModel = viewModel()) {
     val navController = rememberNavController()
     val navBackStackEntry by navController.currentBackStackEntryAsState()
     val currentRoute = navBackStackEntry?.destination?.route
@@ -132,7 +133,7 @@ fun RADEDecodeApp() {
             startDestination = "receiver",
             modifier = Modifier.padding(innerPadding)
         ) {
-            composable("receiver") { TransceiverScreen() }
+            composable("receiver") { TransceiverScreen(viewModel) }
             composable("rig") { RigScreen() }
             composable("stations") { StationsScreen() }
             composable("log") {
@@ -147,7 +148,7 @@ fun RADEDecodeApp() {
                     onBack = { navController.popBackStack() }
                 )
             }
-            composable("settings") { SettingsScreen() }
+            composable("settings") { SettingsScreen(viewModel) }
         }
     }
 }
