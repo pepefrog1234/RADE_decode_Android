@@ -353,6 +353,13 @@ class FreeDVReporter(private val scope: CoroutineScope) {
         }
     }
 
+    /** Force publish current station data to StateFlow. Call on app resume. */
+    fun forceFlush() {
+        synchronized(stationLock) {
+            _stations.value = stationMap.toMap()
+        }
+    }
+
     private fun flushStations() {
         val now = System.currentTimeMillis()
         synchronized(stationLock) {
