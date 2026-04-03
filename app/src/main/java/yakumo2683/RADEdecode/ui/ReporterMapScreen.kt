@@ -198,10 +198,37 @@ private class StationOverlay : Overlay() {
         val proj = mapView.projection
         val byCallsign = stations.associateBy { it.callsign.uppercase() }
 
-        // ── Signal paths ──
+        // ── Build all signal paths (confirmed + inferred) ──
+        data class SignalPath(
+            val tx: MapStation, val rx: MapStation,
+            val snr: Int, val inferred: Boolean
+        )
+
+        val paths = mutableListOf<SignalPath>()
+
+        // 1) Confirmed: RX decoded the TX callsign
         for (rx in stations) {
             if (rx.receivedCallsign.isEmpty()) continue
             val tx = byCallsign[rx.receivedCallsign.uppercase()] ?: continue
+            paths.add(SignalPath(tx, rx, rx.snr, inferred = false))
+        }
+
+        // 2) Inferred: RX is receiving (no callsign) on same freq as a TX station
+        val txStations = stations.filter { it.transmitting && it.frequency > 0 }
+        for (rx in stations) {
+            if (rx.transmitting || !rx.receiving) continue
+            if (rx.receivedCallsign.isNotEmpty()) continue // already confirmed
+            if (rx.frequency <= 0) continue
+            // Find TX on same frequency (±5 kHz tolerance)
+            val tx = txStations.firstOrNull { kotlin.math.abs(it.frequency - rx.frequency) < 5000 }
+            if (tx != null && tx.callsign.uppercase() != rx.callsign.uppercase()) {
+                paths.add(SignalPath(tx, rx, rx.snr, inferred = true))
+            }
+        }
+
+        // ── Draw signal paths ──
+        for (path in paths) {
+            val tx = path.tx; val rx = path.rx
             val txPt = proj.toPixels(GeoPoint(tx.lat, tx.lon), null)
             val rxPt = proj.toPixels(GeoPoint(rx.lat, rx.lon), null)
 
@@ -211,22 +238,30 @@ private class StationOverlay : Overlay() {
             val dist = sqrt(dx * dx + dy * dy)
             if (dist < 20f) continue
 
-            // Gradient line: red(TX) → green(RX)
-            linePaint.shader = LinearGradient(
-                x1, y1, x2, y2,
-                0xCCFF5555.toInt(), 0xCC44EE44.toInt(),
-                Shader.TileMode.CLAMP
-            )
+            // Line style: confirmed = solid gradient, inferred = lighter/thinner
+            if (path.inferred) {
+                linePaint.shader = null
+                linePaint.color = 0x66AAAAFF.toInt()
+                linePaint.strokeWidth = 1.5f
+            } else {
+                linePaint.shader = LinearGradient(
+                    x1, y1, x2, y2,
+                    0xCCFF5555.toInt(), 0xCC44EE44.toInt(),
+                    Shader.TileMode.CLAMP
+                )
+                linePaint.strokeWidth = 2.5f
+            }
             canvas.drawLine(x1, y1, x2, y2, linePaint)
             linePaint.shader = null
+            linePaint.strokeWidth = 2.5f
 
-            // Arrow at TX end pointing AWAY from TX (signal direction: TX → RX)
+            // Arrow
             val angle = atan2(dy, dx)
             if (dist > 60f) {
                 val arrowSize = 12f
                 val ax = x1 + cos(angle) * 22f
                 val ay = y1 + sin(angle) * 22f
-                val path = Path().apply {
+                val arrowPath = Path().apply {
                     moveTo(ax, ay)
                     lineTo(
                         ax - cos(angle - 0.5f) * arrowSize,
@@ -238,28 +273,29 @@ private class StationOverlay : Overlay() {
                     )
                     close()
                 }
-                arrowPaint.color = 0xDDFF6666.toInt()
-                canvas.drawPath(path, arrowPaint)
+                arrowPaint.color = if (path.inferred) 0x88AAAAFF.toInt() else 0xDDFF6666.toInt()
+                canvas.drawPath(arrowPath, arrowPaint)
             }
 
             // SNR badge at midpoint
             val mx = (x1 + x2) / 2f; val my = (y1 + y2) / 2f
-            val snrText = "${rx.snr} dB"
-            val tw = snrPaint.measureText(snrText)
-            val bw = tw / 2 + 10; val bh = 16f
-
-            // Badge color based on SNR
-            val badgeColor = when {
-                rx.snr >= 10 -> 0xDD22AA22.toInt()  // green
-                rx.snr >= 3 -> 0xDDCC8800.toInt()    // yellow
-                else -> 0xDDCC3333.toInt()             // red
+            if (path.snr != 0) {
+                val snrText = "${path.snr} dB"
+                val tw = snrPaint.measureText(snrText)
+                val bw = tw / 2 + 10; val bh = 16f
+                val badgeColor = when {
+                    path.inferred -> 0xAA555588.toInt()
+                    path.snr >= 10 -> 0xDD22AA22.toInt()
+                    path.snr >= 3 -> 0xDDCC8800.toInt()
+                    else -> 0xDDCC3333.toInt()
+                }
+                badgePaint.color = badgeColor
+                canvas.drawRoundRect(mx - bw, my - bh, mx + bw, my + bh, 8f, 8f, badgePaint)
+                badgeStrokePaint.color = if (path.inferred) 0x33FFFFFF else 0x44FFFFFF
+                canvas.drawRoundRect(mx - bw, my - bh, mx + bw, my + bh, 8f, 8f, badgeStrokePaint)
+                snrPaint.color = 0xFFFFFFFF.toInt()
+                canvas.drawText(snrText, mx, my + 7f, snrPaint)
             }
-            badgePaint.color = badgeColor
-            canvas.drawRoundRect(mx - bw, my - bh, mx + bw, my + bh, 8f, 8f, badgePaint)
-            badgeStrokePaint.color = 0x44FFFFFF
-            canvas.drawRoundRect(mx - bw, my - bh, mx + bw, my + bh, 8f, 8f, badgeStrokePaint)
-            snrPaint.color = 0xFFFFFFFF.toInt()
-            canvas.drawText(snrText, mx, my + 7f, snrPaint)
         }
 
         // ── Station markers ──
