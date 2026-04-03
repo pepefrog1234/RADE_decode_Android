@@ -430,7 +430,7 @@ class FreeDVReporter(private val scope: CoroutineScope) {
                           else existing.receivedCallsign
         val newReceivedAt = if (update.receivedCallsign.isNotEmpty()) now
                             else existing.receivedAt
-        val newSnr = if (update.receivedCallsign.isNotEmpty()) update.snr else existing.snr
+        val newSnr = if (update.snr != 0) update.snr else existing.snr
 
         // receiving: true from rx_report (has receivingAt), preserved otherwise
         val newReceiving = if (update.receivingAt > 0) update.receiving else existing.receiving

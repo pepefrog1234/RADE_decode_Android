@@ -45,7 +45,8 @@ private data class MapStation(
     val transmitting: Boolean,
     val receiving: Boolean,
     val receivedCallsign: String,
-    val snr: Int
+    val snr: Int,
+    val frequency: Long
 )
 
 @Composable
@@ -58,7 +59,7 @@ fun ReporterMapScreen(reporter: FreeDVReporter?) {
             .filter { it.callsign.isNotEmpty() && it.gridSquare.length >= 2 }
             .mapNotNull { st ->
                 LocationTracker.fromMaidenhead(st.gridSquare)?.let { (lat, lon) ->
-                    MapStation(st.callsign, lat, lon, st.transmitting, st.receiving, st.receivedCallsign, st.snr)
+                    MapStation(st.callsign, lat, lon, st.transmitting, st.receiving, st.receivedCallsign, st.snr, st.frequency)
                 }
             }
         // Infer TX status: if anyone is receiving callsign X, X is transmitting
@@ -297,10 +298,20 @@ private class StationOverlay : Overlay() {
             dotPaint.color = (color and 0x00FFFFFF) or 0xBB000000.toInt()
             canvas.drawCircle(x, y, r - 1.5f, dotPaint)
 
-            // Label
+            // Label (callsign always uppercase + info line)
             labelPaint.color = color
             labelPaint.textSize = if (isTx) 28f else 24f
-            canvas.drawText(st.callsign, x + r + 6f, y - 6f, labelPaint)
+            canvas.drawText(st.callsign.uppercase(), x + r + 6f, y - 8f, labelPaint)
+
+            // Info line: frequency + SNR
+            val infoParts = mutableListOf<String>()
+            if (st.frequency > 0) infoParts.add("%.3f".format(st.frequency / 1_000_000.0))
+            if (isRx && st.snr != 0) infoParts.add("${st.snr}dB")
+            if (infoParts.isNotEmpty()) {
+                labelPaint.textSize = 18f
+                labelPaint.color = (color and 0x00FFFFFF) or 0x99000000.toInt()
+                canvas.drawText(infoParts.joinToString(" "), x + r + 6f, y + 12f, labelPaint)
+            }
         }
     }
 }
