@@ -628,12 +628,39 @@ bool AudioEngine::startTx(int inputDeviceId, int outputDeviceId) {
     txPlaybackRing_.reset();
     txRunning_.store(true);
 
-    if (!openTxOutputStream()) {
+    // Start input stream FIRST so it begins capturing and processing audio
+    // before the output stream starts consuming from the ring buffer.
+    if (!openTxInputStream()) {
         txRunning_.store(false); releaseTxModem(); return false;
     }
-    if (!openTxInputStream()) {
+
+    // Pre-fill ring buffer with silence-encoded modem frames to prevent
+    // underruns at startup and absorb input jitter during TX.
+    // Generate 3 frames (~360ms buffer) of silence through the encoder.
+    {
+        std::vector<int16_t> silence(TX_SPEECH_FRAME, 0);
+        float features[NB_TOTAL_FEATURES];
+        for (int prefill = 0; prefill < 3; prefill++) {
+            for (int f = 0; f < txFeaturesPerTx_; f++) {
+                lpcnet_compute_single_frame_features(lpcnetEnc_, silence.data(), features, 0);
+                int offset = f * NB_TOTAL_FEATURES;
+                memcpy(txFeatureAccum_.data() + offset, features, NB_TOTAL_FEATURES * sizeof(float));
+            }
+            int nTxOut = rade_n_tx_out(rade_);
+            std::vector<RADE_COMP> txOut(nTxOut);
+            int produced = rade_tx(rade_, txOut.data(), txFeatureAccum_.data());
+            for (int i = 0; i < produced; i++) {
+                float sample = std::clamp(txOut[i].real, -0.999f, 0.999f);
+                int16_t s16 = (int16_t)(sample * 32767.0f);
+                txPlaybackRing_.write(&s16, 1);
+            }
+        }
+        LOGI("TX: pre-filled ring buffer with %d samples", txPlaybackRing_.availableToRead());
+    }
+
+    if (!openTxOutputStream()) {
         txRunning_.store(false);
-        txOutputStream_->stop(); txOutputStream_->close(); txOutputStream_.reset();
+        txInputStream_->stop(); txInputStream_->close(); txInputStream_.reset();
         releaseTxModem(); return false;
     }
 

@@ -225,6 +225,78 @@ fun SettingsScreen(viewModel: TransceiverViewModel = viewModel()) {
             }
         }
 
+        // ── FreeDV Reporter ──
+        SectionHeader("FREEDV REPORTER")
+
+        Surface(
+            shape = RoundedCornerShape(12.dp),
+            color = SurfaceCard,
+            modifier = Modifier
+                .fillMaxWidth()
+                .border(1.dp, MaterialTheme.colorScheme.outline, RoundedCornerShape(12.dp))
+        ) {
+            Column(modifier = Modifier.padding(16.dp)) {
+                val reporterConfig = viewModel.reporter.config
+                var reporterEnabled by remember { mutableStateOf(reporterConfig.enabled) }
+                var gridInput by remember { mutableStateOf(reporterConfig.gridSquare) }
+                val locationGrid by viewModel.locationTracker.state.collectAsState()
+
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text("Enable Reporter", fontWeight = FontWeight.Bold)
+                    Switch(
+                        checked = reporterEnabled,
+                        onCheckedChange = {
+                            reporterEnabled = it
+                            viewModel.setReporterEnabled(it)
+                        },
+                        colors = SwitchDefaults.colors(checkedTrackColor = Cyan400)
+                    )
+                }
+
+                Spacer(Modifier.height(8.dp))
+
+                OutlinedTextField(
+                    value = gridInput,
+                    onValueChange = {
+                        val upper = it.uppercase().take(6)
+                        gridInput = upper
+                        viewModel.setReporterGrid(upper)
+                    },
+                    label = { Text("Grid Square") },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth(),
+                    textStyle = androidx.compose.ui.text.TextStyle(
+                        fontFamily = FontFamily.Monospace,
+                        fontSize = 16.sp,
+                        fontWeight = FontWeight.Bold
+                    ),
+                    colors = OutlinedTextFieldDefaults.colors(
+                        focusedBorderColor = Cyan400,
+                        focusedLabelColor = Cyan400,
+                        cursorColor = Cyan400
+                    )
+                )
+
+                if (locationGrid.gridSquare.isNotEmpty()) {
+                    Spacer(Modifier.height(4.dp))
+                    Text(
+                        "GPS: ${locationGrid.gridSquare}",
+                        fontSize = 11.sp, color = Cyan400
+                    )
+                }
+
+                Spacer(Modifier.height(8.dp))
+                Text(
+                    "Report decoded callsigns to qso.freedv.org",
+                    fontSize = 11.sp, color = OnSurfaceDim
+                )
+            }
+        }
+
         SectionHeader(stringResource(R.string.header_tx_output_device))
 
         Surface(

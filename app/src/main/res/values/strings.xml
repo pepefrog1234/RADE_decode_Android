@@ -5,6 +5,7 @@
     <string name="nav_receiver">Receiver</string>
     <string name="nav_rig">Rig</string>
     <string name="nav_stations">Stations</string>
+    <string name="nav_map">Map</string>
     <string name="nav_log">Log</string>
     <string name="nav_settings">Settings</string>
     <string name="top_bar_title">RADE DECODE</string>

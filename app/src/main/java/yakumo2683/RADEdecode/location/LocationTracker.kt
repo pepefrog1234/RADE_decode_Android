@@ -100,6 +100,37 @@ class LocationTracker(private val context: Context) {
          * Convert latitude/longitude to 6-character Maidenhead grid square.
          * e.g. (35.6762, 139.6503) → "PM95ur"
          */
+        /**
+         * Convert Maidenhead grid square to approximate center lat/lon.
+         * Supports 2, 4, or 6 character grids.
+         */
+        fun fromMaidenhead(grid: String): Pair<Double, Double>? {
+            val g = grid.uppercase()
+            if (g.length < 2) return null
+
+            var lon = (g[0] - 'A') * 20.0 - 180.0
+            var lat = (g[1] - 'A') * 10.0 - 90.0
+
+            if (g.length >= 4) {
+                lon += (g[2] - '0') * 2.0
+                lat += (g[3] - '0') * 1.0
+            }
+            if (g.length >= 6) {
+                val c4 = g[4].lowercaseChar()
+                val c5 = g[5].lowercaseChar()
+                lon += (c4 - 'a') / 12.0
+                lat += (c5 - 'a') / 24.0
+                // Center of subsquare
+                lon += 1.0 / 24.0
+                lat += 1.0 / 48.0
+            } else if (g.length >= 4) {
+                lon += 1.0; lat += 0.5   // Center of square
+            } else {
+                lon += 10.0; lat += 5.0  // Center of field
+            }
+            return Pair(lat, lon)
+        }
+
         fun toMaidenhead(lat: Double, lon: Double): String {
             val adjLon = lon + 180.0
             val adjLat = lat + 90.0

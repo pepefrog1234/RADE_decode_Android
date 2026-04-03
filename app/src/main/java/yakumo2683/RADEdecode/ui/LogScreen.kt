@@ -38,11 +38,16 @@ class LogViewModel(application: Application) : AndroidViewModel(application) {
     private val db = AppDatabase.getInstance(application)
     private val _sessions = MutableStateFlow<List<ReceptionSession>>(emptyList())
     val sessions: StateFlow<List<ReceptionSession>> = _sessions
+    private val _callsigns = MutableStateFlow<Map<Long, List<String>>>(emptyMap())
+    val callsigns: StateFlow<Map<Long, List<String>>> = _callsigns
 
     init { refresh() }
 
     fun refresh() {
-        viewModelScope.launch { _sessions.value = db.getAllSessions() }
+        viewModelScope.launch {
+            _sessions.value = db.getAllSessions()
+            _callsigns.value = db.getCallsignsBySession()
+        }
     }
 
     fun deleteSession(sessionId: Long) {
@@ -67,6 +72,7 @@ fun LogScreen(
     onSessionClick: (Long) -> Unit = {}
 ) {
     val sessions by viewModel.sessions.collectAsState()
+    val callsigns by viewModel.callsigns.collectAsState()
     val dateFormat = remember { SimpleDateFormat("yyyy-MM-dd HH:mm", Locale.getDefault()) }
     var showDeleteAllDialog by remember { mutableStateOf(false) }
 
@@ -175,7 +181,7 @@ fun LogScreen(
                         enableDismissFromStartToEnd = false,
                         enableDismissFromEndToStart = true
                     ) {
-                        SessionCard(session, dateFormat) { onSessionClick(session.id) }
+                        SessionCard(session, dateFormat, callsigns[session.id]) { onSessionClick(session.id) }
                     }
                 }
             }
@@ -187,6 +193,7 @@ fun LogScreen(
 private fun SessionCard(
     session: ReceptionSession,
     dateFormat: SimpleDateFormat,
+    decodedCallsigns: List<String>?,
     onClick: () -> Unit
 ) {
     val duration = session.endTime?.let { (it - session.startTime) / 1000 } ?: 0
@@ -217,6 +224,16 @@ private fun SessionCard(
                     text = if (session.endTime != null) formatDuration(duration) else stringResource(R.string.log_incomplete),
                     fontFamily = FontFamily.Monospace, fontSize = 13.sp,
                     color = if (session.endTime != null) Cyan400 else OnSurfaceDim
+                )
+            }
+            if (!decodedCallsigns.isNullOrEmpty()) {
+                Spacer(Modifier.height(6.dp))
+                Text(
+                    text = decodedCallsigns.joinToString(", "),
+                    fontFamily = FontFamily.Monospace,
+                    fontWeight = FontWeight.Bold,
+                    fontSize = 18.sp,
+                    color = GreenBright
                 )
             }
             Spacer(Modifier.height(8.dp))

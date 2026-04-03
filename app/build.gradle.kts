@@ -85,8 +85,9 @@ dependencies {
     // Network
     implementation(libs.okhttp)
 
-    // Location
+    // Location & Map
     implementation(libs.play.services.location)
+    implementation(libs.osmdroid)
 
     testImplementation(libs.junit)
     androidTestImplementation(libs.androidx.junit)

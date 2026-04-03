@@ -1,15 +1,18 @@
 package yakumo2683.RADEdecode.ui
 
 import androidx.compose.foundation.border
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.CellTower
 import androidx.compose.material.icons.filled.Headset
 import androidx.compose.material.icons.filled.WifiOff
 import androidx.compose.material3.*
+import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -22,12 +25,33 @@ import yakumo2683.RADEdecode.R
 import yakumo2683.RADEdecode.network.FreeDVReporter
 import yakumo2683.RADEdecode.ui.theme.*
 
+private data class BandFilter(val label: String, val minHz: Long, val maxHz: Long)
+
+private val bandFilters = listOf(
+    BandFilter("All", 0, 0),
+    BandFilter("160m", 1_800_000, 2_000_000),
+    BandFilter("80m", 3_500_000, 4_000_000),
+    BandFilter("40m", 7_000_000, 7_300_000),
+    BandFilter("20m", 14_000_000, 14_350_000),
+    BandFilter("15m", 21_000_000, 21_450_000),
+    BandFilter("10m", 28_000_000, 29_700_000),
+    BandFilter("VHF+", 50_000_000, Long.MAX_VALUE)
+)
+
 @Composable
 fun StationsScreen(reporter: FreeDVReporter? = null) {
     val stations by reporter?.stations?.collectAsState()
         ?: remember { mutableStateOf(emptyMap<String, FreeDVReporter.ReporterStation>()) }
     val isConnected by reporter?.connected?.collectAsState()
         ?: remember { mutableStateOf(false) }
+    var selectedBand by remember { mutableStateOf(0) }
+
+    val namedStations = stations.values.filter { it.callsign.isNotEmpty() }
+    val filteredStations = run {
+        val band = bandFilters[selectedBand]
+        if (band.minHz == 0L) namedStations
+        else namedStations.filter { it.frequency in band.minHz..band.maxHz }
+    }
 
     Column(
         modifier = Modifier
@@ -67,7 +91,7 @@ fun StationsScreen(reporter: FreeDVReporter? = null) {
                     modifier = Modifier.size(18.dp)
                 )
                 Text(
-                    text = if (isConnected) stringResource(R.string.stations_connected, stations.size)
+                    text = if (isConnected) stringResource(R.string.stations_connected, namedStations.size)
                            else stringResource(R.string.stations_not_connected),
                     fontSize = 13.sp,
                     color = if (isConnected) GreenBright else OnSurfaceDim
@@ -75,9 +99,32 @@ fun StationsScreen(reporter: FreeDVReporter? = null) {
             }
         }
 
-        Spacer(Modifier.height(12.dp))
+        Spacer(Modifier.height(8.dp))
 
-        if (stations.isEmpty()) {
+        // Band filter chips
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .horizontalScroll(rememberScrollState()),
+            horizontalArrangement = Arrangement.spacedBy(6.dp)
+        ) {
+            bandFilters.forEachIndexed { index, band ->
+                val selected = selectedBand == index
+                FilterChip(
+                    selected = selected,
+                    onClick = { selectedBand = index },
+                    label = { Text(band.label, fontSize = 12.sp, fontWeight = FontWeight.Bold) },
+                    colors = FilterChipDefaults.filterChipColors(
+                        selectedContainerColor = Cyan400.copy(alpha = 0.2f),
+                        selectedLabelColor = Cyan400
+                    )
+                )
+            }
+        }
+
+        Spacer(Modifier.height(8.dp))
+
+        if (filteredStations.isEmpty()) {
             Box(
                 modifier = Modifier.fillMaxSize(),
                 contentAlignment = Alignment.Center
@@ -105,7 +152,7 @@ fun StationsScreen(reporter: FreeDVReporter? = null) {
             }
         } else {
             LazyColumn(verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                val sorted = stations.values.sortedByDescending { it.lastUpdate }
+                val sorted = filteredStations.sortedByDescending { it.lastUpdate }
                 items(sorted, key = { it.connectionId }) { station ->
                     StationCard(station)
                 }
@@ -116,12 +163,17 @@ fun StationsScreen(reporter: FreeDVReporter? = null) {
 
 @Composable
 private fun StationCard(station: FreeDVReporter.ReporterStation) {
+    val isTx = station.transmitting
     Surface(
         modifier = Modifier
             .fillMaxWidth()
-            .border(1.dp, MaterialTheme.colorScheme.outline, RoundedCornerShape(10.dp)),
+            .border(
+                1.dp,
+                if (isTx) Red400.copy(alpha = 0.5f) else MaterialTheme.colorScheme.outline,
+                RoundedCornerShape(10.dp)
+            ),
         shape = RoundedCornerShape(10.dp),
-        color = SurfaceCard
+        color = if (isTx) Red400.copy(alpha = 0.15f) else SurfaceCard
     ) {
         Row(
             modifier = Modifier

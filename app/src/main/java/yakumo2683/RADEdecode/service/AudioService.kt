@@ -36,6 +36,7 @@ class AudioService : LifecycleService() {
     }
 
     private val binder = LocalBinder()
+    var reporter: yakumo2683.RADEdecode.network.FreeDVReporter? = null
     private var audioBridge: AudioBridge? = null
     private var pollingJob: Job? = null
     private var notificationUpdateJob: Job? = null
@@ -383,6 +384,9 @@ class AudioService : LifecycleService() {
 
         _state.update { it.copy(lastCallsign = callsign) }
         updateNotification()
+
+        // Report to FreeDV Reporter network
+        reporter?.reportRx(callsign, _state.value.snrDb)
     }
 
     /* ── Polling ─────────────────────────────────────────────── */

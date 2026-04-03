@@ -289,6 +289,23 @@ class AppDatabase private constructor(context: Context) :
         writableDatabase.insert("callsign_events", null, cv)
     }
 
+    /** Returns a map of sessionId → list of distinct callsigns decoded in that session. */
+    suspend fun getCallsignsBySession(): Map<Long, List<String>> = withContext(Dispatchers.IO) {
+        val map = mutableMapOf<Long, MutableList<String>>()
+        val cursor = readableDatabase.rawQuery(
+            "SELECT sessionId, callsign FROM callsign_events GROUP BY sessionId, callsign ORDER BY sessionId, MIN(offsetMs)",
+            null
+        )
+        cursor.use {
+            while (it.moveToNext()) {
+                val sid = it.getLong(0)
+                val cs = it.getString(1) ?: continue
+                map.getOrPut(sid) { mutableListOf() }.add(cs)
+            }
+        }
+        map
+    }
+
     /* ── Helpers ──────────────────────────────────────────────── */
 
     private fun android.database.Cursor.getLongOrNull(column: String): Long? {

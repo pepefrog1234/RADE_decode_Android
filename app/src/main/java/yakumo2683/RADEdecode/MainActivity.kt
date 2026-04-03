@@ -9,6 +9,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.CellTower
 import androidx.compose.material.icons.filled.History
+import androidx.compose.material.icons.filled.Map
 import androidx.compose.material.icons.filled.Radio
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.SettingsRemote
@@ -48,6 +49,7 @@ private val navItems = listOf(
     NavItem("receiver", R.string.nav_receiver, Icons.Default.Radio),
     NavItem("rig", R.string.nav_rig, Icons.Default.SettingsRemote),
     NavItem("stations", R.string.nav_stations, Icons.Default.CellTower),
+    NavItem("map", R.string.nav_map, Icons.Default.Map),
     NavItem("log", R.string.nav_log, Icons.Default.History),
     NavItem("settings", R.string.nav_settings, Icons.Default.Settings),
 )
@@ -135,7 +137,8 @@ fun RADEDecodeApp(viewModel: TransceiverViewModel = viewModel()) {
         ) {
             composable("receiver") { TransceiverScreen(viewModel) }
             composable("rig") { RigScreen() }
-            composable("stations") { StationsScreen() }
+            composable("stations") { StationsScreen(viewModel.reporter) }
+            composable("map") { ReporterMapScreen(viewModel.reporter) }
             composable("log") {
                 LogScreen(onSessionClick = { sessionId ->
                     navController.navigate("session/$sessionId")

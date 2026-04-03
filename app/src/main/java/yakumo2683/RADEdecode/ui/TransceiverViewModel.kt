@@ -13,11 +13,17 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import yakumo2683.RADEdecode.AudioBridge
+import yakumo2683.RADEdecode.location.LocationTracker
+import yakumo2683.RADEdecode.network.FreeDVReporter
 import yakumo2683.RADEdecode.network.RigController
 import yakumo2683.RADEdecode.network.RigctldProcess
 import yakumo2683.RADEdecode.service.AudioService
 
 class TransceiverViewModel(application: Application) : AndroidViewModel(application) {
+
+    /* ── FreeDV Reporter ────────────────────────────────────── */
+    val reporter = FreeDVReporter(viewModelScope)
+    val locationTracker = LocationTracker(application)
 
     /* ── Rig controller (rigctld TCP) ──────────────────────── */
     private val rigController = RigController()
@@ -62,6 +68,7 @@ class TransceiverViewModel(application: Application) : AndroidViewModel(applicat
         override fun onServiceConnected(name: ComponentName?, binder: IBinder?) {
             val service = (binder as AudioService.LocalBinder).service
             audioService = service
+            service.reporter = reporter
             _uiState.value = _uiState.value.copy(serviceBound = true)
             startCollectingServiceState()
         }
@@ -81,6 +88,27 @@ class TransceiverViewModel(application: Application) : AndroidViewModel(applicat
         if (savedCallsign.isNotEmpty()) {
             _uiState.value = _uiState.value.copy(txCallsign = savedCallsign)
         }
+
+        // Restore reporter config
+        val reporterEnabled = prefs.getBoolean("reporter_enabled", false)
+        val reporterGrid = prefs.getString("reporter_grid", "") ?: ""
+        if (reporterEnabled && savedCallsign.isNotEmpty()) {
+            reporter.configure(savedCallsign, reporterGrid, true)
+        }
+
+        // Update reporter grid square when location changes
+        viewModelScope.launch {
+            locationTracker.state.collect { loc ->
+                if (loc.gridSquare.isNotEmpty() && reporter.config.enabled) {
+                    reporter.configure(
+                        reporter.config.callsign,
+                        loc.gridSquare,
+                        true
+                    )
+                }
+            }
+        }
+
         bindToService()
         refreshDevices()
     }
@@ -116,6 +144,26 @@ class TransceiverViewModel(application: Application) : AndroidViewModel(applicat
     fun setTxCallsign(callsign: String) {
         _uiState.value = _uiState.value.copy(txCallsign = callsign)
         prefs.edit().putString("tx_callsign", callsign).apply()
+        // Update reporter callsign if enabled
+        if (reporter.config.enabled) {
+            reporter.configure(callsign, reporter.config.gridSquare, true)
+        }
+    }
+
+    /* ── Reporter ──────────────────────────────────────────── */
+
+    fun setReporterEnabled(enabled: Boolean) {
+        prefs.edit().putBoolean("reporter_enabled", enabled).apply()
+        val callsign = _uiState.value.txCallsign
+        val grid = locationTracker.state.value.gridSquare.ifEmpty { reporter.config.gridSquare }
+        reporter.configure(callsign, grid, enabled)
+    }
+
+    fun setReporterGrid(grid: String) {
+        prefs.edit().putString("reporter_grid", grid).apply()
+        if (reporter.config.enabled) {
+            reporter.configure(reporter.config.callsign, grid, true)
+        }
     }
 
     private fun startTransmitting() {
@@ -293,6 +341,8 @@ class TransceiverViewModel(application: Application) : AndroidViewModel(applicat
     override fun onCleared() {
         super.onCleared()
         serviceCollectJob?.cancel()
+        reporter.disconnect()
+        locationTracker.stopTracking()
         rigController.destroy()
         rigctldProcess.destroy()
         try {
