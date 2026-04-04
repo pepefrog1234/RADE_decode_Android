@@ -189,7 +189,11 @@ bool AudioEngine::openInputStream() {
            ->setSharingMode(oboe::SharingMode::Shared)
            ->setFormat(oboe::AudioFormat::Float)
            ->setChannelCount(oboe::ChannelCount::Mono)
-           ->setInputPreset(oboe::InputPreset::VoiceRecognition)
+           // Unprocessed: bypass all platform audio processing (AGC, noise
+           // suppression, echo cancellation). Critical for modem signal
+           // integrity — some phone models apply aggressive filtering that
+           // destroys OFDM pilot correlation and prevents sync.
+           ->setInputPreset(oboe::InputPreset::Unprocessed)
            ->setDataCallback(inputCb_.get())
            ->setErrorCallback(inputCb_.get());
     // Do NOT set sample rate — capture at device native rate for best quality
@@ -742,7 +746,10 @@ bool AudioEngine::openTxInputStream() {
            ->setSharingMode(oboe::SharingMode::Shared)
            ->setFormat(oboe::AudioFormat::Float)
            ->setChannelCount(oboe::ChannelCount::Mono)
-           ->setInputPreset(oboe::InputPreset::VoiceRecognition)
+           // Unprocessed for TX too: RADE vocoder encodes raw speech features,
+           // platform noise suppression can remove spectral content needed by
+           // LPCNet and degrade decoded audio quality on the other end.
+           ->setInputPreset(oboe::InputPreset::Unprocessed)
            ->setDataCallback(txInputCb_.get())
            ->setErrorCallback(txInputCb_.get());
 
