@@ -435,6 +435,12 @@ JNI_AUDIO(nativeGetFreqOffset)(JNIEnv *env, jobject /* this */) {
     return g_audioEngine->getFreqOffset();
 }
 
+JNIEXPORT jboolean JNICALL
+JNI_AUDIO(nativeIsUnprocessedRejected)(JNIEnv *env, jobject /* this */) {
+    if (!g_audioEngine) return JNI_FALSE;
+    return g_audioEngine->isUnprocessedRejected() ? JNI_TRUE : JNI_FALSE;
+}
+
 JNIEXPORT jfloat JNICALL
 JNI_AUDIO(nativeGetInputLevel)(JNIEnv *env, jobject /* this */) {
     if (!g_audioEngine) return -100.0f;

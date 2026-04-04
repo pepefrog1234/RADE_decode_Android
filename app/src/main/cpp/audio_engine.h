@@ -79,6 +79,7 @@ public:
     int getSyncState() const { return syncState_.load(); }
     int getSnrEstimate() const { return snrEstimate_.load(); }
     float getFreqOffset() const { return freqOffset_.load(); }
+    bool isUnprocessedRejected() const { return unprocessedRejected_.load(); }
     float getInputLevel() const { return inputLevelDb_.load(); }
     float getOutputLevel() const { return outputLevelDb_.load(); }
 
@@ -132,6 +133,7 @@ private:
     std::atomic<int> syncState_{0};
     std::atomic<int> snrEstimate_{0};
     std::atomic<float> freqOffset_{0.0f};
+    std::atomic<bool> unprocessedRejected_{false};
 
     std::string lastCallsign_;
     std::mutex callsignMutex_;

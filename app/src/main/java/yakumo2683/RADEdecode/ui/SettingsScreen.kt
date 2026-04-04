@@ -27,7 +27,7 @@ import yakumo2683.RADEdecode.ui.theme.SurfaceCard
 @Composable
 fun SettingsScreen(viewModel: TransceiverViewModel = viewModel()) {
     val state by viewModel.uiState.collectAsState()
-    var volume by remember { mutableFloatStateOf(1.0f) }
+    var volume by remember { mutableFloatStateOf(viewModel.getSavedVolume()) }
     var inputGain by remember { mutableFloatStateOf(viewModel.getSavedInputGain()) }
 
     Column(

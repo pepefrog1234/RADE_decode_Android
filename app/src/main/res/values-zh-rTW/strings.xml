@@ -169,4 +169,5 @@
     <string name="notification_title_default">RADE Decode</string>
     <string name="notification_text">%1$s | 訊噪比：%2$ddB</string>
     <string name="notification_stop">停止</string>
+    <string name="warning_unprocessed_rejected">音訊處理未關閉 — 裝置拒絕了 Unprocessed 模式，解碼可能失敗。建議使用 USB 音訊輸入。</string>
 </resources>

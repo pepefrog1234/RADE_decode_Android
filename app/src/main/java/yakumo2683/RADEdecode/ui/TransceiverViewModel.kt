@@ -42,6 +42,7 @@ class TransceiverViewModel(application: Application) : AndroidViewModel(applicat
         val lastCallsign: String = "",
         val txCallsign: String = "",
         val spectrum: FloatArray = FloatArray(AudioBridge.SPECTRUM_BINS) { -100f },
+        val unprocessedRejected: Boolean = false,
         val devices: List<AudioBridge.AudioDevice> = emptyList(),
         val outputDevices: List<AudioBridge.AudioDevice> = emptyList(),
         val selectedDeviceId: Int = -1,
@@ -69,8 +70,9 @@ class TransceiverViewModel(application: Application) : AndroidViewModel(applicat
             val service = (binder as AudioService.LocalBinder).service
             audioService = service
             service.reporter = reporter
-            // Restore persisted input gain
+            // Restore persisted audio settings
             service.setInputGain(prefs.getFloat("input_gain", 4.0f))
+            service.setOutputVolume(prefs.getFloat("output_volume", 1.0f))
             _uiState.value = _uiState.value.copy(serviceBound = true)
             startCollectingServiceState()
         }
@@ -259,8 +261,11 @@ class TransceiverViewModel(application: Application) : AndroidViewModel(applicat
     fun getSavedInputGain(): Float = prefs.getFloat("input_gain", 4.0f)
 
     fun setVolume(volume: Float) {
+        prefs.edit().putFloat("output_volume", volume).apply()
         audioService?.setOutputVolume(volume)
     }
+
+    fun getSavedVolume(): Float = prefs.getFloat("output_volume", 1.0f)
 
     fun refreshDevices() {
         val bridge = AudioBridge(getApplication())
@@ -337,7 +342,8 @@ class TransceiverViewModel(application: Application) : AndroidViewModel(applicat
                     outputLevelDb = svcState.outputLevelDb,
                     txLevelDb = svcState.txLevelDb,
                     lastCallsign = svcState.lastCallsign,
-                    spectrum = svcState.spectrum
+                    spectrum = svcState.spectrum,
+                    unprocessedRejected = svcState.unprocessedRejected
                 )
             }
         }

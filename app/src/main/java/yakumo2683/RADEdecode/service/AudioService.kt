@@ -72,7 +72,8 @@ class AudioService : LifecycleService() {
         val outputLevelDb: Float = -100f,
         val txLevelDb: Float = -100f,
         val lastCallsign: String = "",
-        val spectrum: FloatArray = FloatArray(AudioBridge.SPECTRUM_BINS) { -100f }
+        val spectrum: FloatArray = FloatArray(AudioBridge.SPECTRUM_BINS) { -100f },
+        val unprocessedRejected: Boolean = false
     )
 
     private val _state = MutableStateFlow(ServiceState())
@@ -431,13 +432,15 @@ class AudioService : LifecycleService() {
                 val outLvl = bridge.outputLevel
                 val cs = bridge.lastCallsign
                 val spec = spectrumBuffer.copyOf()
+                val rejected = bridge.isUnprocessedRejected
                 _state.update { it.copy(
                     snrDb = snr,
                     freqOffsetHz = freq,
                     inputLevelDb = inLvl,
                     outputLevelDb = outLvl,
                     lastCallsign = cs,
-                    spectrum = spec
+                    spectrum = spec,
+                    unprocessedRejected = rejected
                 ) }
 
                 // Periodically update DB with current WAV size (~every 3 seconds)
@@ -454,7 +457,7 @@ class AudioService : LifecycleService() {
                     }
                 }
 
-                delay(150)
+                delay(80)  // ~12 FPS for smoother waterfall
             }
         }
     }

@@ -100,6 +100,27 @@ fun TransceiverScreen(viewModel: TransceiverViewModel = viewModel()) {
             )
         }
 
+        // ── Unprocessed preset warning ──
+        if (state.isRunning && state.unprocessedRejected) {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clip(RoundedCornerShape(8.dp))
+                    .background(Color(0xFF4E2700))
+                    .border(1.dp, Amber400.copy(alpha = 0.5f), RoundedCornerShape(8.dp))
+                    .padding(horizontal = 12.dp, vertical = 8.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                Text(
+                    text = stringResource(R.string.warning_unprocessed_rejected),
+                    color = Amber400,
+                    fontSize = 12.sp,
+                    lineHeight = 16.sp
+                )
+            }
+        }
+
         // ── Level meters ──
         if (state.isTx) {
             LevelMeter(stringResource(R.string.label_mic_input), state.txLevelDb, Modifier.fillMaxWidth())
@@ -323,6 +344,13 @@ fun SpectrumChart(spectrum: FloatArray, isSynced: Boolean, modifier: Modifier = 
             drawLine(gridColor, Offset(x, 0f), Offset(x, h), strokeWidth = 0.5f)
         }
 
+        // RADE carrier band markers (0–4000 Hz range)
+        val markerColor = Color(0xAAFFFF00)
+        for (freqHz in listOf(750f, 1500f, 2200f)) {
+            val mx = w * freqHz / 4000f
+            drawLine(markerColor, Offset(mx, 0f), Offset(mx, h), strokeWidth = 1f)
+        }
+
         // Build path
         val path = Path()
         val fillPath = Path()
@@ -359,12 +387,22 @@ fun SpectrumChart(spectrum: FloatArray, isSynced: Boolean, modifier: Modifier = 
 
 @Composable
 fun WaterfallView(spectrum: FloatArray, modifier: Modifier = Modifier) {
-    val rows = remember { mutableStateListOf<FloatArray>() }
-    val maxRows = 50
+    val maxRows = 60
+    // Downsample spectrum to ~128 display bins for performance
+    val displayBins = 128
+    val rows = remember { mutableStateListOf<IntArray>() }
 
     LaunchedEffect(spectrum) {
         if (spectrum.any { it > -99f }) {
-            rows.add(0, spectrum.copyOf())
+            val dbMin = -80f; val dbMax = -10f
+            val step = spectrum.size / displayBins
+            val colors = IntArray(displayBins) { i ->
+                val idx = i * step
+                val db = spectrum[idx.coerceIn(0, spectrum.size - 1)].coerceIn(dbMin, dbMax)
+                val norm = (db - dbMin) / (dbMax - dbMin)
+                waterfallColorInt(norm)
+            }
+            rows.add(0, colors)
             while (rows.size > maxRows) rows.removeAt(rows.size - 1)
         }
     }
@@ -380,47 +418,33 @@ fun WaterfallView(spectrum: FloatArray, modifier: Modifier = Modifier) {
         if (rows.isEmpty()) return@Canvas
 
         val rowHeight = h / maxRows
-        val dbMin = -80f
-        val dbMax = -10f
+        val binWidth = w / displayBins
 
         for (r in rows.indices) {
             val row = rows[r]
             val y = r * rowHeight
-            val binWidth = w / row.size
-
             for (i in row.indices) {
-                val db = row[i].coerceIn(dbMin, dbMax)
-                val norm = (db - dbMin) / (dbMax - dbMin)
                 drawRect(
-                    color = waterfallColor(norm),
+                    color = Color(row[i]),
                     topLeft = Offset(i * binWidth, y),
-                    size = Size(binWidth + 0.5f, rowHeight + 0.5f)
+                    size = Size(binWidth + 1f, rowHeight + 1f)
                 )
             }
         }
     }
 }
 
-private fun waterfallColor(v: Float): Color {
-    return when {
-        v < 0.15f -> Color(0f, 0f, v / 0.15f * 0.4f)
-        v < 0.35f -> {
-            val t = (v - 0.15f) / 0.2f
-            Color(0f, t * 0.6f, 0.4f + t * 0.4f)
-        }
-        v < 0.55f -> {
-            val t = (v - 0.35f) / 0.2f
-            Color(t * 0.3f, 0.6f + t * 0.4f, 0.8f - t * 0.6f)
-        }
-        v < 0.75f -> {
-            val t = (v - 0.55f) / 0.2f
-            Color(0.3f + t * 0.7f, 1f - t * 0.2f, 0.2f - t * 0.2f)
-        }
-        else -> {
-            val t = (v - 0.75f) / 0.25f
-            Color(1f, 0.8f - t * 0.8f, 0f)
-        }
+/** Pre-compute waterfall color as packed ARGB int (avoids Color object allocation per pixel). */
+private fun waterfallColorInt(v: Float): Int {
+    val r: Float; val g: Float; val b: Float
+    when {
+        v < 0.15f -> { r = 0f; g = 0f; b = v / 0.15f * 0.4f }
+        v < 0.35f -> { val t = (v - 0.15f) / 0.2f; r = 0f; g = t * 0.6f; b = 0.4f + t * 0.4f }
+        v < 0.55f -> { val t = (v - 0.35f) / 0.2f; r = t * 0.3f; g = 0.6f + t * 0.4f; b = 0.8f - t * 0.6f }
+        v < 0.75f -> { val t = (v - 0.55f) / 0.2f; r = 0.3f + t * 0.7f; g = 1f - t * 0.2f; b = 0.2f - t * 0.2f }
+        else -> { val t = (v - 0.75f) / 0.25f; r = 1f; g = 0.8f - t * 0.8f; b = 0f }
     }
+    return (0xFF shl 24) or ((r * 255).toInt() shl 16) or ((g * 255).toInt() shl 8) or (b * 255).toInt()
 }
 
 /* ── Level Meter ──────────────────────────────────────────────── */

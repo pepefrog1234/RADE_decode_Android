@@ -71,6 +71,9 @@ class AudioBridge(private val context: Context) {
     /** Current frequency offset in Hz. */
     val freqOffset: Float get() = nativeGetFreqOffset()
 
+    /** True if the device did not honor the Unprocessed input preset. */
+    val isUnprocessedRejected: Boolean get() = nativeIsUnprocessedRejected()
+
     /** Input audio level in dB (RMS). */
     val inputLevel: Float get() = nativeGetInputLevel()
 
@@ -189,6 +192,7 @@ class AudioBridge(private val context: Context) {
     private external fun nativeGetSyncState(): Int
     private external fun nativeGetSnrEstimate(): Int
     private external fun nativeGetFreqOffset(): Float
+    private external fun nativeIsUnprocessedRejected(): Boolean
     private external fun nativeGetInputLevel(): Float
     private external fun nativeGetOutputLevel(): Float
     private external fun nativeGetSpectrum(out: FloatArray)

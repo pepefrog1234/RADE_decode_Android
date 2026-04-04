@@ -216,6 +216,9 @@ bool AudioEngine::openInputStream() {
         LOGE("Input: device did NOT honor Unprocessed preset (got %d). "
              "Audio processing may be active — increase digital gain if needed.",
              (int)actualPreset);
+        unprocessedRejected_.store(true);
+    } else {
+        unprocessedRejected_.store(false);
     }
 
     result = inputStream_->requestStart();
