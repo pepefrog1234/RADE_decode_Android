@@ -207,9 +207,16 @@ bool AudioEngine::openInputStream() {
     }
 
     actualInputRate_ = inputStream_->getSampleRate();
-    LOGI("Input: rate=%d ch=%d device=%d preset=%d",
+    auto actualPreset = inputStream_->getInputPreset();
+    LOGI("Input: rate=%d ch=%d device=%d preset=%d (requested Unprocessed=%d)",
          actualInputRate_, inputStream_->getChannelCount(),
-         inputStream_->getDeviceId(), (int)inputStream_->getInputPreset());
+         inputStream_->getDeviceId(), (int)actualPreset,
+         (int)oboe::InputPreset::Unprocessed);
+    if (actualPreset != oboe::InputPreset::Unprocessed) {
+        LOGE("Input: device did NOT honor Unprocessed preset (got %d). "
+             "Audio processing may be active — increase digital gain if needed.",
+             (int)actualPreset);
+    }
 
     result = inputStream_->requestStart();
     if (result != oboe::Result::OK) {

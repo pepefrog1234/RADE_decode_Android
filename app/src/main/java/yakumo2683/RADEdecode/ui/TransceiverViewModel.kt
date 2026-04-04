@@ -69,6 +69,8 @@ class TransceiverViewModel(application: Application) : AndroidViewModel(applicat
             val service = (binder as AudioService.LocalBinder).service
             audioService = service
             service.reporter = reporter
+            // Restore persisted input gain
+            service.setInputGain(prefs.getFloat("input_gain", 4.0f))
             _uiState.value = _uiState.value.copy(serviceBound = true)
             startCollectingServiceState()
         }
@@ -250,8 +252,11 @@ class TransceiverViewModel(application: Application) : AndroidViewModel(applicat
     }
 
     fun setInputGain(gain: Float) {
+        prefs.edit().putFloat("input_gain", gain).apply()
         audioService?.setInputGain(gain)
     }
+
+    fun getSavedInputGain(): Float = prefs.getFloat("input_gain", 4.0f)
 
     fun setVolume(volume: Float) {
         audioService?.setOutputVolume(volume)
