@@ -1,0 +1,173 @@
+<resources>
+    <string name="app_name">RADE_decode</string>
+
+    <!-- 导航栏 -->
+    <string name="nav_receiver">接收器</string>
+    <string name="nav_rig">电台</string>
+    <string name="nav_stations">电台列表</string>
+    <string name="nav_log">记录</string>
+    <string name="nav_settings">设置</string>
+    <string name="top_bar_title">RADE DECODE</string>
+
+    <!-- 收发器画面 -->
+    <string name="sync_search">搜索中</string>
+    <string name="sync_candidate">候选</string>
+    <string name="sync_sync">已同步</string>
+    <string name="sync_unknown">未知</string>
+    <string name="transmitting">发射中</string>
+    <string name="label_snr">信噪比</string>
+    <string name="label_freq">频偏</string>
+    <string name="unit_db">dB</string>
+    <string name="unit_hz">Hz</string>
+    <string name="label_input">输入</string>
+    <string name="label_output">输出</string>
+    <string name="label_mic_input">麦克风输入</string>
+    <string name="btn_back_to_rx">返回接收</string>
+    <string name="btn_tx">发射</string>
+    <string name="btn_stop">停止</string>
+    <string name="btn_start">启动</string>
+
+    <!-- 电台列表画面 -->
+    <string name="header_freedv_reporter">FREEDV 报告器</string>
+    <string name="stations_connected">已连接 — %1$d 个电台在线</string>
+    <string name="stations_not_connected">未连接至 FreeDV Reporter</string>
+    <string name="stations_no_stations">当前没有电台在线</string>
+    <string name="stations_enable_reporter">请在设置中启用报告器</string>
+    <string name="stations_connect_hint">连接至 qso.freedv.org 以查看在线电台</string>
+    <string name="stations_anonymous">匿名</string>
+    <string name="stations_rx_only">仅接收</string>
+
+    <!-- 记录画面 -->
+    <string name="header_reception_log">接收记录</string>
+    <string name="log_clear_all">全部清除</string>
+    <string name="log_delete_all_title">删除所有通联记录</string>
+    <string name="log_delete_all_message">这将永久删除所有接收记录，此操作无法撤销。</string>
+    <string name="log_delete_all_confirm">全部删除</string>
+    <string name="btn_cancel">取消</string>
+    <string name="log_no_sessions">暂无接收记录</string>
+    <string name="log_start_hint">开始接收以创建通联记录</string>
+    <string name="log_delete">删除</string>
+    <string name="log_sync_percent">同步 %.0f%%</string>
+    <string name="log_frames">%1$d 个帧</string>
+    <string name="log_incomplete">未完成</string>
+
+    <!-- 通联详情画面 -->
+    <string name="header_session_detail">通联详情</string>
+    <string name="btn_back">返回</string>
+    <string name="detail_start">开始</string>
+    <string name="detail_end">结束</string>
+    <string name="detail_duration">持续时间</string>
+    <string name="detail_sync_ratio">同步率</string>
+    <string name="detail_modem_frames">调制解调器帧</string>
+    <string name="detail_device">设备</string>
+    <string name="detail_synced_format">%1$d（%2$d 已同步）</string>
+    <string name="header_decoded_audio">解码音频</string>
+    <string name="btn_play">播放</string>
+    <string name="audio_playing">播放中…</string>
+    <string name="header_callsigns_decoded">已解码呼号</string>
+    <string name="detail_snr_db">信噪比 %1$d dB</string>
+    <string name="detail_offset_frame">+%1$d秒 | 帧 %2$d</string>
+    <string name="header_snr_over_time">信噪比趋势图</string>
+    <string name="header_sync_events">同步事件</string>
+    <string name="header_signal_summary">信号摘要</string>
+    <string name="detail_peak_snr">峰值信噪比</string>
+    <string name="detail_avg_snr">平均信噪比</string>
+    <string name="detail_freq_offset_range">频率偏移范围</string>
+    <string name="detail_snapshots">快照数</string>
+
+    <!-- 设置画面 -->
+    <string name="header_audio_input">音频输入</string>
+    <string name="settings_input_devices">输入设备</string>
+    <string name="settings_no_input_devices">找不到音频输入设备</string>
+    <string name="settings_refresh">刷新</string>
+    <string name="header_input_gain">输入增益</string>
+    <string name="settings_digital_gain">数字增益</string>
+    <string name="settings_gain_help">增强 USB 音频输入的微弱信号。请调整至峰值电平约为 -15 至 -5 dBFS。</string>
+    <string name="header_rx_output">接收输出</string>
+    <string name="settings_volume">音量</string>
+    <string name="settings_volume_help">此处同时控制发射输出电平。请调整至电台的 ALC 表不偏转——将 ALC 保持在线性区间（无读数/无条显示），以避免信号失真与溅射。</string>
+    <string name="header_tx_callsign">发射呼号</string>
+    <string name="settings_callsign_label">呼号（EOO）</string>
+    <string name="settings_callsign_help">您的呼号将在发射时编码于 EOO（结束通联）帧中。</string>
+    <string name="header_tx_output_device">发射输出设备</string>
+    <string name="settings_output_devices">输出设备</string>
+    <string name="settings_tx_output_help">选择用于 RADE 发射调制输出的音频接口。</string>
+    <string name="settings_no_output_devices">找不到音频输出设备</string>
+    <string name="header_about">关于</string>
+    <string name="about_app_name">RADE Decode</string>
+    <string name="about_description">HF 数字语音收发器。使用设备上的 FARGAN 神经网络声码器来解码和编码 RADE OFDM 信号。</string>
+    <string name="about_modem">调制解调器</string>
+    <string name="about_modem_value">8kHz OFDM，30 载波</string>
+    <string name="about_vocoder">声码器</string>
+    <string name="about_vocoder_value">FARGAN @ 16kHz</string>
+    <string name="about_project">项目</string>
+    <string name="about_project_value">FreeDV / Codec2</string>
+    <string name="header_license">许可协议</string>
+    <string name="license_title">LGPL-2.1 许可</string>
+    <string name="license_description">本应用程序依据 GNU 宽通用公共许可协议第 2.1 版授权使用。</string>
+    <string name="license_third_party">第三方库</string>
+
+    <!-- 电台控制画面 -->
+    <string name="header_connection">连接设置</string>
+    <string name="rig_tcp_mode">TCP（rigctld）</string>
+    <string name="rig_serial_mode">串口（本机）</string>
+    <string name="rig_host">主机</string>
+    <string name="rig_port">端口</string>
+    <string name="rig_device">设备</string>
+    <string name="rig_baud">波特率</string>
+    <string name="rig_model">电台型号</string>
+    <string name="rig_search">搜索…</string>
+    <string name="btn_disconnect">断开连接</string>
+    <string name="btn_connect">建立连接</string>
+    <string name="rig_connected_to">已连接至 %1$s:%2$d</string>
+    <string name="rig_not_connected">未连接</string>
+    <string name="header_frequency">频率</string>
+    <string name="rig_freq_khz">频率（kHz）</string>
+    <string name="btn_set">设置</string>
+    <string name="header_mode">模式</string>
+    <string name="rig_no_mode">---</string>
+    <string name="header_s_meter">S 表</string>
+    <string name="rig_freq_display_empty">-----.-- kHz</string>
+
+    <!-- 电池优化对话框 -->
+    <string name="battery_dialog_title">后台解码设置</string>
+    <string name="battery_dialog_description">RADE Decode 需在后台持续运行以接收和解码信号。部分设备会限制后台运行，可能导致解码中断。</string>
+    <string name="battery_opt_disabled">电池优化已停用——很好！</string>
+    <string name="battery_opt_enabled">电池优化已启用——可能中断解码</string>
+    <string name="battery_disable_btn">停用电池优化</string>
+    <string name="battery_additional_steps">其他步骤</string>
+    <string name="battery_open_app_settings">打开应用设置</string>
+    <string name="battery_warning">停用电池优化将增加 RADE Decode 运行时的电量消耗。本应用仅在主动解码时（按下启动后）才会有较高的耗电。您可以随时在系统设置中重新启用优化。</string>
+    <string name="btn_got_it">知道了</string>
+
+    <!-- 电池厂商提示 -->
+    <string name="battery_tip_allow_background">请确认在应用设置→电池中已启用"允许后台运行"。</string>
+    <string name="battery_tip_battery_saver">若使用"省电模式"，请将 RADE Decode 加入例外列表。</string>
+    <string name="battery_tip_samsung_1">Samsung：设置→电池→后台使用限制→永不休眠的应用→添加 RADE Decode。</string>
+    <string name="battery_tip_samsung_2">Samsung：停用"自适应电池"或将应用加入"未受监控的应用"。</string>
+    <string name="battery_tip_samsung_3">Samsung：设置→应用→RADE Decode→电池→不受限制。</string>
+    <string name="battery_tip_xiaomi_1">小米/POCO：设置→应用→RADE Decode→省电策略→无限制。</string>
+    <string name="battery_tip_xiaomi_2">小米/POCO：设置→电池→应用省电→RADE Decode→无限制。</string>
+    <string name="battery_tip_xiaomi_3">小米/POCO：安全中心→电池→应用省电→RADE Decode→无限制。</string>
+    <string name="battery_tip_xiaomi_4">小米/POCO：在安全设置中为 RADE Decode 启用"自启动"。</string>
+    <string name="battery_tip_huawei_1">华为/荣耀：设置→电池→应用启动管理→RADE Decode→设为"手动管理"并启用所有选项。</string>
+    <string name="battery_tip_huawei_2">华为/荣耀：设置→应用→RADE Decode→电池→启用"允许后台运行"。</string>
+    <string name="battery_tip_huawei_3">华为/荣耀：停用此应用的"高耗电提醒"。</string>
+    <string name="battery_tip_oppo_1">OPPO/Realme/OnePlus：设置→电池→更多设置→优化电池用量→RADE Decode→不要优化。</string>
+    <string name="battery_tip_oppo_2">OnePlus：设置→电池→电池优化→RADE Decode→不要优化。</string>
+    <string name="battery_tip_oppo_3">OPPO/Realme：启用"允许自启动"和"允许后台运行"。</string>
+    <string name="battery_tip_vivo_1">vivo/iQOO：设置→电池→后台耗电管理→RADE Decode→允许。</string>
+    <string name="battery_tip_vivo_2">vivo/iQOO：i 管家→应用管理→自启动管理→启用 RADE Decode。</string>
+    <string name="battery_tip_asus">ASUS：设置→电池→PowerMaster→自启动管理→启用 RADE Decode。</string>
+    <string name="battery_tip_sony">Sony：设置→电池→自适应电池→例外→添加 RADE Decode。</string>
+
+    <!-- 通知 -->
+    <string name="notification_channel_name">RADE Decode</string>
+    <string name="notification_channel_description">后台音频解码状态</string>
+    <string name="notification_starting">启动中…</string>
+    <string name="notification_title_with_callsign">RADE：%1$s</string>
+    <string name="notification_title_default">RADE Decode</string>
+    <string name="notification_text">%1$s | 信噪比：%2$ddB</string>
+    <string name="notification_stop">停止</string>
+    <string name="warning_unprocessed_rejected">音频处理未关闭 — 设备拒绝了 Unprocessed 模式，解码可能失败。建议使用 USB 音频输入。</string>
+</resources>
