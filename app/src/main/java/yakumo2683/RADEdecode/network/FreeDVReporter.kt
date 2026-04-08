@@ -86,6 +86,7 @@ class FreeDVReporter(private val scope: CoroutineScope) {
     private var pingJob: Job? = null
     private var pingIntervalMs: Long = 25000
     private var connectionId: String? = null
+    @Volatile private var lastMessageTime: Long = 0
 
     @Synchronized
     fun configure(callsign: String, gridSquare: String, enabled: Boolean) {
@@ -115,6 +116,7 @@ class FreeDVReporter(private val scope: CoroutineScope) {
             }
 
             override fun onMessage(ws: WebSocket, text: String) {
+                lastMessageTime = System.currentTimeMillis()
                 handleMessage(text)
                 flushStations()
             }
@@ -357,6 +359,20 @@ class FreeDVReporter(private val scope: CoroutineScope) {
     fun forceFlush() {
         synchronized(stationLock) {
             _stations.value = stationMap.toMap()
+        }
+    }
+
+    /** Reconnect if the connection is dead or stale. Call on app resume. */
+    @Synchronized
+    fun reconnectIfNeeded() {
+        if (!config.enabled) return
+        val stale = lastMessageTime > 0 &&
+                System.currentTimeMillis() - lastMessageTime > 60_000
+        if (!_connected.value || webSocket == null || stale) {
+            Log.i(TAG, "reconnectIfNeeded: connected=${_connected.value} ws=${webSocket != null} stale=$stale — forcing reconnect")
+            disconnect()
+            resetReconnectDelay()
+            connect()
         }
     }
 

@@ -245,6 +245,10 @@ fun RigScreen(viewModel: TransceiverViewModel = viewModel()) {
     var serialSpeed by remember { mutableStateOf("9600") }
     var selectedRigIndex by remember { mutableIntStateOf(0) }  // index into rigModels
     var rigModelExpanded by remember { mutableStateOf(false) }
+    // Manufacturer filter
+    val manufacturers = remember { listOf("All") + rigModels.map { it.mfg }.distinct() }
+    var selectedMfg by remember { mutableStateOf("All") }
+    var mfgExpanded by remember { mutableStateOf(false) }
 
     // Sync freq display when rig updates (show as kHz)
     LaunchedEffect(rigState.freqHz) {
@@ -342,24 +346,82 @@ fun RigScreen(viewModel: TransceiverViewModel = viewModel()) {
                         )
                     }
                 } else {
-                    // Serial mode — rig model dropdown
-                    // Searchable rig model dropdown
+                    // Serial mode — manufacturer + model dropdowns
+                    val mfgFilteredModels = remember(selectedMfg) {
+                        if (selectedMfg == "All") rigModels
+                        else rigModels.filter { it.mfg == selectedMfg }
+                    }
                     var searchQuery by remember { mutableStateOf("") }
-                    val filteredModels = remember(searchQuery) {
-                        if (searchQuery.isBlank()) rigModels
-                        else rigModels.filter {
-                            it.displayName.contains(searchQuery, ignoreCase = true) ||
+                    val filteredModels = remember(searchQuery, mfgFilteredModels) {
+                        if (searchQuery.isBlank()) mfgFilteredModels
+                        else mfgFilteredModels.filter {
+                            it.name.contains(searchQuery, ignoreCase = true) ||
                                 it.id.toString().contains(searchQuery)
                         }
                     }
 
+                    // Manufacturer dropdown
+                    ExposedDropdownMenuBox(
+                        expanded = mfgExpanded,
+                        onExpandedChange = { if (!rigState.connected) mfgExpanded = it }
+                    ) {
+                        OutlinedTextField(
+                            value = if (selectedMfg == "All") stringResource(R.string.rig_all_manufacturers) else selectedMfg,
+                            onValueChange = {},
+                            readOnly = true,
+                            enabled = !rigState.connected,
+                            label = { Text(stringResource(R.string.rig_manufacturer)) },
+                            trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded = mfgExpanded) },
+                            modifier = Modifier.fillMaxWidth().menuAnchor(),
+                            singleLine = true,
+                            textStyle = androidx.compose.ui.text.TextStyle(fontFamily = FontFamily.Monospace, fontSize = 14.sp),
+                            colors = OutlinedTextFieldDefaults.colors(
+                                focusedBorderColor = Cyan400, focusedLabelColor = Cyan400, cursorColor = Cyan400
+                            )
+                        )
+                        ExposedDropdownMenu(
+                            expanded = mfgExpanded,
+                            onDismissRequest = { mfgExpanded = false }
+                        ) {
+                            manufacturers.forEach { mfg ->
+                                val count = if (mfg == "All") rigModels.size
+                                            else rigModels.count { it.mfg == mfg }
+                                DropdownMenuItem(
+                                    text = {
+                                        Row(
+                                            modifier = Modifier.fillMaxWidth(),
+                                            horizontalArrangement = Arrangement.SpaceBetween
+                                        ) {
+                                            Text(
+                                                if (mfg == "All") stringResource(R.string.rig_all_manufacturers) else mfg,
+                                                fontSize = 14.sp
+                                            )
+                                            Text("$count", fontSize = 12.sp, color = OnSurfaceDim)
+                                        }
+                                    },
+                                    onClick = {
+                                        selectedMfg = mfg
+                                        mfgExpanded = false
+                                        searchQuery = ""
+                                        // Reset model selection to first in new manufacturer
+                                        val first = if (mfg == "All") rigModels else rigModels.filter { it.mfg == mfg }
+                                        if (first.isNotEmpty()) {
+                                            selectedRigIndex = rigModels.indexOf(first.first())
+                                        }
+                                    }
+                                )
+                            }
+                        }
+                    }
+
+                    // Model dropdown (filtered by manufacturer)
                     ExposedDropdownMenuBox(
                         expanded = rigModelExpanded,
                         onExpandedChange = { if (!rigState.connected) rigModelExpanded = it }
                     ) {
                         OutlinedTextField(
                             value = if (rigModelExpanded) searchQuery
-                                    else rigModels[selectedRigIndex].let { "${it.displayName} (#${it.id})" },
+                                    else rigModels[selectedRigIndex].let { "${it.name} (#${it.id})" },
                             onValueChange = { searchQuery = it },
                             enabled = !rigState.connected,
                             label = { Text(stringResource(R.string.rig_model)) },
@@ -384,7 +446,7 @@ fun RigScreen(viewModel: TransceiverViewModel = viewModel()) {
                                                 modifier = Modifier.fillMaxWidth(),
                                                 horizontalArrangement = Arrangement.SpaceBetween
                                             ) {
-                                                Text(model.displayName, fontSize = 14.sp)
+                                                Text(model.name, fontSize = 14.sp)
                                                 Text(
                                                     "#${model.id}",
                                                     fontSize = 12.sp,

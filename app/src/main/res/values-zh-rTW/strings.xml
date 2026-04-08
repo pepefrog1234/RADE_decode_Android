@@ -77,6 +77,7 @@
 
     <!-- 設定畫面 -->
     <string name="header_audio_input">音訊輸入</string>
+    <string name="header_audio_devices">音訊裝置</string>
     <string name="settings_input_devices">輸入裝置</string>
     <string name="settings_no_input_devices">找不到音訊輸入裝置</string>
     <string name="settings_refresh">重新整理</string>
@@ -115,7 +116,9 @@
     <string name="rig_port">埠號</string>
     <string name="rig_device">裝置</string>
     <string name="rig_baud">鮑率</string>
-    <string name="rig_model">電台型號</string>
+    <string name="rig_manufacturer">製造商</string>
+    <string name="rig_all_manufacturers">所有製造商</string>
+    <string name="rig_model">型號</string>
     <string name="rig_search">搜尋…</string>
     <string name="btn_disconnect">中斷連線</string>
     <string name="btn_connect">建立連線</string>
@@ -170,4 +173,5 @@
     <string name="notification_text">%1$s | 訊噪比：%2$ddB</string>
     <string name="notification_stop">停止</string>
     <string name="warning_unprocessed_rejected">音訊處理未關閉 — 裝置拒絕了 Unprocessed 模式，解碼可能失敗。建議使用 USB 音訊輸入。</string>
+    <string name="share_audio">分享解碼音訊</string>
 </resources>

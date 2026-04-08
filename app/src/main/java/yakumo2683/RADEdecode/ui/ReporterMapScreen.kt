@@ -56,6 +56,14 @@ private data class MapStation(
     val frequency: Long
 )
 
+/** Persists map camera state across tab switches (lives as long as the nav back-stack entry). */
+private object MapCameraState {
+    var lat: Double = 35.0
+    var lon: Double = 135.0
+    var zoom: Double = 3.0
+    var saved: Boolean = false
+}
+
 @Composable
 fun ReporterMapScreen(reporter: FreeDVReporter?) {
     val stations by reporter?.stations?.collectAsState()
@@ -90,8 +98,9 @@ fun ReporterMapScreen(reporter: FreeDVReporter?) {
             when (event) {
                 Lifecycle.Event.ON_RESUME -> {
                     mapViewRef?.onResume()
+                    reporter?.reconnectIfNeeded()
                     reporter?.forceFlush()
-                    mapViewRef?.invalidate()
+                    mapViewRef?.postDelayed({ mapViewRef?.invalidate() }, 200)
                 }
                 Lifecycle.Event.ON_PAUSE -> mapViewRef?.onPause()
                 else -> {}
@@ -100,11 +109,27 @@ fun ReporterMapScreen(reporter: FreeDVReporter?) {
         lifecycleOwner.lifecycle.addObserver(observer)
         onDispose {
             lifecycleOwner.lifecycle.removeObserver(observer)
-            mapViewRef?.onDetach()
+            // Save camera state before MapView is destroyed by tab switch
+            mapViewRef?.let { mv ->
+                MapCameraState.lat = mv.mapCenter.latitude
+                MapCameraState.lon = mv.mapCenter.longitude
+                MapCameraState.zoom = mv.zoomLevelDouble
+                MapCameraState.saved = true
+                mv.onPause()
+                mv.onDetach()
+            }
         }
     }
 
     val overlay = remember { StationOverlay() }
+
+    // Ensure map redraws whenever station data changes
+    LaunchedEffect(mapStations) {
+        mapViewRef?.let { mv ->
+            overlay.stations = mapStations
+            mv.invalidate()
+        }
+    }
     val txCount = mapStations.count { it.transmitting }
     val rxCount = mapStations.count { (it.receiving || it.receivedCallsign.isNotEmpty()) && !it.transmitting }
 
@@ -123,8 +148,15 @@ fun ReporterMapScreen(reporter: FreeDVReporter?) {
                     setMultiTouchControls(true)
                     minZoomLevel = 2.0
                     maxZoomLevel = 18.0
-                    controller.setZoom(3.0)
-                    controller.setCenter(GeoPoint(35.0, 135.0))
+                    // Restore saved camera or use defaults
+                    if (MapCameraState.saved) {
+                        controller.setZoom(MapCameraState.zoom)
+                        controller.setCenter(GeoPoint(MapCameraState.lat, MapCameraState.lon))
+                        overlay.fitted = true  // skip auto-fit since user already positioned
+                    } else {
+                        controller.setZoom(3.0)
+                        controller.setCenter(GeoPoint(35.0, 135.0))
+                    }
                     overlayManager.tilesOverlay.setColorFilter(
                         android.graphics.ColorMatrixColorFilter(
                             floatArrayOf(

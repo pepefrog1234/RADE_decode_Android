@@ -78,6 +78,7 @@
 
     <!-- Settings Screen -->
     <string name="header_audio_input">AUDIO INPUT</string>
+    <string name="header_audio_devices">AUDIO DEVICES</string>
     <string name="settings_input_devices">Input Devices</string>
     <string name="settings_no_input_devices">No audio input devices found</string>
     <string name="settings_refresh">Refresh</string>
@@ -116,7 +117,9 @@
     <string name="rig_port">Port</string>
     <string name="rig_device">Device</string>
     <string name="rig_baud">Baud</string>
-    <string name="rig_model">Rig Model</string>
+    <string name="rig_manufacturer">Manufacturer</string>
+    <string name="rig_all_manufacturers">All Manufacturers</string>
+    <string name="rig_model">Model</string>
     <string name="rig_search">Search…</string>
     <string name="btn_disconnect">DISCONNECT</string>
     <string name="btn_connect">CONNECT</string>
@@ -171,4 +174,5 @@
     <string name="notification_text">%1$s | SNR: %2$ddB</string>
     <string name="notification_stop">Stop</string>
     <string name="warning_unprocessed_rejected">Audio processing active — device rejected Unprocessed preset. Decoding may fail. Try a USB audio input.</string>
+    <string name="share_audio">Share decoded audio</string>
 </resources>

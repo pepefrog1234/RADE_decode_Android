@@ -1,6 +1,7 @@
 package yakumo2683.RADEdecode.ui
 
 import android.app.Application
+import android.content.Intent
 import android.media.MediaPlayer
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
@@ -18,7 +19,9 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
+import androidx.core.content.FileProvider
 import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.text.font.FontFamily
@@ -192,13 +195,14 @@ fun SessionDetailScreen(
         if (wavFile != null) {
             val isPlaying by viewModel.isPlaying.collectAsState()
             val progress by viewModel.playProgress.collectAsState()
+            val context = LocalContext.current
 
             SectionLabel(stringResource(R.string.header_decoded_audio))
             DetailCard {
                 Row(
                     modifier = Modifier.fillMaxWidth(),
                     verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(12.dp)
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
                     // Play/Stop button
                     FilledIconButton(
@@ -211,6 +215,28 @@ fun SessionDetailScreen(
                             if (isPlaying) Icons.Default.Stop else Icons.Default.PlayArrow,
                             contentDescription = if (isPlaying) stringResource(R.string.btn_stop) else stringResource(R.string.btn_play)
                         )
+                    }
+
+                    // Share button
+                    FilledIconButton(
+                        onClick = {
+                            val uri = FileProvider.getUriForFile(
+                                context,
+                                "${context.packageName}.fileprovider",
+                                wavFile
+                            )
+                            val intent = Intent(Intent.ACTION_SEND).apply {
+                                type = "audio/wav"
+                                putExtra(Intent.EXTRA_STREAM, uri)
+                                addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                            }
+                            context.startActivity(Intent.createChooser(intent, context.getString(R.string.share_audio)))
+                        },
+                        colors = IconButtonDefaults.filledIconButtonColors(
+                            containerColor = Surface2
+                        )
+                    ) {
+                        Icon(Icons.Default.Share, contentDescription = stringResource(R.string.share_audio))
                     }
 
                     Column(modifier = Modifier.weight(1f)) {

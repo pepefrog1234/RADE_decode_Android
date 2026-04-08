@@ -37,7 +37,7 @@ fun SettingsScreen(viewModel: TransceiverViewModel = viewModel()) {
             .verticalScroll(rememberScrollState()),
         verticalArrangement = Arrangement.spacedBy(16.dp)
     ) {
-        SectionHeader(stringResource(R.string.header_audio_input))
+        SectionHeader(stringResource(R.string.header_audio_devices))
 
         Surface(
             shape = RoundedCornerShape(12.dp),
@@ -76,6 +76,65 @@ fun SettingsScreen(viewModel: TransceiverViewModel = viewModel()) {
                             RadioButton(
                                 selected = device.id == state.selectedDeviceId,
                                 onClick = { viewModel.selectDevice(device.id) },
+                                colors = RadioButtonDefaults.colors(selectedColor = Cyan400)
+                            )
+                            if (device.isUsb) {
+                                Icon(
+                                    Icons.Default.Usb, null,
+                                    modifier = Modifier.size(16.dp),
+                                    tint = Cyan400
+                                )
+                                Spacer(Modifier.width(6.dp))
+                            }
+                            Column {
+                                Text(
+                                    device.typeName,
+                                    fontWeight = FontWeight.Medium,
+                                    fontSize = 14.sp,
+                                    color = MaterialTheme.colorScheme.onSurface
+                                )
+                                Text(
+                                    device.name,
+                                    fontSize = 11.sp,
+                                    fontFamily = FontFamily.Monospace,
+                                    color = OnSurfaceDim
+                                )
+                            }
+                        }
+                    }
+                }
+
+                HorizontalDivider(
+                    color = MaterialTheme.colorScheme.outline,
+                    modifier = Modifier.padding(vertical = 8.dp)
+                )
+
+                Text(stringResource(R.string.settings_output_devices), fontWeight = FontWeight.Medium, color = MaterialTheme.colorScheme.onSurface)
+
+                Text(
+                    stringResource(R.string.settings_tx_output_help),
+                    fontSize = 11.sp, color = OnSurfaceDim,
+                    modifier = Modifier.padding(vertical = 4.dp)
+                )
+
+                if (state.outputDevices.isEmpty()) {
+                    Text(
+                        stringResource(R.string.settings_no_output_devices),
+                        color = OnSurfaceDim,
+                        fontSize = 14.sp,
+                        modifier = Modifier.padding(vertical = 8.dp)
+                    )
+                } else {
+                    state.outputDevices.forEach { device ->
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(vertical = 6.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            RadioButton(
+                                selected = device.id == state.selectedOutputDeviceId,
+                                onClick = { viewModel.selectOutputDevice(device.id) },
                                 colors = RadioButtonDefaults.colors(selectedColor = Cyan400)
                             )
                             if (device.isUsb) {
@@ -294,81 +353,6 @@ fun SettingsScreen(viewModel: TransceiverViewModel = viewModel()) {
                     "Report decoded callsigns to qso.freedv.org",
                     fontSize = 11.sp, color = OnSurfaceDim
                 )
-            }
-        }
-
-        SectionHeader(stringResource(R.string.header_tx_output_device))
-
-        Surface(
-            shape = RoundedCornerShape(12.dp),
-            color = SurfaceCard,
-            modifier = Modifier
-                .fillMaxWidth()
-                .border(1.dp, MaterialTheme.colorScheme.outline, RoundedCornerShape(12.dp))
-        ) {
-            Column(modifier = Modifier.padding(16.dp)) {
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Text(stringResource(R.string.settings_output_devices), fontWeight = FontWeight.Medium, color = MaterialTheme.colorScheme.onSurface)
-                    IconButton(onClick = { viewModel.refreshDevices() }) {
-                        Icon(Icons.Default.Refresh, contentDescription = stringResource(R.string.settings_refresh), tint = Cyan400)
-                    }
-                }
-
-                Text(
-                    stringResource(R.string.settings_tx_output_help),
-                    fontSize = 11.sp, color = OnSurfaceDim,
-                    modifier = Modifier.padding(bottom = 8.dp)
-                )
-
-                if (state.outputDevices.isEmpty()) {
-                    Text(
-                        stringResource(R.string.settings_no_output_devices),
-                        color = OnSurfaceDim,
-                        fontSize = 14.sp,
-                        modifier = Modifier.padding(vertical = 8.dp)
-                    )
-                } else {
-                    state.outputDevices.forEach { device ->
-                        Row(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .padding(vertical = 6.dp),
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
-                            RadioButton(
-                                selected = device.id == state.selectedOutputDeviceId,
-                                onClick = { viewModel.selectOutputDevice(device.id) },
-                                colors = RadioButtonDefaults.colors(selectedColor = Cyan400)
-                            )
-                            if (device.isUsb) {
-                                Icon(
-                                    Icons.Default.Usb, null,
-                                    modifier = Modifier.size(16.dp),
-                                    tint = Cyan400
-                                )
-                                Spacer(Modifier.width(6.dp))
-                            }
-                            Column {
-                                Text(
-                                    device.typeName,
-                                    fontWeight = FontWeight.Medium,
-                                    fontSize = 14.sp,
-                                    color = MaterialTheme.colorScheme.onSurface
-                                )
-                                Text(
-                                    device.name,
-                                    fontSize = 11.sp,
-                                    fontFamily = FontFamily.Monospace,
-                                    color = OnSurfaceDim
-                                )
-                            }
-                        }
-                    }
-                }
             }
         }
 
