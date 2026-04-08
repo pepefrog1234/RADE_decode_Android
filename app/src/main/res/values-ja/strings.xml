@@ -1,0 +1,177 @@
+<resources>
+    <string name="app_name">RADE_decode</string>
+
+    <!-- ナビゲーション -->
+    <string name="nav_receiver">受信機</string>
+    <string name="nav_rig">リグ</string>
+    <string name="nav_stations">局一覧</string>
+    <string name="nav_log">ログ</string>
+    <string name="nav_settings">設定</string>
+    <string name="top_bar_title">RADE DECODE</string>
+
+    <!-- トランシーバー画面 -->
+    <string name="sync_search">サーチ中</string>
+    <string name="sync_candidate">候補</string>
+    <string name="sync_sync">同期済み</string>
+    <string name="sync_unknown">不明</string>
+    <string name="transmitting">送信中</string>
+    <string name="label_snr">SNR</string>
+    <string name="label_freq">周波数偏差</string>
+    <string name="unit_db">dB</string>
+    <string name="unit_hz">Hz</string>
+    <string name="label_input">入力</string>
+    <string name="label_output">出力</string>
+    <string name="label_mic_input">マイク入力</string>
+    <string name="btn_back_to_rx">受信に戻る</string>
+    <string name="btn_tx">送信</string>
+    <string name="btn_stop">停止</string>
+    <string name="btn_start">開始</string>
+
+    <!-- 局一覧画面 -->
+    <string name="header_freedv_reporter">FREEDV レポーター</string>
+    <string name="stations_connected">接続中 — %1$d 局オンライン</string>
+    <string name="stations_not_connected">FreeDV Reporter に未接続</string>
+    <string name="stations_no_stations">現在オンラインの局はありません</string>
+    <string name="stations_enable_reporter">設定でレポーターを有効にしてください</string>
+    <string name="stations_connect_hint">qso.freedv.org に接続してオンライン局を表示</string>
+    <string name="stations_anonymous">匿名</string>
+    <string name="stations_rx_only">受信のみ</string>
+
+    <!-- ログ画面 -->
+    <string name="header_reception_log">受信ログ</string>
+    <string name="log_clear_all">すべて消去</string>
+    <string name="log_delete_all_title">すべての交信記録を削除</string>
+    <string name="log_delete_all_message">すべての受信記録が完全に削除されます。この操作は元に戻せません。</string>
+    <string name="log_delete_all_confirm">すべて削除</string>
+    <string name="btn_cancel">キャンセル</string>
+    <string name="log_no_sessions">受信記録はまだありません</string>
+    <string name="log_start_hint">受信を開始して交信記録を作成</string>
+    <string name="log_delete">削除</string>
+    <string name="log_sync_percent">同期 %.0f%%</string>
+    <string name="log_frames">%1$d フレーム</string>
+    <string name="log_incomplete">未完了</string>
+
+    <!-- 交信詳細画面 -->
+    <string name="header_session_detail">交信詳細</string>
+    <string name="btn_back">戻る</string>
+    <string name="detail_start">開始</string>
+    <string name="detail_end">終了</string>
+    <string name="detail_duration">継続時間</string>
+    <string name="detail_sync_ratio">同期率</string>
+    <string name="detail_modem_frames">モデムフレーム</string>
+    <string name="detail_device">デバイス</string>
+    <string name="detail_synced_format">%1$d（%2$d 同期済み）</string>
+    <string name="header_decoded_audio">デコード音声</string>
+    <string name="btn_play">再生</string>
+    <string name="audio_playing">再生中…</string>
+    <string name="header_callsigns_decoded">デコード済みコールサイン</string>
+    <string name="detail_snr_db">SNR %1$d dB</string>
+    <string name="detail_offset_frame">+%1$d秒 | フレーム %2$d</string>
+    <string name="header_snr_over_time">SNR推移グラフ</string>
+    <string name="header_sync_events">同期イベント</string>
+    <string name="header_signal_summary">信号サマリー</string>
+    <string name="detail_peak_snr">ピークSNR</string>
+    <string name="detail_avg_snr">平均SNR</string>
+    <string name="detail_freq_offset_range">周波数偏差範囲</string>
+    <string name="detail_snapshots">スナップショット数</string>
+
+    <!-- 設定画面 -->
+    <string name="header_audio_input">音声入力</string>
+    <string name="header_audio_devices">オーディオデバイス</string>
+    <string name="settings_input_devices">入力デバイス</string>
+    <string name="settings_no_input_devices">音声入力デバイスが見つかりません</string>
+    <string name="settings_refresh">更新</string>
+    <string name="header_input_gain">入力ゲイン</string>
+    <string name="settings_digital_gain">デジタルゲイン</string>
+    <string name="settings_gain_help">USB音声入力の微弱信号を増幅します。ピークレベルが -15〜-5 dBFS になるよう調整してください。</string>
+    <string name="header_rx_output">受信出力</string>
+    <string name="settings_volume">音量</string>
+    <string name="settings_volume_help">送信出力レベルも同時に制御します。リグのALCメーターが振れないよう調整してください——ALCをリニア領域に保ち（読み取りなし/バー表示なし）、信号の歪みやスプラッタを防ぎます。</string>
+    <string name="header_tx_callsign">送信コールサイン</string>
+    <string name="settings_callsign_label">コールサイン（EOO）</string>
+    <string name="settings_callsign_help">送信時にEOO（交信終了）フレームにコールサインが埋め込まれます。</string>
+    <string name="header_tx_output_device">送信出力デバイス</string>
+    <string name="settings_output_devices">出力デバイス</string>
+    <string name="settings_tx_output_help">RADE送信変調出力に使用するオーディオインターフェースを選択します。</string>
+    <string name="settings_no_output_devices">音声出力デバイスが見つかりません</string>
+    <string name="header_about">概要</string>
+    <string name="about_app_name">RADE Decode</string>
+    <string name="about_description">HFデジタル音声トランシーバー。デバイス上のFARGANニューラルネットワークボコーダーでRADE OFDM信号をデコード・エンコードします。</string>
+    <string name="about_modem">モデム</string>
+    <string name="about_modem_value">8kHz OFDM、30キャリア</string>
+    <string name="about_vocoder">ボコーダー</string>
+    <string name="about_vocoder_value">FARGAN @ 16kHz</string>
+    <string name="about_project">プロジェクト</string>
+    <string name="about_project_value">FreeDV / Codec2</string>
+    <string name="header_license">ライセンス</string>
+    <string name="license_title">LGPL-2.1 ライセンス</string>
+    <string name="license_description">このアプリケーションはGNU劣等一般公衆利用許諾書バージョン2.1に基づきライセンスされています。</string>
+    <string name="license_third_party">サードパーティライブラリ</string>
+
+    <!-- リグ制御画面 -->
+    <string name="header_connection">接続設定</string>
+    <string name="rig_tcp_mode">TCP（rigctld）</string>
+    <string name="rig_serial_mode">シリアル（ローカル）</string>
+    <string name="rig_host">ホスト</string>
+    <string name="rig_port">ポート</string>
+    <string name="rig_device">デバイス</string>
+    <string name="rig_baud">ボーレート</string>
+    <string name="rig_manufacturer">メーカー</string>
+    <string name="rig_all_manufacturers">すべてのメーカー</string>
+    <string name="rig_model">機種</string>
+    <string name="rig_search">検索…</string>
+    <string name="btn_disconnect">切断</string>
+    <string name="btn_connect">接続</string>
+    <string name="rig_connected_to">%1$s:%2$d に接続中</string>
+    <string name="rig_not_connected">未接続</string>
+    <string name="header_frequency">周波数</string>
+    <string name="rig_freq_khz">周波数（kHz）</string>
+    <string name="btn_set">設定</string>
+    <string name="header_mode">モード</string>
+    <string name="rig_no_mode">---</string>
+    <string name="header_s_meter">Sメーター</string>
+    <string name="rig_freq_display_empty">-----.-- kHz</string>
+
+    <!-- バッテリー最適化ダイアログ -->
+    <string name="battery_dialog_title">バックグラウンドデコード設定</string>
+    <string name="battery_dialog_description">RADE Decodeは信号の受信・デコードのためバックグラウンドで継続動作する必要があります。一部のデバイスではバックグラウンド動作が制限され、デコードが中断する場合があります。</string>
+    <string name="battery_opt_disabled">バッテリー最適化は無効です——良好！</string>
+    <string name="battery_opt_enabled">バッテリー最適化が有効です——デコードが中断する可能性があります</string>
+    <string name="battery_disable_btn">バッテリー最適化を無効にする</string>
+    <string name="battery_additional_steps">追加の手順</string>
+    <string name="battery_open_app_settings">アプリ設定を開く</string>
+    <string name="battery_warning">バッテリー最適化を無効にすると、RADE Decode動作中の電力消費が増加します。本アプリは積極的にデコード中（開始ボタン押下後）のみ高い電力を消費します。システム設定からいつでも最適化を再度有効にできます。</string>
+    <string name="btn_got_it">了解</string>
+
+    <!-- バッテリーメーカー別ヒント -->
+    <string name="battery_tip_allow_background">アプリ設定→バッテリーで「バックグラウンド動作を許可」が有効になっていることを確認してください。</string>
+    <string name="battery_tip_battery_saver">「省電力モード」使用時は、RADE Decodeを例外リストに追加してください。</string>
+    <string name="battery_tip_samsung_1">Samsung：設定→バッテリー→バックグラウンド使用制限→スリープしないアプリ→RADE Decodeを追加。</string>
+    <string name="battery_tip_samsung_2">Samsung：「バッテリー使用量の自動調整」を無効にするか、アプリを「監視対象外のアプリ」に追加。</string>
+    <string name="battery_tip_samsung_3">Samsung：設定→アプリ→RADE Decode→バッテリー→制限なし。</string>
+    <string name="battery_tip_xiaomi_1">Xiaomi/POCO：設定→アプリ→RADE Decode→省電力ポリシー→制限なし。</string>
+    <string name="battery_tip_xiaomi_2">Xiaomi/POCO：設定→バッテリー→アプリ省電力→RADE Decode→制限なし。</string>
+    <string name="battery_tip_xiaomi_3">Xiaomi/POCO：セキュリティセンター→バッテリー→アプリ省電力→RADE Decode→制限なし。</string>
+    <string name="battery_tip_xiaomi_4">Xiaomi/POCO：セキュリティ設定でRADE Decodeの「自動起動」を有効にしてください。</string>
+    <string name="battery_tip_huawei_1">Huawei/Honor：設定→バッテリー→アプリ起動管理→RADE Decode→「手動管理」に設定し、すべてのオプションを有効に。</string>
+    <string name="battery_tip_huawei_2">Huawei/Honor：設定→アプリ→RADE Decode→バッテリー→「バックグラウンド動作を許可」を有効に。</string>
+    <string name="battery_tip_huawei_3">Huawei/Honor：このアプリの「高電力消費アラート」を無効にしてください。</string>
+    <string name="battery_tip_oppo_1">OPPO/Realme/OnePlus：設定→バッテリー→詳細設定→バッテリー使用量の最適化→RADE Decode→最適化しない。</string>
+    <string name="battery_tip_oppo_2">OnePlus：設定→バッテリー→バッテリー最適化→RADE Decode→最適化しない。</string>
+    <string name="battery_tip_oppo_3">OPPO/Realme：「自動起動を許可」と「バックグラウンド動作を許可」を有効に。</string>
+    <string name="battery_tip_vivo_1">vivo/iQOO：設定→バッテリー→バックグラウンド電力管理→RADE Decode→許可。</string>
+    <string name="battery_tip_vivo_2">vivo/iQOO：iマネージャー→アプリ管理→自動起動管理→RADE Decodeを有効に。</string>
+    <string name="battery_tip_asus">ASUS：設定→バッテリー→PowerMaster→自動起動管理→RADE Decodeを有効に。</string>
+    <string name="battery_tip_sony">Sony：設定→バッテリー→自動調整バッテリー→例外→RADE Decodeを追加。</string>
+
+    <!-- 通知 -->
+    <string name="notification_channel_name">RADE Decode</string>
+    <string name="notification_channel_description">バックグラウンド音声デコード状態</string>
+    <string name="notification_starting">起動中…</string>
+    <string name="notification_title_with_callsign">RADE：%1$s</string>
+    <string name="notification_title_default">RADE Decode</string>
+    <string name="notification_text">%1$s | SNR：%2$ddB</string>
+    <string name="notification_stop">停止</string>
+    <string name="warning_unprocessed_rejected">音声処理が有効です — デバイスがUnprocessedモードを拒否しました。デコードに失敗する可能性があります。USB音声入力をお試しください。</string>
+    <string name="share_audio">デコード音声を共有</string>
+</resources>
