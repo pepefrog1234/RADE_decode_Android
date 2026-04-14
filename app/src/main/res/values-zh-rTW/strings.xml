@@ -115,6 +115,10 @@
     <string name="rig_host">主機</string>
     <string name="rig_port">埠號</string>
     <string name="rig_device">裝置</string>
+    <string name="rig_usb_device">USB 裝置</string>
+    <string name="rig_no_usb_device">未偵測到 USB 序列埠裝置</string>
+    <string name="rig_usb_refresh">重新整理</string>
+    <string name="rig_usb_permission_waiting">等待 USB 授權中…</string>
     <string name="rig_baud">鮑率</string>
     <string name="rig_manufacturer">製造商</string>
     <string name="rig_all_manufacturers">所有製造商</string>
@@ -122,6 +126,7 @@
     <string name="rig_search">搜尋…</string>
     <string name="btn_disconnect">中斷連線</string>
     <string name="btn_connect">建立連線</string>
+    <string name="rig_connecting">連線中…</string>
     <string name="rig_connected_to">已連線至 %1$s:%2$d</string>
     <string name="rig_not_connected">未連線</string>
     <string name="header_frequency">頻率</string>

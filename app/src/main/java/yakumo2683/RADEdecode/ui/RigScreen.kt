@@ -28,10 +28,15 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.viewmodel.compose.viewModel
+import android.content.Context
+import androidx.compose.ui.platform.LocalContext
 import yakumo2683.RADEdecode.R
+import yakumo2683.RADEdecode.usb.UsbSerialManager
 import yakumo2683.RADEdecode.ui.theme.*
 
-private val modes = listOf("PKTUSB", "PKTLSB")
+private val dataModeModes = listOf("PKTUSB", "PKTLSB")
+private val noDataModeModes = listOf("USB", "LSB")
+private val noDataModeMfgs = setOf("Xiegu", "Alinco", "Drake", "AOR", "JRC")
 
 data class RigModel(val id: Int, val mfg: String, val name: String) {
     val displayName: String get() = "$mfg $name"
@@ -231,23 +236,32 @@ private val rigModels = listOf(
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun RigScreen(viewModel: TransceiverViewModel = viewModel()) {
+    val context = LocalContext.current
+    val rigPrefs = remember { context.getSharedPreferences("rig_prefs", Context.MODE_PRIVATE) }
+
     val state by viewModel.uiState.collectAsState()
     val rigState by viewModel.rigState.collectAsState()
+    val usbState by viewModel.usbSerialState.collectAsState()
+    val connecting by viewModel.rigConnecting.collectAsState()
     val focusManager = LocalFocusManager.current
 
     // Connection mode: 0 = TCP (remote rigctld), 1 = Serial (local rigctld)
-    var connMode by remember { mutableIntStateOf(0) }
-    var hostInput by remember { mutableStateOf(rigState.host.ifEmpty { "192.168.1.100" }) }
-    var portInput by remember { mutableStateOf(if (rigState.port > 0) rigState.port.toString() else "4532") }
+    var connMode by remember { mutableIntStateOf(rigPrefs.getInt("conn_mode", 0)) }
+    var hostInput by remember { mutableStateOf(rigPrefs.getString("host", "192.168.1.100") ?: "192.168.1.100") }
+    var portInput by remember { mutableStateOf(rigPrefs.getString("port", "4532") ?: "4532") }
     var freqInput by remember { mutableStateOf("") }
     // Serial mode fields
-    var serialDevice by remember { mutableStateOf("/dev/ttyUSB0") }
-    var serialSpeed by remember { mutableStateOf("9600") }
-    var selectedRigIndex by remember { mutableIntStateOf(0) }  // index into rigModels
+    var serialSpeed by remember { mutableStateOf(rigPrefs.getString("baud", "19200") ?: "19200") }
+    var selectedRigIndex by remember { mutableIntStateOf(rigPrefs.getInt("rig_index", 0).coerceIn(0, rigModels.size - 1)) }
     var rigModelExpanded by remember { mutableStateOf(false) }
+    // USB device selection
+    var selectedUsbDeviceIndex by remember { mutableIntStateOf(0) }
+    var usbDeviceExpanded by remember { mutableStateOf(false) }
+    // CI-V address (for Icom rigs)
+    var civAddrInput by remember { mutableStateOf(rigPrefs.getString("civ_addr", "") ?: "") }
     // Manufacturer filter
     val manufacturers = remember { listOf("All") + rigModels.map { it.mfg }.distinct() }
-    var selectedMfg by remember { mutableStateOf("All") }
+    var selectedMfg by remember { mutableStateOf(rigPrefs.getString("mfg_filter", "All") ?: "All") }
     var mfgExpanded by remember { mutableStateOf(false) }
 
     // Sync freq display when rig updates (show as kHz)
@@ -465,22 +479,71 @@ fun RigScreen(viewModel: TransceiverViewModel = viewModel()) {
                             }
                         }
                     }
+                    // USB device picker
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(10.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        ExposedDropdownMenuBox(
+                            expanded = usbDeviceExpanded,
+                            onExpandedChange = { if (!rigState.connected) usbDeviceExpanded = it },
+                            modifier = Modifier.weight(1f)
+                        ) {
+                            val displayText = if (usbState.devices.isEmpty()) {
+                                stringResource(R.string.rig_no_usb_device)
+                            } else if (selectedUsbDeviceIndex < usbState.devices.size) {
+                                usbState.devices[selectedUsbDeviceIndex].displayName
+                            } else {
+                                stringResource(R.string.rig_no_usb_device)
+                            }
+                            OutlinedTextField(
+                                value = displayText,
+                                onValueChange = {},
+                                readOnly = true,
+                                enabled = !rigState.connected && usbState.devices.isNotEmpty(),
+                                label = { Text(stringResource(R.string.rig_usb_device)) },
+                                trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded = usbDeviceExpanded) },
+                                modifier = Modifier.fillMaxWidth().menuAnchor(),
+                                singleLine = true,
+                                textStyle = androidx.compose.ui.text.TextStyle(fontFamily = FontFamily.Monospace, fontSize = 13.sp),
+                                colors = OutlinedTextFieldDefaults.colors(
+                                    focusedBorderColor = Cyan400, focusedLabelColor = Cyan400, cursorColor = Cyan400
+                                )
+                            )
+                            ExposedDropdownMenu(
+                                expanded = usbDeviceExpanded,
+                                onDismissRequest = { usbDeviceExpanded = false }
+                            ) {
+                                usbState.devices.forEachIndexed { idx, dev ->
+                                    DropdownMenuItem(
+                                        text = { Text(dev.displayName, fontSize = 13.sp, fontFamily = FontFamily.Monospace) },
+                                        onClick = {
+                                            selectedUsbDeviceIndex = idx
+                                            usbDeviceExpanded = false
+                                        }
+                                    )
+                                }
+                            }
+                        }
+                        OutlinedButton(
+                            onClick = { viewModel.usbSerialManager.refreshDevices() },
+                            enabled = !rigState.connected,
+                            shape = RoundedCornerShape(10.dp),
+                            contentPadding = PaddingValues(horizontal = 12.dp)
+                        ) {
+                            Text(stringResource(R.string.rig_usb_refresh), fontSize = 12.sp)
+                        }
+                    }
+
+                    // Baud rate (+ CI-V address for Icom rigs only)
+                    val selectedRig = rigModels[selectedRigIndex]
+                    val isIcomRig = selectedRig.mfg == "Icom" || selectedRig.mfg == "Icom Marine" || selectedRig.mfg == "Xiegu"
+
                     Row(
                         modifier = Modifier.fillMaxWidth(),
                         horizontalArrangement = Arrangement.spacedBy(10.dp)
                     ) {
-                        OutlinedTextField(
-                            value = serialDevice,
-                            onValueChange = { serialDevice = it },
-                            label = { Text(stringResource(R.string.rig_device)) },
-                            singleLine = true,
-                            enabled = !rigState.connected,
-                            modifier = Modifier.weight(2f),
-                            textStyle = androidx.compose.ui.text.TextStyle(fontFamily = FontFamily.Monospace, fontSize = 14.sp),
-                            colors = OutlinedTextFieldDefaults.colors(
-                                focusedBorderColor = Cyan400, focusedLabelColor = Cyan400, cursorColor = Cyan400
-                            )
-                        )
                         OutlinedTextField(
                             value = serialSpeed,
                             onValueChange = { serialSpeed = it.filter { c -> c.isDigit() } },
@@ -494,6 +557,31 @@ fun RigScreen(viewModel: TransceiverViewModel = viewModel()) {
                                 focusedBorderColor = Cyan400, focusedLabelColor = Cyan400, cursorColor = Cyan400
                             )
                         )
+                        if (isIcomRig) {
+                            OutlinedTextField(
+                                value = civAddrInput,
+                                onValueChange = { civAddrInput = it.filter { c -> c.isDigit() || c in 'a'..'f' || c in 'A'..'F' }.take(4) },
+                                label = { Text("CI-V") },
+                                placeholder = { Text("auto") },
+                                singleLine = true,
+                                enabled = !rigState.connected,
+                                modifier = Modifier.weight(1f),
+                                textStyle = androidx.compose.ui.text.TextStyle(fontFamily = FontFamily.Monospace, fontSize = 14.sp),
+                                colors = OutlinedTextFieldDefaults.colors(
+                                    focusedBorderColor = Cyan400, focusedLabelColor = Cyan400, cursorColor = Cyan400
+                                )
+                            )
+                        }
+                    }
+
+                    // USB permission status
+                    if (usbState.permissionRequested) {
+                        Text(
+                            stringResource(R.string.rig_usb_permission_waiting),
+                            color = Cyan400,
+                            fontSize = 12.sp,
+                            fontFamily = FontFamily.Monospace
+                        )
                     }
                 }
 
@@ -502,36 +590,82 @@ fun RigScreen(viewModel: TransceiverViewModel = viewModel()) {
                         focusManager.clearFocus()
                         if (rigState.connected) {
                             viewModel.rigDisconnect()
-                        } else if (connMode == 0) {
-                            val port = portInput.toIntOrNull() ?: 4532
-                            viewModel.rigConnect(hostInput, port)
                         } else {
-                            val model = rigModels[selectedRigIndex].id
-                            val speed = serialSpeed.toIntOrNull() ?: 9600
-                            viewModel.rigStartLocal(model, serialDevice, speed)
+                            // Persist settings on connect
+                            rigPrefs.edit()
+                                .putInt("conn_mode", connMode)
+                                .putString("host", hostInput)
+                                .putString("port", portInput)
+                                .putString("baud", serialSpeed)
+                                .putInt("rig_index", selectedRigIndex)
+                                .putString("civ_addr", civAddrInput)
+                                .putString("mfg_filter", selectedMfg)
+                                .apply()
+
+                            if (connMode == 0) {
+                                val port = portInput.toIntOrNull() ?: 4532
+                                viewModel.rigMfg = rigModels[selectedRigIndex].mfg
+                                viewModel.rigConnect(hostInput, port)
+                            } else {
+                                val rig = rigModels[selectedRigIndex]
+                                viewModel.rigMfg = rig.mfg
+                                val speed = serialSpeed.toIntOrNull() ?: 19200
+                                val usbDevices = usbState.devices
+                                val needsCiv = rig.mfg == "Icom" || rig.mfg == "Icom Marine" || rig.mfg == "Xiegu"
+                                if (usbDevices.isNotEmpty() && selectedUsbDeviceIndex < usbDevices.size) {
+                                    viewModel.rigStartLocalUsb(
+                                        model = rig.id,
+                                        usbDevice = usbDevices[selectedUsbDeviceIndex],
+                                        speed = speed,
+                                        civAddr = if (needsCiv) civAddrInput else ""
+                                    )
+                                }
+                            }
                         }
                     },
+                    enabled = !connecting && (rigState.connected || connMode == 0 || usbState.devices.isNotEmpty()),
                     modifier = Modifier.fillMaxWidth().height(46.dp),
                     shape = RoundedCornerShape(10.dp),
                     colors = ButtonDefaults.buttonColors(
-                        containerColor = if (rigState.connected) Red400 else Cyan600
+                        containerColor = when {
+                            rigState.connected -> Red400
+                            connecting -> OnSurfaceDim
+                            else -> Cyan600
+                        }
                     )
                 ) {
-                    Icon(
-                        if (rigState.connected) Icons.Default.LinkOff else Icons.Default.Link,
-                        contentDescription = null,
-                        modifier = Modifier.size(20.dp)
-                    )
-                    Spacer(Modifier.width(8.dp))
-                    Text(
-                        if (rigState.connected) stringResource(R.string.btn_disconnect) else stringResource(R.string.btn_connect),
-                        fontWeight = FontWeight.Bold,
-                        letterSpacing = 2.sp
-                    )
+                    if (connecting) {
+                        CircularProgressIndicator(
+                            modifier = Modifier.size(18.dp),
+                            strokeWidth = 2.dp,
+                            color = MaterialTheme.colorScheme.onPrimary
+                        )
+                        Spacer(Modifier.width(8.dp))
+                        Text(
+                            stringResource(R.string.rig_connecting),
+                            fontWeight = FontWeight.Bold,
+                            letterSpacing = 2.sp
+                        )
+                    } else {
+                        Icon(
+                            if (rigState.connected) Icons.Default.LinkOff else Icons.Default.Link,
+                            contentDescription = null,
+                            modifier = Modifier.size(20.dp)
+                        )
+                        Spacer(Modifier.width(8.dp))
+                        Text(
+                            if (rigState.connected) stringResource(R.string.btn_disconnect) else stringResource(R.string.btn_connect),
+                            fontWeight = FontWeight.Bold,
+                            letterSpacing = 2.sp
+                        )
+                    }
                 }
 
                 if (rigState.error.isNotEmpty()) {
                     Text(rigState.error, color = Red400, fontSize = 12.sp)
+                }
+                if (usbState.error.isNotEmpty() && connMode == 1) {
+                    Text(usbState.error, color = Red400, fontSize = 12.sp)
                 }
             }
         }
@@ -666,8 +800,9 @@ fun RigScreen(viewModel: TransceiverViewModel = viewModel()) {
 
                 Spacer(Modifier.height(10.dp))
 
-                // Mode buttons grid (2 rows of 4)
-                for (row in modes.chunked(4)) {
+                // Mode buttons — data modes for rigs that support them, USB/LSB otherwise
+                val currentModes = if (rigModels[selectedRigIndex].mfg in noDataModeMfgs) noDataModeModes else dataModeModes
+                for (row in currentModes.chunked(4)) {
                     Row(
                         modifier = Modifier.fillMaxWidth(),
                         horizontalArrangement = Arrangement.spacedBy(6.dp)
@@ -734,6 +869,8 @@ fun RigScreen(viewModel: TransceiverViewModel = viewModel()) {
                 )
             }
         }
+
+
     }
 }
 

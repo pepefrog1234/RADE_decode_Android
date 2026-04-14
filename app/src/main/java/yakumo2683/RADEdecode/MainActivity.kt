@@ -136,7 +136,7 @@ fun RADEDecodeApp(viewModel: TransceiverViewModel = viewModel()) {
             modifier = Modifier.padding(innerPadding)
         ) {
             composable("receiver") { TransceiverScreen(viewModel) }
-            composable("rig") { RigScreen() }
+            composable("rig") { RigScreen(viewModel) }
             composable("stations") { StationsScreen(viewModel.reporter) }
             composable("map") { ReporterMapScreen(viewModel.reporter) }
             composable("log") {

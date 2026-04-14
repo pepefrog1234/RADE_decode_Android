@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Generic CDC/ACM (covers most modern radios with built-in USB) -->
+    <usb-device class="2" subclass="2" protocol="1" />
+    <!-- Silicon Labs CP210x (common in ICOM, Yaesu, etc.) -->
+    <usb-device vendor-id="4292" />
+    <!-- ICOM CI-V USB interface -->
+    <usb-device vendor-id="3110" />
+    <!-- FTDI FT232/FT2232 (common USB-serial adapters) -->
+    <usb-device vendor-id="1027" />
+    <!-- Prolific PL2303 -->
+    <usb-device vendor-id="1659" />
+    <!-- CH340/CH341 (cheap USB-serial adapters) -->
+    <usb-device vendor-id="6790" />
+</resources>

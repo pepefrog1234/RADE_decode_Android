@@ -115,6 +115,10 @@
     <string name="rig_host">ホスト</string>
     <string name="rig_port">ポート</string>
     <string name="rig_device">デバイス</string>
+    <string name="rig_usb_device">USB デバイス</string>
+    <string name="rig_no_usb_device">USB シリアルデバイスが見つかりません</string>
+    <string name="rig_usb_refresh">更新</string>
+    <string name="rig_usb_permission_waiting">USB 権限を待っています…</string>
     <string name="rig_baud">ボーレート</string>
     <string name="rig_manufacturer">メーカー</string>
     <string name="rig_all_manufacturers">すべてのメーカー</string>
@@ -122,6 +126,7 @@
     <string name="rig_search">検索…</string>
     <string name="btn_disconnect">切断</string>
     <string name="btn_connect">接続</string>
+    <string name="rig_connecting">接続中…</string>
     <string name="rig_connected_to">%1$s:%2$d に接続中</string>
     <string name="rig_not_connected">未接続</string>
     <string name="header_frequency">周波数</string>

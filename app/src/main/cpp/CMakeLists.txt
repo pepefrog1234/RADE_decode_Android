@@ -78,6 +78,7 @@ add_library(rade_jni SHARED
     rade_jni.cpp
     audio_engine.cpp
     audio_ring_buffer.cpp
+    usb_serial_helper.c
 )
 
 target_compile_features(rade_jni PRIVATE cxx_std_17)
@@ -106,4 +107,13 @@ target_link_libraries(rade_jni
     log
     m
     android
+)
+
+# ─── fdsan disable library (LD_PRELOAD for rigctld) ─────────
+add_library(fdsan_disable SHARED
+    fdsan_disable.c
+)
+target_link_libraries(fdsan_disable
+    dl
+    log
 )

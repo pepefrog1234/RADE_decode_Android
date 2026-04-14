@@ -23,7 +23,7 @@ class RigController {
 
     companion object {
         private const val TAG = "RigController"
-        private const val CONNECT_TIMEOUT_MS = 5000
+        private const val CONNECT_TIMEOUT_MS = 3000
         private const val READ_TIMEOUT_MS = 3000
         private const val DEFAULT_PORT = 4532
     }
@@ -76,6 +76,9 @@ class RigController {
                 Log.i(TAG, "Connected to rigctld at $host:$port")
 
                 startPolling()
+            } catch (e: java.net.ConnectException) {
+                // ECONNREFUSED during retry — don't show as error
+                _state.value = _state.value.copy(connected = false, error = "")
             } catch (e: Exception) {
                 Log.e(TAG, "Connect failed: ${e.message}")
                 _state.value = _state.value.copy(
@@ -113,7 +116,15 @@ class RigController {
             val r = reader ?: return null
             return try {
                 w.println(cmd)
-                r.readLine()
+                val resp = r.readLine()
+                if (cmd.isNotEmpty() && !cmd.startsWith("f") && !cmd.startsWith("t") && !cmd.startsWith("l")) {
+                    Log.i(TAG, "CMD '$cmd' → '$resp'")
+                }
+                resp
+            } catch (e: java.net.SocketTimeoutException) {
+                // Timeout is non-fatal — rigctld is just slow (CI-V retries)
+                Log.w(TAG, "Command '$cmd' timed out (non-fatal)")
+                null
             } catch (e: Exception) {
                 Log.e(TAG, "Command '$cmd' failed: ${e.message}")
                 handleDisconnect()
@@ -136,6 +147,9 @@ class RigController {
                     lines.add(line)
                 }
                 lines
+            } catch (e: java.net.SocketTimeoutException) {
+                Log.w(TAG, "Multi-command '$cmd' timed out (non-fatal)")
+                emptyList()
             } catch (e: Exception) {
                 Log.e(TAG, "Multi-command '$cmd' failed: ${e.message}")
                 handleDisconnect()
@@ -168,33 +182,40 @@ class RigController {
     /* ── Mode ───────────────────────────────────────────────── */
 
     suspend fun setMode(mode: String, bandwidth: Int = 0) = withContext(Dispatchers.IO) {
-        sendCommand("M $mode $bandwidth")
+        val resp = sendCommand("M $mode $bandwidth")
+        if (resp != null && resp.contains("-9")) {
+            Log.w(TAG, "setMode($mode): rig backend rejected (RPRT -9), mode must be changed on radio")
+        }
         _state.value = _state.value.copy(mode = mode, bandwidth = bandwidth)
     }
 
     suspend fun getMode(): Pair<String, Int> = withContext(Dispatchers.IO) {
-        // rigctld "m" returns two lines: mode, then passband
-        val lines = sendCommandMulti("+m")
-        if (lines.size >= 2) {
-            val mode = lines[0].removePrefix("Mode: ").trim()
-            val bw = lines[1].removePrefix("Passband: ").trim().toIntOrNull() ?: 0
-            _state.value = _state.value.copy(mode = mode, bandwidth = bw)
-            Pair(mode, bw)
-        } else {
-            // Fallback: simple protocol
-            val resp = sendCommand("m")
-            val mode = resp?.trim() ?: ""
-            val bwResp = sendCommand("")  // second line
-            val bw = bwResp?.trim()?.toIntOrNull() ?: 0
-            _state.value = _state.value.copy(mode = mode, bandwidth = bw)
-            Pair(mode, bw)
+        // Simple protocol: "m" returns mode on line 1, passband on line 2
+        var mode = ""
+        var bw = 0
+        synchronized(lock) {
+            val w = writer ?: return@withContext Pair("", 0)
+            val r = reader ?: return@withContext Pair("", 0)
+            try {
+                w.println("m")
+                mode = r.readLine()?.trim() ?: ""
+                bw = r.readLine()?.trim()?.toIntOrNull() ?: 0
+            } catch (_: java.net.SocketTimeoutException) {
+                // Non-fatal
+            } catch (_: Exception) {}
         }
+        if (mode.isNotEmpty()) {
+            _state.value = _state.value.copy(mode = mode, bandwidth = bw)
+        }
+        Pair(mode, bw)
     }
 
     /* ── PTT ────────────────────────────────────────────────── */
 
     suspend fun setPtt(on: Boolean) = withContext(Dispatchers.IO) {
+        Log.i(TAG, "setPtt($on) sending...")
         val resp = sendCommand("T ${if (on) 1 else 0}")
+        Log.i(TAG, "setPtt($on) response: $resp")
         if (resp != null) {
             _state.value = _state.value.copy(ptt = on)
         }
@@ -242,11 +263,15 @@ class RigController {
         pollingJob = scope.launch {
             while (isActive && _state.value.connected) {
                 try {
+                    // Each command releases the lock between calls,
+                    // giving user-initiated commands a chance to execute
                     getFreq()
+                    delay(100)
                     getPtt()
+                    delay(100)
                     getSmeter()
                 } catch (_: Exception) {}
-                delay(500)
+                delay(1000)
             }
         }
     }

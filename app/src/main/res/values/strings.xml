@@ -116,6 +116,10 @@
     <string name="rig_host">Host</string>
     <string name="rig_port">Port</string>
     <string name="rig_device">Device</string>
+    <string name="rig_usb_device">USB Device</string>
+    <string name="rig_no_usb_device">No USB serial device found</string>
+    <string name="rig_usb_refresh">Refresh</string>
+    <string name="rig_usb_permission_waiting">Waiting for USB permission…</string>
     <string name="rig_baud">Baud</string>
     <string name="rig_manufacturer">Manufacturer</string>
     <string name="rig_all_manufacturers">All Manufacturers</string>
@@ -123,6 +127,7 @@
     <string name="rig_search">Search…</string>
     <string name="btn_disconnect">DISCONNECT</string>
     <string name="btn_connect">CONNECT</string>
+    <string name="rig_connecting">CONNECTING…</string>
     <string name="rig_connected_to">Connected to %1$s:%2$d</string>
     <string name="rig_not_connected">Not connected</string>
     <string name="header_frequency">FREQUENCY</string>

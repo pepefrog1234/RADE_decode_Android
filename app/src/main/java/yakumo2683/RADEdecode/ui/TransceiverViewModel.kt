@@ -1,6 +1,7 @@
 package yakumo2683.RADEdecode.ui
 
 import android.app.Application
+import android.util.Log
 import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
@@ -18,6 +19,7 @@ import yakumo2683.RADEdecode.network.FreeDVReporter
 import yakumo2683.RADEdecode.network.RigController
 import yakumo2683.RADEdecode.network.RigctldProcess
 import yakumo2683.RADEdecode.service.AudioService
+import yakumo2683.RADEdecode.usb.UsbSerialManager
 
 class TransceiverViewModel(application: Application) : AndroidViewModel(application) {
 
@@ -29,6 +31,10 @@ class TransceiverViewModel(application: Application) : AndroidViewModel(applicat
     private val rigController = RigController()
     private val rigctldProcess = RigctldProcess(application)
     val rigState: StateFlow<RigController.RigState> = rigController.state
+
+    /* ── USB serial (for local rigctld via USB Host API) ─── */
+    val usbSerialManager = UsbSerialManager(application)
+    val usbSerialState: StateFlow<UsbSerialManager.UsbSerialState> = usbSerialManager.state
 
     data class UiState(
         val isRunning: Boolean = false,    // RX is active
@@ -115,6 +121,7 @@ class TransceiverViewModel(application: Application) : AndroidViewModel(applicat
 
         bindToService()
         refreshDevices()
+        usbSerialManager.register()
     }
 
     /* ── RX ─────────────────────────────────────────────────── */
@@ -193,6 +200,7 @@ class TransceiverViewModel(application: Application) : AndroidViewModel(applicat
 
     /** Switch from RX → TX (stops RX, starts TX, keys PTT) */
     fun switchToTx() {
+        Log.i("TransceiverVM", "switchToTx: isRunning=${_uiState.value.isRunning}, rigConnected=${rigController.isConnected}")
         if (!_uiState.value.isRunning) return
         // startTransmitting handles stopping RX internally (atomic transition)
         audioService?.startTransmitting(
@@ -208,6 +216,7 @@ class TransceiverViewModel(application: Application) : AndroidViewModel(applicat
 
     /** Switch from TX → RX (unkeys PTT, stops TX, resumes RX) */
     fun switchToRx() {
+        Log.i("TransceiverVM", "switchToRx: isTx=${_uiState.value.isTx}, rigConnected=${rigController.isConnected}")
         if (!_uiState.value.isTx) return
         // Auto-PTT off
         if (rigController.isConnected) {
@@ -271,17 +280,22 @@ class TransceiverViewModel(application: Application) : AndroidViewModel(applicat
         val bridge = AudioBridge(getApplication())
         val devices = bridge.getInputDevices()
         val outputDevices = bridge.getOutputDevices()
-        val usbDevice = bridge.findUsbInputDevice()
+        val usbInput = bridge.findUsbInputDevice()
+        val usbOutput = outputDevices.firstOrNull { it.isUsb }
         bridge.release()
 
         _uiState.value = _uiState.value.copy(
             devices = devices,
             outputDevices = outputDevices,
-            selectedDeviceId = usbDevice?.id ?: _uiState.value.selectedDeviceId
+            selectedDeviceId = usbInput?.id ?: _uiState.value.selectedDeviceId,
+            selectedOutputDeviceId = usbOutput?.id ?: _uiState.value.selectedOutputDeviceId
         )
     }
 
     /* ── Rig control (rigctld) ─────────────────────────────── */
+
+    /** Rig manufacturer of the currently selected model, used to pick USB/PKTUSB */
+    var rigMfg: String = ""
 
     fun rigConnect(host: String, port: Int) {
         viewModelScope.launch { rigController.connect(host, port) }
@@ -290,9 +304,10 @@ class TransceiverViewModel(application: Application) : AndroidViewModel(applicat
     fun rigDisconnect() {
         rigController.disconnect()
         rigctldProcess.stop()
+        usbSerialManager.close()
     }
 
-    /** Start local rigctld process (serial mode) then connect to it */
+    /** Start local rigctld process (serial mode, device path) then connect to it */
     fun rigStartLocal(model: Int, device: String, speed: Int) {
         viewModelScope.launch(Dispatchers.IO) {
             rigctldProcess.stop()
@@ -304,11 +319,66 @@ class TransceiverViewModel(application: Application) : AndroidViewModel(applicat
         }
     }
 
+    private val _rigConnecting = MutableStateFlow(false)
+    val rigConnecting: StateFlow<Boolean> = _rigConnecting.asStateFlow()
+
+    /** Start local rigctld via USB Host API + pty bridge (no root required) */
+    fun rigStartLocalUsb(model: Int, usbDevice: UsbSerialManager.UsbSerialDevice, speed: Int, civAddr: String = "") {
+        if (_rigConnecting.value || rigController.isConnected) return
+        _rigConnecting.value = true
+
+        usbSerialManager.openDevice(usbDevice, speed) { ptyPath ->
+            if (ptyPath.isNotEmpty()) {
+                viewModelScope.launch(Dispatchers.IO) {
+                    try {
+                        rigctldProcess.stop()
+                        val ok = rigctldProcess.startWithPty(
+                            model = model, ptyPath = ptyPath, speed = speed, civAddr = civAddr
+                        )
+                        if (ok) {
+                            // Poll for rigctld TCP readiness
+                            var connected = false
+                            for (attempt in 1..10) {
+                                delay(1000)
+                                rigController.connect("127.0.0.1", 4532)
+                                if (rigController.isConnected) {
+                                    connected = true
+                                    // Auto-select USB audio output for TX
+                                    refreshDevices()
+                                    break
+                                }
+                            }
+                            if (!connected) {
+                                rigctldProcess.stop()
+                                usbSerialManager.close()
+                            }
+                        } else {
+                            rigController.disconnect()
+                            usbSerialManager.close()
+                        }
+                    } finally {
+                        _rigConnecting.value = false
+                    }
+                }
+            } else {
+                _rigConnecting.value = false
+            }
+        }
+    }
+
+    /** Manufacturers whose rigs do NOT support PKTUSB/PKTLSB data modes */
+    private val noDataModeMfgs = setOf("Xiegu", "Alinco", "Drake", "AOR", "JRC")
+
     fun rigSetFreq(hz: Long) {
         viewModelScope.launch {
             rigController.setFreq(hz)
-            // Auto-mode: PKTLSB below 10 MHz, PKTUSB at 10 MHz and above
-            val autoMode = if (hz < 10_000_000L) "PKTLSB" else "PKTUSB"
+            // Rigs that support data modes → PKTUSB/PKTLSB; others → USB/LSB
+            val useDataMode = rigMfg !in noDataModeMfgs
+            val autoMode = if (hz < 10_000_000L) {
+                if (useDataMode) "PKTLSB" else "LSB"
+            } else {
+                if (useDataMode) "PKTUSB" else "USB"
+            }
             rigController.setMode(autoMode)
         }
     }
@@ -317,8 +387,22 @@ class TransceiverViewModel(application: Application) : AndroidViewModel(applicat
         viewModelScope.launch { rigController.setMode(mode) }
     }
 
+    /** Direct rig PTT control — works regardless of audio engine state */
     fun rigSetPtt(on: Boolean) {
         viewModelScope.launch { rigController.setPtt(on) }
+    }
+
+    /** Switch to TX — keys rig PTT even if audio engine is not running */
+    fun rigPttOn() {
+        if (rigController.isConnected) {
+            viewModelScope.launch { rigController.setPtt(true) }
+        }
+    }
+
+    fun rigPttOff() {
+        if (rigController.isConnected) {
+            viewModelScope.launch { rigController.setPtt(false) }
+        }
     }
 
     /* ── Service binding ───────────────────────────────────── */
@@ -356,6 +440,7 @@ class TransceiverViewModel(application: Application) : AndroidViewModel(applicat
         locationTracker.stopTracking()
         rigController.destroy()
         rigctldProcess.destroy()
+        usbSerialManager.destroy()
         try {
             getApplication<Application>().unbindService(serviceConnection)
         } catch (_: Exception) { }
