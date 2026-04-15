@@ -308,6 +308,23 @@ Java_yakumo2683_RADEdecode_usb_UsbSerialManager_nativeStopBridge(
     pthread_mutex_unlock(&g_lock);
 }
 
+/* ── rigctld stdout/stderr → logcat thread ───────────────── */
+
+static void *rigctld_log_thread(void *arg) {
+    int fd = *(int *)arg;
+    free(arg);
+    char buf[512];
+    ssize_t n;
+    while ((n = read(fd, buf, sizeof(buf) - 1)) > 0) {
+        buf[n] = '\0';
+        /* Strip trailing newlines for clean logcat output */
+        while (n > 0 && (buf[n-1] == '\n' || buf[n-1] == '\r')) buf[--n] = '\0';
+        if (n > 0) LOGD("rigctld: %s", buf);
+    }
+    close(fd);
+    return NULL;
+}
+
 /* ── JNI: launch rigctld with fdsan disabled ─────────────── */
 
 /**
@@ -338,22 +355,24 @@ Java_yakumo2683_RADEdecode_network_RigctldProcess_nativeForkExec(
 
     LOGD("nativeForkExec: %s (argc=%d)", args[0], argc);
 
+    /* Create pipe for child's stdout/stderr → parent logcat */
+    int logpipe[2];
+    if (pipe(logpipe) < 0) { logpipe[0] = logpipe[1] = -1; }
+
     pid_t pid = fork();
     if (pid < 0) {
         LOGE("fork failed: %s", strerror(errno));
         for (int i = 0; i < argc; i++) free(args[i]);
         free(args);
+        if (logpipe[0] >= 0) { close(logpipe[0]); close(logpipe[1]); }
         return -1;
     }
 
     if (pid == 0) {
         /* ── Child process ── */
 
-        /* LD_PRELOAD libfdsan_disable.so to disable fdsan after exec.
-           The .so's constructor calls android_fdsan_set_error_level(0)
-           before rigctld's main() runs. */
+        /* LD_PRELOAD libfdsan_disable.so to disable fdsan after exec. */
         char preload_path[512];
-        /* nativeLibraryDir is the same dir as the rigctld binary */
         const char *binary = args[0];
         const char *last_slash = strrchr(binary, '/');
         if (last_slash) {
@@ -363,21 +382,31 @@ Java_yakumo2683_RADEdecode_network_RigctldProcess_nativeForkExec(
             setenv("LD_PRELOAD", preload_path, 1);
         }
 
-        /* Redirect stdout+stderr to /dev/null to avoid blocking on pipe */
-        int devnull = open("/dev/null", O_WRONLY);
-        if (devnull >= 0) {
-            dup2(devnull, STDOUT_FILENO);
-            dup2(devnull, STDERR_FILENO);
-            close(devnull);
+        /* Redirect stdout+stderr to pipe */
+        if (logpipe[1] >= 0) {
+            dup2(logpipe[1], STDOUT_FILENO);
+            dup2(logpipe[1], STDERR_FILENO);
+            close(logpipe[0]);
+            close(logpipe[1]);
         }
 
         execv(args[0], args);
-        _exit(127); /* exec failed */
+        _exit(127);
     }
 
     /* ── Parent process ── */
     for (int i = 0; i < argc; i++) free(args[i]);
     free(args);
+
+    /* Read child's output in a detached thread and log it */
+    if (logpipe[1] >= 0) close(logpipe[1]); /* close write end in parent */
+    if (logpipe[0] >= 0) {
+        int *fd_ptr = malloc(sizeof(int));
+        *fd_ptr = logpipe[0];
+        pthread_t log_thread;
+        pthread_create(&log_thread, NULL, rigctld_log_thread, fd_ptr);
+        pthread_detach(log_thread);
+    }
 
     LOGD("Forked rigctld pid=%d", pid);
     return pid;

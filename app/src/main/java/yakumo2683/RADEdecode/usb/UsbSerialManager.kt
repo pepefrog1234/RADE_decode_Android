@@ -263,7 +263,7 @@ class UsbSerialManager(private val context: Context) {
 
             // Configure serial parameters
             configureBaudRate(conn, device, baudRate)
-            enableDevice(conn, device.chipType)
+            enableDevice(conn, device.chipType, device.interfaceIndex)
 
             // Start native pty bridge
             Log.i(TAG, "Starting pty bridge...")
@@ -327,7 +327,7 @@ class UsbSerialManager(private val context: Context) {
     private fun configureBaudRate(conn: UsbDeviceConnection, device: UsbSerialDevice, baudRate: Int) {
         val result = when (device.chipType) {
             ChipType.CDC_ACM -> setCdcBaudRate(conn, baudRate, device)
-            ChipType.CP210X -> setCp210xBaudRate(conn, baudRate)
+            ChipType.CP210X -> setCp210xBaudRate(conn, baudRate, device.interfaceIndex)
             ChipType.FTDI -> setFtdiBaudRate(conn, baudRate)
             ChipType.CH340 -> setCh340BaudRate(conn, baudRate)
             ChipType.PROLIFIC -> setCdcBaudRate(conn, baudRate, device)
@@ -336,7 +336,7 @@ class UsbSerialManager(private val context: Context) {
         Log.i(TAG, "configureBaudRate(${device.chipType}, $baudRate): $result")
     }
 
-    private fun enableDevice(conn: UsbDeviceConnection, chipType: ChipType) {
+    private fun enableDevice(conn: UsbDeviceConnection, chipType: ChipType, ifaceIdx: Int = 0) {
         when (chipType) {
             ChipType.CDC_ACM -> {
                 val ctrlIface = findControlInterfaceNum()
@@ -344,9 +344,14 @@ class UsbSerialManager(private val context: Context) {
                 conn.controlTransfer(0x21, SET_CONTROL_LINE_STATE, v, ctrlIface, null, 0, 5000)
             }
             ChipType.CP210X -> {
-                conn.controlTransfer(0x41, CP210X_IFC_ENABLE, 1, 0, null, 0, 5000)
-                conn.controlTransfer(0x41, CP210X_SET_LINE_CTL, 0x0800, 0, null, 0, 5000)
-                conn.controlTransfer(0x41, 0x07, 0x0303, 0, null, 0, 5000)
+                // CP210x: wIndex must be the interface number for all control transfers
+                val idx = ifaceIdx
+                conn.controlTransfer(0x41, CP210X_IFC_ENABLE, 1, idx, null, 0, 5000)
+                conn.controlTransfer(0x41, CP210X_SET_LINE_CTL, 0x0800, idx, null, 0, 5000)
+                val noFlow = byteArrayOf(0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0)
+                conn.controlTransfer(0x41, 0x13, 0, idx, noFlow, noFlow.size, 5000)
+                conn.controlTransfer(0x41, 0x12, 0x000F, idx, null, 0, 5000)
+                conn.controlTransfer(0x41, 0x07, 0x0303, idx, null, 0, 5000)
             }
             ChipType.FTDI -> {
                 conn.controlTransfer(0x40, 1, 0x0101, 0, null, 0, 5000)
@@ -367,9 +372,9 @@ class UsbSerialManager(private val context: Context) {
         return "CDC SET_LINE_CODING→$r"
     }
 
-    private fun setCp210xBaudRate(conn: UsbDeviceConnection, baudRate: Int): String {
+    private fun setCp210xBaudRate(conn: UsbDeviceConnection, baudRate: Int, ifaceIdx: Int = 0): String {
         val data = ByteBuffer.allocate(4).order(ByteOrder.LITTLE_ENDIAN).putInt(baudRate).array()
-        val r = conn.controlTransfer(0x41, CP210X_SET_BAUDRATE, 0, 0, data, 4, 5000)
+        val r = conn.controlTransfer(0x41, CP210X_SET_BAUDRATE, 0, ifaceIdx, data, 4, 5000)
         return "CP210x SET_BAUDRATE→$r"
     }
 
