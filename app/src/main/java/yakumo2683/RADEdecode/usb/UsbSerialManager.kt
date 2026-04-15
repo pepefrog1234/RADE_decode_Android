@@ -208,10 +208,11 @@ class UsbSerialManager(private val context: Context) {
             pendingCallback = onOpened
             _state.value = _state.value.copy(permissionRequested = true)
 
+            val permIntent = Intent(ACTION_USB_PERMISSION).apply { setPackage(context.packageName) }
             val flags = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S)
                 PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_MUTABLE
             else PendingIntent.FLAG_UPDATE_CURRENT
-            val pi = PendingIntent.getBroadcast(context, 0, Intent(ACTION_USB_PERMISSION), flags)
+            val pi = PendingIntent.getBroadcast(context, 0, permIntent, flags)
             usbManager.requestPermission(device.usbDevice, pi)
         }
     }
