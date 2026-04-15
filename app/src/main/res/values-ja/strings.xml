@@ -87,6 +87,9 @@
     <string name="header_rx_output">受信出力</string>
     <string name="settings_volume">音量</string>
     <string name="settings_volume_help">送信出力レベルも同時に制御します。リグのALCメーターが振れないよう調整してください——ALCをリニア領域に保ち（読み取りなし/バー表示なし）、信号の歪みやスプラッタを防ぎます。</string>
+    <string name="header_tx_output_level">送信出力レベル</string>
+    <string name="settings_tx_level">USB 送信レベル</string>
+    <string name="settings_tx_level_help">USBで無線機に送る送信音量を調整します。ALCが高すぎる場合は下げてください。</string>
     <string name="header_tx_callsign">送信コールサイン</string>
     <string name="settings_callsign_label">コールサイン（EOO）</string>
     <string name="settings_callsign_help">送信時にEOO（交信終了）フレームにコールサインが埋め込まれます。</string>

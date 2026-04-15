@@ -88,6 +88,9 @@
     <string name="header_rx_output">RX OUTPUT</string>
     <string name="settings_volume">Volume</string>
     <string name="settings_volume_help">TX output level also controlled here. Adjust so the radio\'s ALC meter does NOT deflect — keep ALC in the linear region (no bar / no reading) to avoid signal distortion and splatter.</string>
+    <string name="header_tx_output_level">TX OUTPUT LEVEL</string>
+    <string name="settings_tx_level">USB TX Level</string>
+    <string name="settings_tx_level_help">Adjust the TX audio level sent to the radio via USB. Lower if ALC is too high.</string>
     <string name="header_tx_callsign">TX CALLSIGN</string>
     <string name="settings_callsign_label">Callsign (EOO)</string>
     <string name="settings_callsign_help">Your callsign will be encoded in the EOO (End-of-Over) frame during TX.</string>

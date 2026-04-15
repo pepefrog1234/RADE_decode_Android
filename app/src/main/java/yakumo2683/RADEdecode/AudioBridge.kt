@@ -205,6 +205,8 @@ class AudioBridge(private val context: Context) {
     private external fun nativeSetTxCallsign(callsign: String)
     private external fun nativeGetTxLevel(): Float
     private external fun nativeSetTxOutputDevice(deviceId: Int)
+    external fun nativeReadTxRing(outBuf: ShortArray, maxSamples: Int): Int
+    external fun nativeIsTxUsingJavaOutput(): Boolean
 
     private fun deviceTypeName(type: Int): String = when (type) {
         AudioDeviceInfo.TYPE_BUILTIN_MIC -> "Built-in Mic"

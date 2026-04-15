@@ -200,12 +200,15 @@ class TransceiverViewModel(application: Application) : AndroidViewModel(applicat
 
     /** Switch from RX → TX (stops RX, starts TX, keys PTT) */
     fun switchToTx() {
-        Log.i("TransceiverVM", "switchToTx: isRunning=${_uiState.value.isRunning}, rigConnected=${rigController.isConnected}")
         if (!_uiState.value.isRunning) return
+        // Refresh devices to pick up USB audio output if available
+        refreshDevices()
+        val outId = _uiState.value.selectedOutputDeviceId
+        Log.i("TransceiverVM", "switchToTx: outDevId=$outId, rigConnected=${rigController.isConnected}")
         // startTransmitting handles stopping RX internally (atomic transition)
         audioService?.startTransmitting(
             inputDeviceId = _uiState.value.selectedDeviceId,
-            outputDeviceId = _uiState.value.selectedOutputDeviceId,
+            outputDeviceId = outId,
             callsign = _uiState.value.txCallsign
         )
         // Auto-PTT via rigctld

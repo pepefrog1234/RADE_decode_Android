@@ -724,14 +724,16 @@ void AudioEngine::stopTx() {
     // Send EOO frame — writes encoded callsign into txPlaybackRing_
     sendTxEoo();
 
-    // Wait for the output stream to drain the EOO data from the ring buffer
-    // (8kHz output ≈ 125ms per 1000 samples; EOO frame is typically ~2000-4000 samples)
-    int waitMs = 0;
-    while (txPlaybackRing_.availableToRead() > 0 && waitMs < 2000) {
-        usleep(10000);  // 10ms
-        waitMs += 10;
+    // Wait for the output stream to drain the EOO data from the ring buffer.
+    // Skip drain wait when using Java AudioTrack (pump handles draining).
+    if (!txUseJavaOutput_) {
+        int waitMs = 0;
+        while (txPlaybackRing_.availableToRead() > 0 && waitMs < 2000) {
+            usleep(10000);  // 10ms
+            waitMs += 10;
+        }
+        LOGI("TX: EOO drain waited %dms, remaining=%d", waitMs, txPlaybackRing_.availableToRead());
     }
-    LOGI("TX: EOO drain waited %dms, remaining=%d", waitMs, txPlaybackRing_.availableToRead());
 
     txRunning_.store(false);
     if (txOutputStream_) { txOutputStream_->stop(); txOutputStream_->close(); txOutputStream_.reset(); }
@@ -783,19 +785,26 @@ bool AudioEngine::openTxInputStream() {
 }
 
 bool AudioEngine::openTxOutputStream() {
+    if (txOutputDeviceId_ > 0) {
+        // USB audio: skip Oboe, let Java AudioTrack handle output via readTxRingBuffer JNI
+        LOGI("TX: USB output device %d — using Java AudioTrack (no Oboe output stream)", txOutputDeviceId_);
+        txOutputRate_ = 8000;  // Java side will read at modem rate
+        txUseJavaOutput_ = true;
+        return true;
+    }
+
+    txUseJavaOutput_ = false;
     oboe::AudioStreamBuilder builder;
     builder.setDirection(oboe::Direction::Output)
            ->setPerformanceMode(oboe::PerformanceMode::LowLatency)
            ->setSharingMode(oboe::SharingMode::Shared)
            ->setFormat(oboe::AudioFormat::Float)
-           ->setSampleRate(MODEM_SAMPLE_RATE)  // 8kHz — Oboe SRC to device rate
+           ->setSampleRate(MODEM_SAMPLE_RATE)
            ->setSampleRateConversionQuality(oboe::SampleRateConversionQuality::High)
            ->setChannelCount(oboe::ChannelCount::Mono)
            ->setUsage(oboe::Usage::Media)
            ->setDataCallback(txOutputCb_.get())
            ->setErrorCallback(txOutputCb_.get());
-
-    if (txOutputDeviceId_ > 0) builder.setDeviceId(txOutputDeviceId_);
 
     auto result = builder.openStream(txOutputStream_);
     if (result != oboe::Result::OK) {
@@ -928,11 +937,37 @@ void AudioEngine::sendTxEoo() {
 }
 
 void AudioEngine::renderTxOutput(float *output, int32_t numFrames) {
-    int16_t tempBuf[4096];
-    int toRead = std::min(numFrames, 4096);
-    int got = txPlaybackRing_.read(tempBuf, toRead);
+    if (txOutputRate_ <= MODEM_SAMPLE_RATE) {
+        // Direct: stream rate matches modem rate (8kHz, e.g. via Oboe SRC)
+        int16_t tempBuf[4096];
+        int toRead = std::min(numFrames, 4096);
+        int got = txPlaybackRing_.read(tempBuf, toRead);
+        for (int i = 0; i < numFrames; i++) {
+            output[i] = (i < got) ? (float)tempBuf[i] / 32768.0f : 0.0f;
+        }
+    } else {
+        // Upsample: stream rate > modem rate (e.g. 48kHz USB audio)
+        // Read modem-rate samples and interpolate to output rate
+        double ratio = (double)MODEM_SAMPLE_RATE / (double)txOutputRate_;
+        int modemNeeded = (int)((double)numFrames * ratio) + 2;
+        int16_t tempBuf[4096];
+        int toRead = std::min(modemNeeded, 4096);
+        int got = txPlaybackRing_.read(tempBuf, toRead);
 
-    for (int i = 0; i < numFrames; i++) {
-        output[i] = (i < got) ? (float)tempBuf[i] / 32768.0f : 0.0f;
+        for (int i = 0; i < numFrames; i++) {
+            double srcPos = (double)i * ratio;
+            int idx = (int)srcPos;
+            float frac = (float)(srcPos - (double)idx);
+
+            if (idx >= got) {
+                output[i] = 0.0f;
+            } else if (idx + 1 < got) {
+                float s0 = (float)tempBuf[idx] / 32768.0f;
+                float s1 = (float)tempBuf[idx + 1] / 32768.0f;
+                output[i] = s0 + frac * (s1 - s0);
+            } else {
+                output[i] = (float)tempBuf[idx] / 32768.0f;
+            }
+        }
     }
 }

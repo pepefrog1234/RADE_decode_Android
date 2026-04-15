@@ -511,6 +511,27 @@ JNI_AUDIO(nativeGetTxLevel)(JNIEnv *env, jobject /* this */) {
     return g_audioEngine->getTxLevel();
 }
 
+/**
+ * Read modem samples from TX ring buffer (8kHz int16).
+ * Used by Java AudioTrack for USB audio output.
+ * Returns number of samples actually read.
+ */
+JNIEXPORT jint JNICALL
+JNI_AUDIO(nativeReadTxRing)(JNIEnv *env, jobject /* this */,
+                            jshortArray outBuf, jint maxSamples) {
+    if (!g_audioEngine) return 0;
+    jshort *buf = env->GetShortArrayElements(outBuf, nullptr);
+    int got = g_audioEngine->readTxRing(reinterpret_cast<int16_t*>(buf), maxSamples);
+    env->ReleaseShortArrayElements(outBuf, buf, 0);
+    return got;
+}
+
+JNIEXPORT jboolean JNICALL
+JNI_AUDIO(nativeIsTxUsingJavaOutput)(JNIEnv *env, jobject /* this */) {
+    if (!g_audioEngine) return JNI_FALSE;
+    return g_audioEngine->isTxUsingJavaOutput() ? JNI_TRUE : JNI_FALSE;
+}
+
 JNIEXPORT void JNICALL
 JNI_AUDIO(nativeSetTxOutputDevice)(JNIEnv *env, jobject /* this */, jint deviceId) {
     if (g_audioEngine) g_audioEngine->setTxOutputDevice(deviceId);

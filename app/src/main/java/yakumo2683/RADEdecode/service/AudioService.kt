@@ -6,9 +6,15 @@ import android.app.NotificationManager
 import android.app.PendingIntent
 import android.content.Intent
 import android.content.pm.ServiceInfo
+import android.media.AudioAttributes
+import android.media.AudioDeviceInfo
+import android.media.AudioFormat
+import android.media.AudioManager
+import android.media.AudioTrack
 import android.os.Binder
 import android.os.Build
 import android.os.IBinder
+import android.util.Log
 import androidx.core.app.NotificationCompat
 import androidx.lifecycle.LifecycleService
 import androidx.lifecycle.lifecycleScope
@@ -235,11 +241,18 @@ class AudioService : LifecycleService() {
         }
 
         _state.value = _state.value.copy(isTx = true, isRunning = false)
+
+        // If native chose Java output (USB audio), start AudioTrack pump
+        if (bridge.nativeIsTxUsingJavaOutput()) {
+            startTxAudioTrackPump(bridge, outputDeviceId)
+        }
+
         startTxPolling()
         startNotificationUpdates()
     }
 
     fun stopTransmitting() {
+        stopTxAudioTrackPump()
         stopTxPolling()
         stopNotificationUpdates()
 
@@ -249,6 +262,80 @@ class AudioService : LifecycleService() {
 
         _state.value = ServiceState()
         stopForeground(STOP_FOREGROUND_REMOVE)
+    }
+
+    /* ── TX AudioTrack pump for USB audio output ────────────── */
+
+    private var txAudioTrack: AudioTrack? = null
+    private var txPumpJob: Job? = null
+
+    private fun startTxAudioTrackPump(bridge: yakumo2683.RADEdecode.AudioBridge, outputDeviceId: Int) {
+        val sampleRate = 8000  // modem rate
+        val bufSize = AudioTrack.getMinBufferSize(
+            sampleRate, AudioFormat.CHANNEL_OUT_MONO, AudioFormat.ENCODING_PCM_16BIT
+        ).coerceAtLeast(1600)  // at least 100ms
+
+        val track = AudioTrack.Builder()
+            .setAudioAttributes(
+                AudioAttributes.Builder()
+                    .setUsage(AudioAttributes.USAGE_MEDIA)
+                    .setContentType(AudioAttributes.CONTENT_TYPE_MUSIC)
+                    .build()
+            )
+            .setAudioFormat(
+                AudioFormat.Builder()
+                    .setSampleRate(sampleRate)
+                    .setChannelMask(AudioFormat.CHANNEL_OUT_MONO)
+                    .setEncoding(AudioFormat.ENCODING_PCM_16BIT)
+                    .build()
+            )
+            .setBufferSizeInBytes(bufSize * 2)
+            .setTransferMode(AudioTrack.MODE_STREAM)
+            .build()
+
+        // Route to the USB audio device
+        val am = getSystemService(AUDIO_SERVICE) as AudioManager
+        val usbDev = am.getDevices(AudioManager.GET_DEVICES_OUTPUTS).firstOrNull { it.id == outputDeviceId }
+        if (usbDev != null) {
+            track.setPreferredDevice(usbDev)
+            Log.i("AudioService", "TX AudioTrack: routing to ${usbDev.productName} (id=$outputDeviceId)")
+        } else {
+            Log.w("AudioService", "TX AudioTrack: USB device $outputDeviceId not found, using default")
+        }
+
+        track.play()
+        txAudioTrack = track
+
+        // Pump: read from native ring buffer → write to AudioTrack
+        txPumpJob = lifecycleScope.launch(Dispatchers.IO) {
+            val buf = ShortArray(800)  // 100ms at 8kHz
+            try {
+                while (isActive && bridge.isTxRunning) {
+                    val got = bridge.nativeReadTxRing(buf, buf.size)
+                    if (got > 0) {
+                        track.write(buf, 0, got)
+                    } else {
+                        delay(10)
+                    }
+                }
+                // Drain remaining samples
+                var remaining = bridge.nativeReadTxRing(buf, buf.size)
+                while (remaining > 0) {
+                    track.write(buf, 0, remaining)
+                    remaining = bridge.nativeReadTxRing(buf, buf.size)
+                }
+            } catch (_: IllegalStateException) {
+                // AudioTrack was released — normal during stop
+            }
+        }
+    }
+
+    private fun stopTxAudioTrackPump() {
+        txPumpJob?.cancel()
+        txPumpJob = null
+        try { txAudioTrack?.stop() } catch (_: Exception) {}
+        try { txAudioTrack?.release() } catch (_: Exception) {}
+        txAudioTrack = null
     }
 
     private var txPollingJob: Job? = null

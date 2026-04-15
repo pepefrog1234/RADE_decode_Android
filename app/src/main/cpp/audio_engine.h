@@ -70,6 +70,8 @@ public:
     void setTxCallsign(const char *callsign);
     void setTxOutputDevice(int deviceId);
     float getTxLevel() const { return txInputLevelDb_.load(); }
+    int readTxRing(int16_t *buf, int maxSamples) { return txPlaybackRing_.read(buf, maxSamples); }
+    bool isTxUsingJavaOutput() const { return txUseJavaOutput_; }
 
     void setInputDevice(int deviceId);
     void setOutputVolume(float volume);
@@ -169,6 +171,7 @@ private:
     std::atomic<bool> txRunning_{false};
     int txInputDeviceId_ = 0;
     int txOutputDeviceId_ = 0;
+    bool txUseJavaOutput_ = false;
 
     LPCNetEncState *lpcnetEnc_ = nullptr;
     AudioRingBuffer txPlaybackRing_{RING_BUFFER_SIZE};

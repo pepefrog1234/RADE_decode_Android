@@ -87,6 +87,9 @@
     <string name="header_rx_output">接收输出</string>
     <string name="settings_volume">音量</string>
     <string name="settings_volume_help">此处同时控制发射输出电平。请调整至电台的 ALC 表不偏转——将 ALC 保持在线性区间（无读数/无条显示），以避免信号失真与溅射。</string>
+    <string name="header_tx_output_level">发射输出音量</string>
+    <string name="settings_tx_level">USB 发射音量</string>
+    <string name="settings_tx_level_help">调整通过 USB 发送到电台的发射音量。ALC 过高时请调低。</string>
     <string name="header_tx_callsign">发射呼号</string>
     <string name="settings_callsign_label">呼号（EOO）</string>
     <string name="settings_callsign_help">您的呼号将在发射时编码于 EOO（结束通联）帧中。</string>
