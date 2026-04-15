@@ -25,6 +25,8 @@
     <string name="label_mic_input">MIC INPUT</string>
     <string name="btn_back_to_rx">BACK TO RX</string>
     <string name="btn_tx">TX</string>
+    <string name="tx_hint_ready">Speak into the mic, then tap TX to transmit.\nUse phone volume keys to adjust TX level — ALC should show minimal or no deflection.</string>
+    <string name="tx_hint_active">Transmitting… Tap TX again to return to RX.\nALC should show minimal or no deflection — lower phone volume if ALC is moving.</string>
     <string name="btn_stop">STOP</string>
     <string name="btn_start">START</string>
 

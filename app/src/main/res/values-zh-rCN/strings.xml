@@ -24,6 +24,8 @@
     <string name="label_mic_input">麦克风输入</string>
     <string name="btn_back_to_rx">返回接收</string>
     <string name="btn_tx">发射</string>
+    <string name="tx_hint_ready">对着麦克风说话，然后点击发射。\n使用手机音量键调整发射音量 — ALC 应尽量不起表。</string>
+    <string name="tx_hint_active">发射中… 再次点击发射以切回接收。\nALC 应尽量不起表 — 如果 ALC 有偏转，请降低手机音量。</string>
     <string name="btn_stop">停止</string>
     <string name="btn_start">启动</string>
 

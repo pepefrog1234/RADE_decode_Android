@@ -24,6 +24,8 @@
     <string name="label_mic_input">マイク入力</string>
     <string name="btn_back_to_rx">受信に戻る</string>
     <string name="btn_tx">送信</string>
+    <string name="tx_hint_ready">マイクに向かって話し、送信をタップしてください。\nスマホの音量ボタンで送信音量を調整 — ALC はできるだけ振れないようにしてください。</string>
+    <string name="tx_hint_active">送信中… もう一度タップすると受信に戻ります。\nALC はできるだけ振れないように — 振れている場合はスマホの音量を下げてください。</string>
     <string name="btn_stop">停止</string>
     <string name="btn_start">開始</string>
 

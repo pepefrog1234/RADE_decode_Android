@@ -24,6 +24,8 @@
     <string name="label_mic_input">麥克風輸入</string>
     <string name="btn_back_to_rx">返回接收</string>
     <string name="btn_tx">發射</string>
+    <string name="tx_hint_ready">對著麥克風說話，然後點擊發射。\n使用手機音量鍵調整發射音量 — ALC 應盡量不起錶。</string>
+    <string name="tx_hint_active">發射中… 再次點擊發射以切回接收。\nALC 應盡量不起錶 — 如果 ALC 有偏轉，請降低手機音量。</string>
     <string name="btn_stop">停止</string>
     <string name="btn_start">啟動</string>
 

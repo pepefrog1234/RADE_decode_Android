@@ -155,6 +155,13 @@ class AudioBridge(private val context: Context) {
         return getInputDevices().firstOrNull { it.isUsb }
     }
 
+    /** Find the built-in microphone device, or null. */
+    fun findBuiltInMic(): AudioDevice? {
+        return getInputDevices().firstOrNull {
+            it.type == AudioDeviceInfo.TYPE_BUILTIN_MIC
+        }
+    }
+
     /** List available audio output devices, deduplicated by type. */
     fun getOutputDevices(): List<AudioDevice> {
         val am = context.getSystemService(Context.AUDIO_SERVICE) as AudioManager

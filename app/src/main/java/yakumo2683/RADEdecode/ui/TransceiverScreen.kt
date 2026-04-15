@@ -148,6 +148,23 @@ fun TransceiverScreen(viewModel: TransceiverViewModel = viewModel()) {
                     }
                 }
             )
+            if (state.isTx) {
+                Text(
+                    stringResource(R.string.tx_hint_active),
+                    fontSize = 11.sp,
+                    color = OnSurfaceDim,
+                    textAlign = TextAlign.Center,
+                    modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp)
+                )
+            } else {
+                Text(
+                    stringResource(R.string.tx_hint_ready),
+                    fontSize = 11.sp,
+                    color = OnSurfaceDim,
+                    textAlign = TextAlign.Center,
+                    modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp)
+                )
+            }
             Spacer(Modifier.height(6.dp))
         }
 

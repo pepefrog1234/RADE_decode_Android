@@ -53,6 +53,7 @@ class TransceiverViewModel(application: Application) : AndroidViewModel(applicat
         val outputDevices: List<AudioBridge.AudioDevice> = emptyList(),
         val selectedDeviceId: Int = -1,
         val selectedOutputDeviceId: Int = -1,
+        val builtInMicId: Int = -1,
         val serviceBound: Boolean = false
     ) {
         val syncText: String get() = when (syncState) {
@@ -185,7 +186,7 @@ class TransceiverViewModel(application: Application) : AndroidViewModel(applicat
                 attempts++
             }
             audioService?.startTransmitting(
-                inputDeviceId = _uiState.value.selectedDeviceId,
+                inputDeviceId = _uiState.value.builtInMicId,  // built-in mic, not USB audio
                 outputDeviceId = _uiState.value.selectedOutputDeviceId,
                 callsign = _uiState.value.txCallsign
             )
@@ -204,10 +205,12 @@ class TransceiverViewModel(application: Application) : AndroidViewModel(applicat
         // Refresh devices to pick up USB audio output if available
         refreshDevices()
         val outId = _uiState.value.selectedOutputDeviceId
-        Log.i("TransceiverVM", "switchToTx: outDevId=$outId, rigConnected=${rigController.isConnected}")
-        // startTransmitting handles stopping RX internally (atomic transition)
+        val micId = _uiState.value.builtInMicId
+        Log.i("TransceiverVM", "switchToTx: micId=$micId outDevId=$outId rigConnected=${rigController.isConnected}")
+        // startTransmitting: use built-in mic for TX input (not USB audio input
+        // which is the radio's audio output used for RX decoding)
         audioService?.startTransmitting(
-            inputDeviceId = _uiState.value.selectedDeviceId,
+            inputDeviceId = _uiState.value.builtInMicId,
             outputDeviceId = outId,
             callsign = _uiState.value.txCallsign
         )
@@ -285,11 +288,13 @@ class TransceiverViewModel(application: Application) : AndroidViewModel(applicat
         val outputDevices = bridge.getOutputDevices()
         val usbInput = bridge.findUsbInputDevice()
         val usbOutput = outputDevices.firstOrNull { it.isUsb }
+        val builtInMic = bridge.findBuiltInMic()
         bridge.release()
 
         _uiState.value = _uiState.value.copy(
             devices = devices,
             outputDevices = outputDevices,
+            builtInMicId = builtInMic?.id ?: _uiState.value.builtInMicId,
             selectedDeviceId = usbInput?.id ?: _uiState.value.selectedDeviceId,
             selectedOutputDeviceId = usbOutput?.id ?: _uiState.value.selectedOutputDeviceId
         )

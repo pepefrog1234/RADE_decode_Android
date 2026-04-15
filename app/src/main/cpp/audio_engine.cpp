@@ -636,6 +636,7 @@ bool AudioEngine::startTx(int inputDeviceId, int outputDeviceId) {
 
     txInputDeviceId_ = (inputDeviceId > 0) ? inputDeviceId : 0;
     txOutputDeviceId_ = (outputDeviceId > 0) ? outputDeviceId : 0;
+    LOGI("TX: startTx inputDev=%d outputDev=%d", txInputDeviceId_, txOutputDeviceId_);
 
     if (!initTxModem()) return false;
 
@@ -758,14 +759,18 @@ bool AudioEngine::openTxInputStream() {
            ->setSharingMode(oboe::SharingMode::Shared)
            ->setFormat(oboe::AudioFormat::Float)
            ->setChannelCount(oboe::ChannelCount::Mono)
-           // Unprocessed for TX too: RADE vocoder encodes raw speech features,
-           // platform noise suppression can remove spectral content needed by
-           // LPCNet and degrade decoded audio quality on the other end.
-           ->setInputPreset(oboe::InputPreset::Unprocessed)
            ->setDataCallback(txInputCb_.get())
            ->setErrorCallback(txInputCb_.get());
 
-    if (txInputDeviceId_ > 0) builder.setDeviceId(txInputDeviceId_);
+    if (txInputDeviceId_ > 0) {
+        // Force built-in mic when USB audio is connected.
+        // Try multiple strategies since Oboe may ignore setDeviceId with some presets.
+        builder.setDeviceId(txInputDeviceId_);
+        builder.setInputPreset(oboe::InputPreset::Generic);
+        builder.setPerformanceMode(oboe::PerformanceMode::None);
+    } else {
+        builder.setInputPreset(oboe::InputPreset::Unprocessed);
+    }
 
     auto result = builder.openStream(txInputStream_);
     if (result != oboe::Result::OK) {
@@ -773,8 +778,33 @@ bool AudioEngine::openTxInputStream() {
         return false;
     }
 
+    // Check if we got the requested device; if not, retry with Exclusive mode
+    if (txInputDeviceId_ > 0 && txInputStream_->getDeviceId() != txInputDeviceId_) {
+        LOGI("TX: input device mismatch: wanted %d got %d, retrying Exclusive",
+             txInputDeviceId_, txInputStream_->getDeviceId());
+        txInputStream_->close(); txInputStream_.reset();
+
+        oboe::AudioStreamBuilder retry;
+        retry.setDirection(oboe::Direction::Input)
+             ->setPerformanceMode(oboe::PerformanceMode::None)
+             ->setSharingMode(oboe::SharingMode::Exclusive)
+             ->setFormat(oboe::AudioFormat::Float)
+             ->setChannelCount(oboe::ChannelCount::Mono)
+             ->setInputPreset(oboe::InputPreset::Unprocessed)
+             ->setDeviceId(txInputDeviceId_)
+             ->setDataCallback(txInputCb_.get())
+             ->setErrorCallback(txInputCb_.get());
+
+        result = retry.openStream(txInputStream_);
+        if (result != oboe::Result::OK) {
+            LOGE("TX: retry failed: %s", oboe::convertToText(result));
+            return false;
+        }
+    }
+
     txActualInputRate_ = txInputStream_->getSampleRate();
-    LOGI("TX: input rate=%d device=%d", txActualInputRate_, txInputStream_->getDeviceId());
+    LOGI("TX: input rate=%d device=%d (wanted=%d)",
+         txActualInputRate_, txInputStream_->getDeviceId(), txInputDeviceId_);
 
     result = txInputStream_->requestStart();
     if (result != oboe::Result::OK) {

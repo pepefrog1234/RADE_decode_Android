@@ -233,6 +233,7 @@ class AudioService : LifecycleService() {
             bridge.setTxCallsign(callsign)
         }
 
+        Log.i("AudioService", "startTx: inputDeviceId=$inputDeviceId outputDeviceId=$outputDeviceId")
         if (!bridge.startTx(inputDeviceId, outputDeviceId)) {
             bridge.release()
             audioBridge = null
@@ -303,6 +304,9 @@ class AudioService : LifecycleService() {
             Log.w("AudioService", "TX AudioTrack: USB device $outputDeviceId not found, using default")
         }
 
+        // Attenuate TX output — RADE modem waveform is very hot;
+        // even minimum Android volume can overload the radio's ALC.
+        track.setVolume(0.05f)
         track.play()
         txAudioTrack = track
 
