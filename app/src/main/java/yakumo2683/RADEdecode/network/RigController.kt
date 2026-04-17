@@ -181,12 +181,70 @@ class RigController {
 
     /* ── Mode ───────────────────────────────────────────────── */
 
-    suspend fun setMode(mode: String, bandwidth: Int = 0) = withContext(Dispatchers.IO) {
+    /**
+     * Set mode. Passband defaults to -1 (RIG_PASSBAND_NOCHANGE) so hamlib preserves
+     * the rig's current filter.
+     *
+     * If hamlib rejects PKTUSB/PKTLSB (common in 4.5.5), we:
+     *   1. Query the rig's current data-mode + filter via CI-V before we change anything.
+     *   2. Switch to the base mode (USB/LSB) with passband=NOCHANGE.
+     *   3. Re-enable data mode via CI-V using the *preserved* filter byte, so the user's
+     *      filter slot (FIL1/2/3) is restored rather than forced to FIL1.
+     * If the CI-V query fails (non-Icom rig, CI-V off, timeout), we stop at the base
+     * mode rather than risk clobbering the filter — data mode must then be toggled
+     * manually on the rig.
+     */
+    suspend fun setMode(mode: String, bandwidth: Int = -1) = withContext(Dispatchers.IO) {
+        var actualMode = mode
         val resp = sendCommand("M $mode $bandwidth")
         if (resp != null && resp.contains("-9")) {
-            Log.w(TAG, "setMode($mode): rig backend rejected (RPRT -9), mode must be changed on radio")
+            val baseMode = when (mode) {
+                "PKTUSB" -> "USB"
+                "PKTLSB" -> "LSB"
+                else -> null
+            }
+            if (baseMode != null) {
+                val preservedFilter = queryIcomDataFilter()
+                Log.i(TAG, "setMode($mode) rejected; preserved filter byte=$preservedFilter")
+                val baseResp = sendCommand("M $baseMode $bandwidth")
+                if (baseResp == null || !baseResp.contains("-")) {
+                    if (preservedFilter != null) {
+                        sendCommand(
+                            "w \\0xFE\\0xFE\\0x00\\0xE0\\0x1A\\0x06\\0x01\\0x$preservedFilter\\0xFD"
+                        )
+                        actualMode = mode
+                    } else {
+                        actualMode = baseMode
+                    }
+                } else {
+                    actualMode = baseMode
+                }
+            }
         }
-        _state.value = _state.value.copy(mode = mode, bandwidth = bandwidth)
+        _state.value = _state.value.copy(mode = actualMode, bandwidth = bandwidth)
+    }
+
+    /**
+     * Query the current Icom data-mode + filter setting via raw CI-V.
+     * Sends `FE FE 00 E0 1A 06 FD` (read form of the data-mode+filter command) and
+     * parses the rig's reply `... 1A 06 <data_mode> <filter> FD`.
+     * Returns the filter byte as a two-char hex string (e.g. "01", "02", "03"),
+     * or null if no valid response was parsed.
+     */
+    private fun queryIcomDataFilter(): String? {
+        val lines = sendCommandMulti("w \\0xFE\\0xFE\\0x00\\0xE0\\0x1A\\0x06\\0xFD")
+        val bytePat = Regex("""\\0x([0-9A-Fa-f]{2})""")
+        for (line in lines) {
+            val bytes = bytePat.findAll(line)
+                .map { it.groupValues[1].uppercase() }
+                .toList()
+            for (i in 0..bytes.size - 5) {
+                if (bytes[i] == "1A" && bytes[i + 1] == "06" && bytes[i + 4] == "FD") {
+                    return bytes[i + 3]
+                }
+            }
+        }
+        return null
     }
 
     suspend fun getMode(): Pair<String, Int> = withContext(Dispatchers.IO) {

@@ -34,6 +34,7 @@
     <string name="header_freedv_reporter">FREEDV REPORTER</string>
     <string name="stations_connected">Connected — %1$d stations online</string>
     <string name="stations_not_connected">Not connected to FreeDV Reporter</string>
+    <string name="stations_connecting">Connecting to FreeDV Reporter…</string>
     <string name="stations_no_stations">No stations online</string>
     <string name="stations_enable_reporter">Enable Reporter in Settings</string>
     <string name="stations_connect_hint">Connect to qso.freedv.org to see active stations</string>

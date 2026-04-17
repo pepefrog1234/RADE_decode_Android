@@ -296,7 +296,7 @@ fun SettingsScreen(viewModel: TransceiverViewModel = viewModel()) {
         ) {
             Column(modifier = Modifier.padding(16.dp)) {
                 val reporterConfig = viewModel.reporter.config
-                var reporterEnabled by remember { mutableStateOf(reporterConfig.enabled) }
+                val reporterEnabled by viewModel.reporterEnabledPref.collectAsState()
                 var gridInput by remember { mutableStateOf(reporterConfig.gridSquare) }
                 val locationGrid by viewModel.locationTracker.state.collectAsState()
 
@@ -308,10 +308,7 @@ fun SettingsScreen(viewModel: TransceiverViewModel = viewModel()) {
                     Text("Enable Reporter", fontWeight = FontWeight.Bold)
                     Switch(
                         checked = reporterEnabled,
-                        onCheckedChange = {
-                            reporterEnabled = it
-                            viewModel.setReporterEnabled(it)
-                        },
+                        onCheckedChange = { viewModel.setReporterEnabled(it) },
                         colors = SwitchDefaults.colors(checkedTrackColor = Cyan400)
                     )
                 }

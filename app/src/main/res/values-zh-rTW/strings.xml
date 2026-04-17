@@ -33,6 +33,7 @@
     <string name="header_freedv_reporter">FREEDV 回報器</string>
     <string name="stations_connected">已連線 — %1$d 個電台在線</string>
     <string name="stations_not_connected">未連線至 FreeDV Reporter</string>
+    <string name="stations_connecting">連線中…</string>
     <string name="stations_no_stations">目前沒有電台在線</string>
     <string name="stations_enable_reporter">請在設定中啟用回報器</string>
     <string name="stations_connect_hint">連線至 qso.freedv.org 以檢視在線電台</string>

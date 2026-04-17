@@ -34,9 +34,6 @@ import yakumo2683.RADEdecode.R
 import yakumo2683.RADEdecode.usb.UsbSerialManager
 import yakumo2683.RADEdecode.ui.theme.*
 
-private val dataModeModes = listOf("PKTUSB", "PKTLSB")
-private val noDataModeModes = listOf("USB", "LSB")
-private val noDataModeMfgs = setOf("Xiegu", "Alinco", "Drake", "AOR", "JRC")
 
 data class RigModel(val id: Int, val mfg: String, val name: String) {
     val displayName: String get() = "$mfg $name"
@@ -798,42 +795,6 @@ fun RigScreen(viewModel: TransceiverViewModel = viewModel()) {
                     textAlign = TextAlign.Center
                 )
 
-                Spacer(Modifier.height(10.dp))
-
-                // Mode buttons — data modes for rigs that support them, USB/LSB otherwise
-                val currentModes = if (rigModels[selectedRigIndex].mfg in noDataModeMfgs) noDataModeModes else dataModeModes
-                for (row in currentModes.chunked(4)) {
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.spacedBy(6.dp)
-                    ) {
-                        row.forEach { mode ->
-                            val selected = rigState.mode == mode
-                            OutlinedButton(
-                                onClick = { viewModel.rigSetMode(mode) },
-                                enabled = rigState.connected,
-                                modifier = Modifier.weight(1f).height(38.dp),
-                                shape = RoundedCornerShape(8.dp),
-                                colors = ButtonDefaults.outlinedButtonColors(
-                                    containerColor = if (selected) Cyan600.copy(alpha = 0.2f) else Color.Transparent,
-                                    contentColor = if (selected) Cyan400 else OnSurfaceDim
-                                ),
-                                border = ButtonDefaults.outlinedButtonBorder(enabled = true).let {
-                                    if (selected) androidx.compose.foundation.BorderStroke(1.5.dp, Cyan400) else it
-                                },
-                                contentPadding = PaddingValues(0.dp)
-                            ) {
-                                Text(
-                                    mode,
-                                    fontSize = 12.sp,
-                                    fontWeight = if (selected) FontWeight.Bold else FontWeight.Normal,
-                                    fontFamily = FontFamily.Monospace
-                                )
-                            }
-                        }
-                    }
-                    Spacer(Modifier.height(4.dp))
-                }
             }
         }
 

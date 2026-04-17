@@ -33,6 +33,7 @@
     <string name="header_freedv_reporter">FREEDV レポーター</string>
     <string name="stations_connected">接続中 — %1$d 局オンライン</string>
     <string name="stations_not_connected">FreeDV Reporter に未接続</string>
+    <string name="stations_connecting">接続しています…</string>
     <string name="stations_no_stations">現在オンラインの局はありません</string>
     <string name="stations_enable_reporter">設定でレポーターを有効にしてください</string>
     <string name="stations_connect_hint">qso.freedv.org に接続してオンライン局を表示</string>

@@ -13,6 +13,8 @@ import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.map
 import yakumo2683.RADEdecode.AudioBridge
 import yakumo2683.RADEdecode.location.LocationTracker
 import yakumo2683.RADEdecode.network.FreeDVReporter
@@ -93,6 +95,10 @@ class TransceiverViewModel(application: Application) : AndroidViewModel(applicat
 
     private val prefs = application.getSharedPreferences("rade_prefs", Context.MODE_PRIVATE)
 
+    /** User's Reporter toggle preference, independent of whether reporter is actually connected. */
+    private val _reporterEnabledPref = MutableStateFlow(false)
+    val reporterEnabledPref: StateFlow<Boolean> = _reporterEnabledPref.asStateFlow()
+
     init {
         // Restore persisted callsign
         val savedCallsign = prefs.getString("tx_callsign", "") ?: ""
@@ -100,29 +106,103 @@ class TransceiverViewModel(application: Application) : AndroidViewModel(applicat
             _uiState.value = _uiState.value.copy(txCallsign = savedCallsign)
         }
 
-        // Restore reporter config
-        val reporterEnabled = prefs.getBoolean("reporter_enabled", false)
-        val reporterGrid = prefs.getString("reporter_grid", "") ?: ""
-        if (reporterEnabled && savedCallsign.isNotEmpty()) {
-            reporter.configure(savedCallsign, reporterGrid, true)
-        }
+        // Reporter toggle defaults to ON so the app auto-connects to qso.freedv.org
+        // on launch; users can still opt out in Settings.
+        _reporterEnabledPref.value = prefs.getBoolean("reporter_enabled", true)
+        syncReporterState()
 
-        // Update reporter grid square when location changes
+        // Location → grid update (only triggers reconnect if grid actually changes)
         viewModelScope.launch {
             locationTracker.state.collect { loc ->
-                if (loc.gridSquare.isNotEmpty() && reporter.config.enabled) {
-                    reporter.configure(
-                        reporter.config.callsign,
-                        loc.gridSquare,
-                        true
-                    )
+                if (loc.gridSquare.isNotEmpty()) {
+                    syncReporterState()
                 }
             }
+        }
+
+        // Rig state → forward frequency changes as live events (no reconnect)
+        viewModelScope.launch {
+            var lastConnected = false
+            var lastFreq = 0L
+            rigController.state.collect { rs ->
+                if (rs.connected != lastConnected) {
+                    lastConnected = rs.connected
+                    lastFreq = 0L  // re-push freq once connected again
+                }
+                val engineActive = _uiState.value.isRunning || _uiState.value.isTx
+                if (rs.connected && engineActive && rs.freqHz > 0 && rs.freqHz != lastFreq) {
+                    lastFreq = rs.freqHz
+                    if (reporter.connected.value) {
+                        reporter.reportFreqChange(rs.freqHz)
+                    }
+                }
+            }
+        }
+
+        // Engine start → push current freq immediately so web UI pins our station.
+        // Engine stop → just stop sending rx_report; we rely on each viewer's own
+        // client-side timeout to clear our "receiving" indicator. Reconnecting to
+        // force an immediate clear would drop the stations list, which hurts UX
+        // more than the brief stale display.
+        viewModelScope.launch {
+            _uiState
+                .map { it.isRunning || it.isTx }
+                .distinctUntilChanged()
+                .collect { active ->
+                    if (active && rigController.isConnected && reporter.connected.value) {
+                        val freq = rigController.state.value.freqHz
+                        if (freq > 0) reporter.reportFreqChange(freq)
+                    }
+                }
+        }
+
+        // When the reporter transitions to connected, push current freq + TX state
+        viewModelScope.launch {
+            reporter.connected.collect { connected ->
+                if (connected) {
+                    val freq = rigController.state.value.freqHz
+                    val engineActive = _uiState.value.isRunning || _uiState.value.isTx
+                    if (rigController.isConnected && engineActive && freq > 0) {
+                        reporter.reportFreqChange(freq)
+                    }
+                    if (_uiState.value.isTx) reporter.reportTx(true)
+                }
+            }
+        }
+
+        // Forward TX on/off transitions to the reporter
+        viewModelScope.launch {
+            _uiState
+                .map { it.isTx }
+                .distinctUntilChanged()
+                .collect { isTx ->
+                    if (reporter.connected.value) {
+                        reporter.reportTx(isTx)
+                    }
+                }
         }
 
         bindToService()
         refreshDevices()
         usbSerialManager.register()
+    }
+
+    /** GPS grid takes priority, fall back to manual pref. */
+    private fun currentGrid(): String {
+        val locGrid = locationTracker.state.value.gridSquare
+        if (locGrid.isNotEmpty()) return locGrid
+        return prefs.getString("reporter_grid", "") ?: ""
+    }
+
+    /**
+     * Drive reporter connection from toggle + callsign. The connection is stable once
+     * established — rig/engine state changes are communicated via live events
+     * (freq_change, tx_report) rather than by tearing down the websocket.
+     */
+    private fun syncReporterState() {
+        val callsign = _uiState.value.txCallsign
+        val shouldConnect = _reporterEnabledPref.value && callsign.isNotEmpty()
+        reporter.configure(callsign, currentGrid(), shouldConnect)
     }
 
     /* ── RX ─────────────────────────────────────────────────── */
@@ -156,26 +236,20 @@ class TransceiverViewModel(application: Application) : AndroidViewModel(applicat
     fun setTxCallsign(callsign: String) {
         _uiState.value = _uiState.value.copy(txCallsign = callsign)
         prefs.edit().putString("tx_callsign", callsign).apply()
-        // Update reporter callsign if enabled
-        if (reporter.config.enabled) {
-            reporter.configure(callsign, reporter.config.gridSquare, true)
-        }
+        syncReporterState()
     }
 
     /* ── Reporter ──────────────────────────────────────────── */
 
     fun setReporterEnabled(enabled: Boolean) {
         prefs.edit().putBoolean("reporter_enabled", enabled).apply()
-        val callsign = _uiState.value.txCallsign
-        val grid = locationTracker.state.value.gridSquare.ifEmpty { reporter.config.gridSquare }
-        reporter.configure(callsign, grid, enabled)
+        _reporterEnabledPref.value = enabled
+        syncReporterState()
     }
 
     fun setReporterGrid(grid: String) {
         prefs.edit().putString("reporter_grid", grid).apply()
-        if (reporter.config.enabled) {
-            reporter.configure(reporter.config.callsign, grid, true)
-        }
+        syncReporterState()
     }
 
     private fun startTransmitting() {
@@ -380,7 +454,9 @@ class TransceiverViewModel(application: Application) : AndroidViewModel(applicat
     fun rigSetFreq(hz: Long) {
         viewModelScope.launch {
             rigController.setFreq(hz)
-            // Rigs that support data modes → PKTUSB/PKTLSB; others → USB/LSB
+            // Auto-pick data mode for the band. RigController.setMode preserves the
+            // rig's current filter (queries filter byte via CI-V before switching),
+            // so the user's FIL1/FIL2/FIL3 selection stays intact.
             val useDataMode = rigMfg !in noDataModeMfgs
             val autoMode = if (hz < 10_000_000L) {
                 if (useDataMode) "PKTLSB" else "LSB"
@@ -389,10 +465,6 @@ class TransceiverViewModel(application: Application) : AndroidViewModel(applicat
             }
             rigController.setMode(autoMode)
         }
-    }
-
-    fun rigSetMode(mode: String) {
-        viewModelScope.launch { rigController.setMode(mode) }
     }
 
     /** Direct rig PTT control — works regardless of audio engine state */

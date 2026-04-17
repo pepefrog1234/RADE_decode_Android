@@ -73,6 +73,14 @@ class FreeDVReporter(private val scope: CoroutineScope) {
     private val _connected = MutableStateFlow(false)
     val connected: StateFlow<Boolean> = _connected.asStateFlow()
 
+    /**
+     * In-flight state: true from the moment we start a WebSocket until the Socket.IO
+     * handshake completes (or fails). Lets the UI show "Connecting…" instead of
+     * "Not connected" while the initial handshake is underway.
+     */
+    private val _connecting = MutableStateFlow(false)
+    val connecting: StateFlow<Boolean> = _connecting.asStateFlow()
+
     var config = ReporterConfig()
         private set
 
@@ -105,6 +113,7 @@ class FreeDVReporter(private val scope: CoroutineScope) {
     @Synchronized
     fun connect() {
         if (webSocket != null) return
+        _connecting.value = true
 
         val request = Request.Builder()
             .url("$BASE_URL$EIO_PATH")
@@ -124,6 +133,7 @@ class FreeDVReporter(private val scope: CoroutineScope) {
             override fun onFailure(ws: WebSocket, t: Throwable, response: Response?) {
                 Log.e(TAG, "WebSocket failure: ${t.message}")
                 _connected.value = false
+                _connecting.value = false
                 webSocket = null
                 scheduleReconnect()
             }
@@ -131,6 +141,7 @@ class FreeDVReporter(private val scope: CoroutineScope) {
             override fun onClosed(ws: WebSocket, code: Int, reason: String) {
                 Log.i(TAG, "WebSocket closed: $reason")
                 _connected.value = false
+                _connecting.value = false
                 webSocket = null
             }
         })
@@ -144,6 +155,7 @@ class FreeDVReporter(private val scope: CoroutineScope) {
         webSocket?.close(1000, "User disconnect")
         webSocket = null
         _connected.value = false
+        _connecting.value = false
         connectionId = null
         synchronized(stationLock) {
             stationMap.clear()
@@ -167,6 +179,15 @@ class FreeDVReporter(private val scope: CoroutineScope) {
         if (!_connected.value) return
         sendEvent("freq_change", JSONObject().apply {
             put("freq", frequency)
+        })
+    }
+
+    /** Report TX on/off state. */
+    fun reportTx(transmitting: Boolean) {
+        if (!_connected.value) return
+        sendEvent("tx_report", JSONObject().apply {
+            put("transmitting", transmitting)
+            put("mode", "RADEV1")
         })
     }
 
@@ -205,7 +226,9 @@ class FreeDVReporter(private val scope: CoroutineScope) {
                     put("grid_square", config.gridSquare)
                     put("version", "RADE_Android/1.0")
                     put("os", "Android")
-                    put("rx_only", true)
+                    // Fixed capability flag — app supports TX. Current RX/TX activity
+                    // is communicated live via rx_report / tx_report events.
+                    put("rx_only", false)
                 } else {
                     put("role", "view")
                 }
@@ -230,16 +253,19 @@ class FreeDVReporter(private val scope: CoroutineScope) {
                     val obj = JSONObject(data.substring(1))
                     connectionId = obj.optString("sid", null)
                     _connected.value = true
+                    _connecting.value = false
                     resetReconnectDelay()
                     Log.i(TAG, "Socket.IO connected, sid=$connectionId")
                 } catch (_: Exception) {
                     _connected.value = true
+                    _connecting.value = false
                     resetReconnectDelay()
                 }
             }
             SIO_DISCONNECT -> {
                 Log.w(TAG, "Server disconnected us: ${data.substring(1)}")
                 _connected.value = false
+                _connecting.value = false
                 webSocket?.close(1000, "Server disconnect")
                 webSocket = null
                 connectionId = null

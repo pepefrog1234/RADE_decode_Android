@@ -44,6 +44,8 @@ fun StationsScreen(reporter: FreeDVReporter? = null) {
         ?: remember { mutableStateOf(emptyMap<String, FreeDVReporter.ReporterStation>()) }
     val isConnected by reporter?.connected?.collectAsState()
         ?: remember { mutableStateOf(false) }
+    val isConnecting by reporter?.connecting?.collectAsState()
+        ?: remember { mutableStateOf(false) }
     var selectedBand by remember { mutableStateOf(0) }
 
     val namedStations = stations.values.filter { it.callsign.isNotEmpty() }
@@ -67,34 +69,51 @@ fun StationsScreen(reporter: FreeDVReporter? = null) {
             modifier = Modifier.padding(start = 4.dp, bottom = 8.dp)
         )
 
-        // Connection status
+        // Connection status — three states: connected / connecting / disconnected
+        val statusColor = when {
+            isConnected -> GreenBright
+            isConnecting -> Cyan400
+            else -> OnSurfaceDim
+        }
+        val statusText = when {
+            isConnected -> stringResource(R.string.stations_connected, namedStations.size)
+            isConnecting -> stringResource(R.string.stations_connecting)
+            else -> stringResource(R.string.stations_not_connected)
+        }
         Surface(
             modifier = Modifier
                 .fillMaxWidth()
                 .border(
                     1.dp,
-                    if (isConnected) GreenBright.copy(alpha = 0.3f)
+                    if (isConnected || isConnecting) statusColor.copy(alpha = 0.3f)
                     else MaterialTheme.colorScheme.outline,
                     RoundedCornerShape(10.dp)
                 ),
             shape = RoundedCornerShape(10.dp),
-            color = if (isConnected) GreenBright.copy(alpha = 0.08f) else SurfaceCard
+            color = if (isConnected || isConnecting) statusColor.copy(alpha = 0.08f) else SurfaceCard
         ) {
             Row(
                 modifier = Modifier.padding(12.dp),
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.spacedBy(8.dp)
             ) {
-                Icon(
-                    Icons.Default.CellTower, null,
-                    tint = if (isConnected) GreenBright else OnSurfaceDim,
-                    modifier = Modifier.size(18.dp)
-                )
+                if (isConnecting && !isConnected) {
+                    CircularProgressIndicator(
+                        modifier = Modifier.size(14.dp),
+                        strokeWidth = 2.dp,
+                        color = statusColor
+                    )
+                } else {
+                    Icon(
+                        Icons.Default.CellTower, null,
+                        tint = statusColor,
+                        modifier = Modifier.size(18.dp)
+                    )
+                }
                 Text(
-                    text = if (isConnected) stringResource(R.string.stations_connected, namedStations.size)
-                           else stringResource(R.string.stations_not_connected),
+                    text = statusText,
                     fontSize = 13.sp,
-                    color = if (isConnected) GreenBright else OnSurfaceDim
+                    color = statusColor
                 )
             }
         }
