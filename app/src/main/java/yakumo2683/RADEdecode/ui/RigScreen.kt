@@ -256,6 +256,10 @@ fun RigScreen(viewModel: TransceiverViewModel = viewModel()) {
     var usbDeviceExpanded by remember { mutableStateOf(false) }
     // CI-V address (for Icom rigs)
     var civAddrInput by remember { mutableStateOf(rigPrefs.getString("civ_addr", "") ?: "") }
+    // DTR / RTS modem line state. Defaults: DTR on (most CAT interfaces need it),
+    // RTS off (some USB-serial cables wire RTS to PTT — asserting it would key the rig).
+    var dtrEnabled by remember { mutableStateOf(rigPrefs.getBoolean("dtr_enabled", true)) }
+    var rtsEnabled by remember { mutableStateOf(rigPrefs.getBoolean("rts_enabled", false)) }
     // Manufacturer filter
     val manufacturers = remember { listOf("All") + rigModels.map { it.mfg }.distinct() }
     var selectedMfg by remember { mutableStateOf(rigPrefs.getString("mfg_filter", "All") ?: "All") }
@@ -571,6 +575,43 @@ fun RigScreen(viewModel: TransceiverViewModel = viewModel()) {
                         }
                     }
 
+                    // DTR / RTS modem line controls
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(16.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        ModemLineToggle(
+                            label = "DTR",
+                            checked = dtrEnabled,
+                            onCheckedChange = {
+                                dtrEnabled = it
+                                rigPrefs.edit().putBoolean("dtr_enabled", it).apply()
+                                if (usbState.connectedDevice != null) {
+                                    viewModel.setSerialModemLines(dtrEnabled, rtsEnabled)
+                                }
+                            },
+                            modifier = Modifier.weight(1f)
+                        )
+                        ModemLineToggle(
+                            label = "RTS",
+                            checked = rtsEnabled,
+                            onCheckedChange = {
+                                rtsEnabled = it
+                                rigPrefs.edit().putBoolean("rts_enabled", it).apply()
+                                if (usbState.connectedDevice != null) {
+                                    viewModel.setSerialModemLines(dtrEnabled, rtsEnabled)
+                                }
+                            },
+                            modifier = Modifier.weight(1f)
+                        )
+                    }
+                    Text(
+                        stringResource(R.string.rig_dtr_rts_hint),
+                        color = OnSurfaceDim,
+                        fontSize = 11.sp
+                    )
+
                     // USB permission status
                     if (usbState.permissionRequested) {
                         Text(
@@ -614,7 +655,9 @@ fun RigScreen(viewModel: TransceiverViewModel = viewModel()) {
                                         model = rig.id,
                                         usbDevice = usbDevices[selectedUsbDeviceIndex],
                                         speed = speed,
-                                        civAddr = if (needsCiv) civAddrInput else ""
+                                        civAddr = if (needsCiv) civAddrInput else "",
+                                        dtr = dtrEnabled,
+                                        rts = rtsEnabled
                                     )
                                 }
                             }
@@ -832,6 +875,32 @@ fun RigScreen(viewModel: TransceiverViewModel = viewModel()) {
         }
 
 
+    }
+}
+
+@Composable
+private fun ModemLineToggle(
+    label: String,
+    checked: Boolean,
+    onCheckedChange: (Boolean) -> Unit,
+    modifier: Modifier = Modifier
+) {
+    Row(
+        modifier = modifier,
+        horizontalArrangement = Arrangement.SpaceBetween,
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Text(
+            text = label,
+            fontFamily = FontFamily.Monospace,
+            fontWeight = FontWeight.Bold,
+            fontSize = 13.sp
+        )
+        Switch(
+            checked = checked,
+            onCheckedChange = onCheckedChange,
+            colors = SwitchDefaults.colors(checkedTrackColor = Cyan400)
+        )
     }
 }
 

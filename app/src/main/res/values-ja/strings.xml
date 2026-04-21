@@ -125,6 +125,7 @@
     <string name="rig_no_usb_device">USB シリアルデバイスが見つかりません</string>
     <string name="rig_usb_refresh">更新</string>
     <string name="rig_usb_permission_waiting">USB 権限を待っています…</string>
+    <string name="rig_dtr_rts_hint">DTR/RTS 制御線。USB シリアルケーブルが RTS を PTT に配線している場合は RTS をオフにしてください。</string>
     <string name="rig_baud">ボーレート</string>
     <string name="rig_manufacturer">メーカー</string>
     <string name="rig_all_manufacturers">すべてのメーカー</string>

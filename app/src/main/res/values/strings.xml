@@ -126,6 +126,7 @@
     <string name="rig_no_usb_device">No USB serial device found</string>
     <string name="rig_usb_refresh">Refresh</string>
     <string name="rig_usb_permission_waiting">Waiting for USB permission…</string>
+    <string name="rig_dtr_rts_hint">DTR/RTS modem lines. Turn off RTS if your USB-serial cable wires it to PTT.</string>
     <string name="rig_baud">Baud</string>
     <string name="rig_manufacturer">Manufacturer</string>
     <string name="rig_all_manufacturers">All Manufacturers</string>

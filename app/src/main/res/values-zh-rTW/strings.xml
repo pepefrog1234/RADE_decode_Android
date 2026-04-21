@@ -125,6 +125,7 @@
     <string name="rig_no_usb_device">未偵測到 USB 序列埠裝置</string>
     <string name="rig_usb_refresh">重新整理</string>
     <string name="rig_usb_permission_waiting">等待 USB 授權中…</string>
+    <string name="rig_dtr_rts_hint">DTR/RTS 控制線。若您的 USB 轉串列線把 RTS 接到 PTT，請將 RTS 關閉。</string>
     <string name="rig_baud">鮑率</string>
     <string name="rig_manufacturer">製造商</string>
     <string name="rig_all_manufacturers">所有製造商</string>

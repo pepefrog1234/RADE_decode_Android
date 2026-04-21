@@ -125,6 +125,7 @@
     <string name="rig_no_usb_device">未检测到 USB 串口设备</string>
     <string name="rig_usb_refresh">刷新</string>
     <string name="rig_usb_permission_waiting">等待 USB 授权中…</string>
+    <string name="rig_dtr_rts_hint">DTR/RTS 控制线。若您的 USB 转串行线把 RTS 接到 PTT，请将 RTS 关闭。</string>
     <string name="rig_baud">波特率</string>
     <string name="rig_manufacturer">制造商</string>
     <string name="rig_all_manufacturers">所有制造商</string>

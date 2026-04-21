@@ -86,6 +86,8 @@ class UsbSerialManager(private val context: Context) {
 
     private var pendingDevice: UsbSerialDevice? = null
     private var pendingBaudRate: Int = 19200
+    private var pendingDtr: Boolean = true
+    private var pendingRts: Boolean = false
     private var pendingCallback: ((String) -> Unit)? = null
 
     private val usbReceiver = object : BroadcastReceiver() {
@@ -102,7 +104,7 @@ class UsbSerialManager(private val context: Context) {
 
                     if (granted && pd != null) {
                         Log.i(TAG, "USB permission granted")
-                        val path = openDeviceInternal(pd, pendingBaudRate)
+                        val path = openDeviceInternal(pd, pendingBaudRate, pendingDtr, pendingRts)
                         cb?.invoke(path)
                     } else {
                         Log.w(TAG, "USB permission denied")
@@ -195,16 +197,28 @@ class UsbSerialManager(private val context: Context) {
     /**
      * Open a USB serial device and start the pty bridge.
      * If permission is needed, the system dialog is shown and the callback fires later.
+     *
+     * @param dtr initial state of the DTR modem line (typical: on to signal "terminal ready")
+     * @param rts initial state of the RTS modem line (typical: off — some USB-serial cables wire
+     *            RTS to PTT, and asserting it would key the radio on connect)
      */
-    fun openDevice(device: UsbSerialDevice, baudRate: Int, onOpened: (String) -> Unit) {
+    fun openDevice(
+        device: UsbSerialDevice,
+        baudRate: Int,
+        dtr: Boolean = true,
+        rts: Boolean = false,
+        onOpened: (String) -> Unit
+    ) {
         _state.value = _state.value.copy(error = "")
 
         if (usbManager.hasPermission(device.usbDevice)) {
-            val path = openDeviceInternal(device, baudRate)
+            val path = openDeviceInternal(device, baudRate, dtr, rts)
             onOpened(path)
         } else {
             pendingDevice = device
             pendingBaudRate = baudRate
+            pendingDtr = dtr
+            pendingRts = rts
             pendingCallback = onOpened
             _state.value = _state.value.copy(permissionRequested = true)
 
@@ -215,6 +229,16 @@ class UsbSerialManager(private val context: Context) {
             val pi = PendingIntent.getBroadcast(context, 0, permIntent, flags)
             usbManager.requestPermission(device.usbDevice, pi)
         }
+    }
+
+    /**
+     * Update DTR / RTS modem lines on the currently open USB serial device.
+     * No-op if nothing is connected.
+     */
+    fun setModemLines(dtr: Boolean, rts: Boolean) {
+        val conn = connection ?: return
+        val device = _state.value.connectedDevice ?: return
+        applyModemLines(conn, device.chipType, device.interfaceIndex, dtr, rts)
     }
 
     fun close() {
@@ -235,7 +259,12 @@ class UsbSerialManager(private val context: Context) {
 
     // ── Internal ──────────────────────────────────────────────
 
-    private fun openDeviceInternal(device: UsbSerialDevice, baudRate: Int): String {
+    private fun openDeviceInternal(
+        device: UsbSerialDevice,
+        baudRate: Int,
+        dtr: Boolean,
+        rts: Boolean
+    ): String {
         try {
             val conn = usbManager.openDevice(device.usbDevice)
             if (conn == null) {
@@ -264,6 +293,8 @@ class UsbSerialManager(private val context: Context) {
             // Configure serial parameters
             configureBaudRate(conn, device, baudRate)
             enableDevice(conn, device.chipType, device.interfaceIndex)
+            applyModemLinesForDevice(conn, device, dtr, rts)
+            Log.i(TAG, "Modem lines: DTR=$dtr RTS=$rts")
 
             // Start native pty bridge
             Log.i(TAG, "Starting pty bridge...")
@@ -336,13 +367,12 @@ class UsbSerialManager(private val context: Context) {
         Log.i(TAG, "configureBaudRate(${device.chipType}, $baudRate): $result")
     }
 
+    /**
+     * Chip-specific initialization that doesn't touch DTR/RTS — those are set
+     * separately by [applyModemLinesForDevice] so the user can control them.
+     */
     private fun enableDevice(conn: UsbDeviceConnection, chipType: ChipType, ifaceIdx: Int = 0) {
         when (chipType) {
-            ChipType.CDC_ACM -> {
-                val ctrlIface = findControlInterfaceNum()
-                val v = 0x03 // DTR + RTS
-                conn.controlTransfer(0x21, SET_CONTROL_LINE_STATE, v, ctrlIface, null, 0, 5000)
-            }
             ChipType.CP210X -> {
                 // CP210x: wIndex must be the interface number for all control transfers
                 val idx = ifaceIdx
@@ -351,14 +381,57 @@ class UsbSerialManager(private val context: Context) {
                 val noFlow = byteArrayOf(0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0)
                 conn.controlTransfer(0x41, 0x13, 0, idx, noFlow, noFlow.size, 5000)
                 conn.controlTransfer(0x41, 0x12, 0x000F, idx, null, 0, 5000)
-                conn.controlTransfer(0x41, 0x07, 0x0303, idx, null, 0, 5000)
+            }
+            ChipType.CDC_ACM, ChipType.FTDI, ChipType.CH340, ChipType.PROLIFIC, ChipType.UNKNOWN -> {
+                // No chip-specific init beyond baud rate needed here.
+            }
+        }
+    }
+
+    /**
+     * Send the DTR / RTS state to a specific device. Used both during open (before
+     * `connectedDevice` is set) and by the public `setModemLines()`.
+     */
+    private fun applyModemLinesForDevice(
+        conn: UsbDeviceConnection,
+        device: UsbSerialDevice,
+        dtr: Boolean,
+        rts: Boolean
+    ) {
+        applyModemLines(conn, device.chipType, device.interfaceIndex, dtr, rts, device.usbDevice)
+    }
+
+    private fun applyModemLines(
+        conn: UsbDeviceConnection,
+        chipType: ChipType,
+        ifaceIdx: Int,
+        dtr: Boolean,
+        rts: Boolean,
+        usbDevice: UsbDevice? = _state.value.connectedDevice?.usbDevice
+    ) {
+        when (chipType) {
+            ChipType.CDC_ACM, ChipType.PROLIFIC, ChipType.UNKNOWN -> {
+                // USB CDC ACM SET_CONTROL_LINE_STATE: bit 0 = DTR, bit 1 = RTS.
+                val value = (if (dtr) 0x01 else 0) or (if (rts) 0x02 else 0)
+                val ctrlIface = usbDevice?.let { findControlInterfaceNum(it) } ?: 0
+                conn.controlTransfer(0x21, SET_CONTROL_LINE_STATE, value, ctrlIface, null, 0, 5000)
+            }
+            ChipType.CP210X -> {
+                // CP210x SET_MHS: bits 0-1 = DTR/RTS outputs, bits 8-9 = mask.
+                val value = (if (dtr) 0x01 else 0) or (if (rts) 0x02 else 0) or 0x0300
+                conn.controlTransfer(0x41, 0x07, value, ifaceIdx, null, 0, 5000)
             }
             ChipType.FTDI -> {
-                conn.controlTransfer(0x40, 1, 0x0101, 0, null, 0, 5000)
-                conn.controlTransfer(0x40, 1, 0x0202, 0, null, 0, 5000)
+                // FTDI SET_MODEM_CTRL: two separate commands, one per line. High byte = mask.
+                conn.controlTransfer(0x40, 1, if (dtr) 0x0101 else 0x0100, 0, null, 0, 5000)
+                conn.controlTransfer(0x40, 1, if (rts) 0x0202 else 0x0200, 0, null, 0, 5000)
             }
-            ChipType.CH340 -> {} // DTR/RTS already set in setCh340BaudRate
-            else -> {}
+            ChipType.CH340 -> {
+                // CH340 modem ctrl (0xA4): value bits are active-low.
+                // DTR = bit 5 (0x20), RTS = bit 6 (0x40).
+                val control = (if (dtr) 0x20 else 0) or (if (rts) 0x40 else 0)
+                conn.controlTransfer(0x40, 0xA4, control.inv() and 0xFFFF, 0, null, 0, 5000)
+            }
         }
     }
 
@@ -367,7 +440,7 @@ class UsbSerialManager(private val context: Context) {
     private fun setCdcBaudRate(conn: UsbDeviceConnection, baudRate: Int, device: UsbSerialDevice): String {
         val data = ByteBuffer.allocate(7).order(ByteOrder.LITTLE_ENDIAN)
             .putInt(baudRate).put(0).put(0).put(8).array()
-        val ctrlIface = findControlInterfaceNum()
+        val ctrlIface = findControlInterfaceNum(device.usbDevice)
         val r = conn.controlTransfer(0x21, SET_LINE_CODING, 0, ctrlIface, data, 7, 5000)
         return "CDC SET_LINE_CODING→$r"
     }
@@ -425,12 +498,8 @@ class UsbSerialManager(private val context: Context) {
         // Step 9: Set line control 8N1 (register 0x2518, value 0xC3)
         val r3 = conn.controlTransfer(0x40, 0x9A, 0x2518, 0x00C3, null, 0, 5000)
 
-        // Step 10: Assert DTR only (no RTS to avoid PTT trigger)
-        // CH340 modem ctrl: value = ~control (active low). DTR=0x20, RTS=0x40
-        val dtrOnly = 0x20
-        conn.controlTransfer(0x40, 0xA4, dtrOnly.inv() and 0xFFFF, 0, null, 0, 5000)
-
-        // Step 11: Final status check
+        // DTR / RTS are applied by applyModemLines() after enableDevice().
+        // Step 10: Final status check
         conn.controlTransfer(0xC0, 0x95, 0x0706, 0, buf, 8, 5000)
 
         return "CH340 init→$r1/$r2/$r3"
@@ -453,8 +522,8 @@ class UsbSerialManager(private val context: Context) {
         }
     }
 
-    private fun findControlInterfaceNum(): Int {
-        val device = _state.value.connectedDevice?.usbDevice ?: return 0
+    private fun findControlInterfaceNum(device: UsbDevice? = _state.value.connectedDevice?.usbDevice): Int {
+        device ?: return 0
         for (i in 0 until device.interfaceCount) {
             val iface = device.getInterface(i)
             if (iface.interfaceClass == USB_CLASS_CDC && iface.interfaceSubclass == CDC_SUBCLASS_ACM)

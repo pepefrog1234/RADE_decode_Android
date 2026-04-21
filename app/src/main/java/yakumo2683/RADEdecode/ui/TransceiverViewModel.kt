@@ -404,12 +404,24 @@ class TransceiverViewModel(application: Application) : AndroidViewModel(applicat
     private val _rigConnecting = MutableStateFlow(false)
     val rigConnecting: StateFlow<Boolean> = _rigConnecting.asStateFlow()
 
+    /** Update DTR / RTS on the currently open USB serial device. No-op when disconnected. */
+    fun setSerialModemLines(dtr: Boolean, rts: Boolean) {
+        usbSerialManager.setModemLines(dtr, rts)
+    }
+
     /** Start local rigctld via USB Host API + pty bridge (no root required) */
-    fun rigStartLocalUsb(model: Int, usbDevice: UsbSerialManager.UsbSerialDevice, speed: Int, civAddr: String = "") {
+    fun rigStartLocalUsb(
+        model: Int,
+        usbDevice: UsbSerialManager.UsbSerialDevice,
+        speed: Int,
+        civAddr: String = "",
+        dtr: Boolean = true,
+        rts: Boolean = false
+    ) {
         if (_rigConnecting.value || rigController.isConnected) return
         _rigConnecting.value = true
 
-        usbSerialManager.openDevice(usbDevice, speed) { ptyPath ->
+        usbSerialManager.openDevice(usbDevice, speed, dtr, rts) { ptyPath ->
             if (ptyPath.isNotEmpty()) {
                 viewModelScope.launch(Dispatchers.IO) {
                     try {
