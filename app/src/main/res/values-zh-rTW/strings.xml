@@ -90,9 +90,9 @@
     <string name="header_rx_output">接收輸出</string>
     <string name="settings_volume">音量</string>
     <string name="settings_volume_help">此處同時控制發射輸出電平。請調整至電台的 ALC 錶不偏轉——將 ALC 保持在線性區間（無讀數/無條顯示），以避免訊號失真與濺射。</string>
-    <string name="header_tx_output_level">發射輸出音量</string>
+    <string name="header_tx_output">發射音量</string>
     <string name="settings_tx_level">USB 發射音量</string>
-    <string name="settings_tx_level_help">調整透過 USB 送到電台的發射音量。ALC 過高時請調低。</string>
+    <string name="settings_tx_level_help">送入電台 USB 音訊輸入的 RADE 波形強度。太低 → ALC 不動、發射功率低；太高 → ALC 撞頂、訊號失真。同時請檢查電台的 USB MOD Level（IC-7300：選單 → SET → Connectors → USB MOD Level）。</string>
     <string name="header_tx_callsign">發射呼號</string>
     <string name="settings_callsign_label">呼號（EOO）</string>
     <string name="settings_callsign_help">您的呼號將在發射時編碼於 EOO（結束通聯）訊框中。</string>

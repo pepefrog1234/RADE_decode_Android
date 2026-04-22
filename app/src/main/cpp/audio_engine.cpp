@@ -129,9 +129,10 @@ void AudioEngine::designDecimFilter(int inputRate, int outputRate) {
 
 /* ── Start / Stop ──────────────────────────────────────────── */
 
-bool AudioEngine::start(int inputDeviceId) {
+bool AudioEngine::start(int inputDeviceId, int outputDeviceId) {
     if (running_.load()) return true;
     inputDeviceId_ = (inputDeviceId > 0) ? inputDeviceId : 0;
+    outputDeviceId_ = (outputDeviceId > 0) ? outputDeviceId : 0;
 
     if (!initModem()) return false;
 
@@ -155,8 +156,8 @@ bool AudioEngine::start(int inputDeviceId) {
     // Design decimation filter based on actual input rate
     designDecimFilter(actualInputRate_, MODEM_SAMPLE_RATE);
 
-    LOGI("Audio engine started: in=%dHz(÷%d) out=16kHz device=%d",
-         actualInputRate_, decimFactor_, inputDeviceId_);
+    LOGI("Audio engine started: in=%dHz(÷%d) out=16kHz inDev=%d outDev=%d",
+         actualInputRate_, decimFactor_, inputDeviceId_, outputDeviceId_);
     return true;
 }
 
@@ -253,15 +254,22 @@ bool AudioEngine::openOutputStream() {
            ->setDataCallback(outputCb_.get())
            ->setErrorCallback(outputCb_.get());
 
+    // Route decoded speech away from USB audio (the rig's own audio back-feed).
+    // Without this, Android picks USB as the preferred Media destination
+    // whenever a USB audio device is connected, so the user hears nothing in
+    // the phone's speaker. Wired headsets / BT still override this preference
+    // at the Android audio policy level.
+    if (outputDeviceId_ > 0) builder.setDeviceId(outputDeviceId_);
+
     auto result = builder.openStream(outputStream_);
     if (result != oboe::Result::OK) {
         LOGE("Failed to open output: %s", oboe::convertToText(result));
         return false;
     }
 
-    LOGI("Output: rate=%d ch=%d device=%d",
+    LOGI("Output opened: rate=%d ch=%d device=%d (requested=%d)",
          outputStream_->getSampleRate(), outputStream_->getChannelCount(),
-         outputStream_->getDeviceId());
+         outputStream_->getDeviceId(), outputDeviceId_);
 
     result = outputStream_->requestStart();
     if (result != oboe::Result::OK) {

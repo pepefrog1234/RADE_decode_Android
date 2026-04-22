@@ -29,6 +29,7 @@ fun SettingsScreen(viewModel: TransceiverViewModel = viewModel()) {
     val state by viewModel.uiState.collectAsState()
     var volume by remember { mutableFloatStateOf(viewModel.getSavedVolume()) }
     var inputGain by remember { mutableFloatStateOf(viewModel.getSavedInputGain()) }
+    var txVolume by remember { mutableFloatStateOf(viewModel.getSavedTxVolume()) }
 
     Column(
         modifier = Modifier
@@ -238,6 +239,48 @@ fun SettingsScreen(viewModel: TransceiverViewModel = viewModel()) {
                 )
                 Text(
                     stringResource(R.string.settings_volume_help),
+                    fontSize = 11.sp, color = OnSurfaceDim, lineHeight = 16.sp
+                )
+            }
+        }
+
+        SectionHeader(stringResource(R.string.header_tx_output))
+
+        Surface(
+            shape = RoundedCornerShape(12.dp),
+            color = SurfaceCard,
+            modifier = Modifier
+                .fillMaxWidth()
+                .border(1.dp, MaterialTheme.colorScheme.outline, RoundedCornerShape(12.dp))
+        ) {
+            Column(modifier = Modifier.padding(16.dp)) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text(
+                        stringResource(R.string.settings_tx_level),
+                        color = MaterialTheme.colorScheme.onSurface
+                    )
+                    Text(
+                        "${(txVolume * 100).toInt()}%",
+                        fontFamily = FontFamily.Monospace,
+                        fontSize = 14.sp,
+                        color = Cyan400
+                    )
+                }
+                Slider(
+                    value = txVolume,
+                    onValueChange = { txVolume = it; viewModel.setTxVolume(it) },
+                    valueRange = 0f..1f,
+                    colors = SliderDefaults.colors(
+                        thumbColor = Cyan400,
+                        activeTrackColor = Cyan400
+                    )
+                )
+                Text(
+                    stringResource(R.string.settings_tx_level_help),
                     fontSize = 11.sp, color = OnSurfaceDim, lineHeight = 16.sp
                 )
             }

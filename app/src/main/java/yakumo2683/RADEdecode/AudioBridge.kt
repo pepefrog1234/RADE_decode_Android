@@ -45,9 +45,18 @@ class AudioBridge(private val context: Context) {
         nativeSetCallback(jniCallback)
     }
 
-    /** Start the audio engine with the specified input device.
-     *  @param inputDeviceId Android AudioDeviceInfo ID, or -1 for default */
-    fun start(inputDeviceId: Int = -1): Boolean = nativeStart(inputDeviceId)
+    /**
+     * Start the audio engine with the specified devices.
+     * @param inputDeviceId  Android AudioDeviceInfo ID for capture, or -1 for default.
+     * @param outputDeviceId Android AudioDeviceInfo ID for playback, or -1 for default.
+     *   Setting this is important when a USB audio device is connected — by default
+     *   Android routes Media output to USB, which sends decoded speech back into the
+     *   rig instead of the phone's speaker. Callers should typically pass the
+     *   built-in speaker here (see [findBuiltInSpeaker]); wired headsets and BT
+     *   still override via Android's routing policy.
+     */
+    fun start(inputDeviceId: Int = -1, outputDeviceId: Int = -1): Boolean =
+        nativeStart(inputDeviceId, outputDeviceId)
 
     /** Stop the audio engine. */
     fun stop() {
@@ -241,6 +250,17 @@ class AudioBridge(private val context: Context) {
         }
     }
 
+    /**
+     * Find the built-in loudspeaker, or null.
+     * Passed to [start] as the RX output device to keep decoded speech out of
+     * any connected USB audio device (the rig's audio input).
+     */
+    fun findBuiltInSpeaker(): AudioDevice? {
+        return getOutputDevices().firstOrNull {
+            it.type == AudioDeviceInfo.TYPE_BUILTIN_SPEAKER
+        }
+    }
+
     /** List available audio output devices, deduplicated by type. */
     fun getOutputDevices(): List<AudioDevice> {
         val am = context.getSystemService(Context.AUDIO_SERVICE) as AudioManager
@@ -270,7 +290,7 @@ class AudioBridge(private val context: Context) {
     private external fun nativeStartRecording(path: String): Boolean
     private external fun nativeStopRecording()
     private external fun nativeSetCallback(callback: Any)
-    private external fun nativeStart(inputDeviceId: Int): Boolean
+    private external fun nativeStart(inputDeviceId: Int, outputDeviceId: Int): Boolean
     private external fun nativeStop()
     private external fun nativeIsRunning(): Boolean
     private external fun nativeSetInputDevice(deviceId: Int)

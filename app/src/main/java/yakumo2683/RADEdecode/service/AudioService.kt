@@ -143,7 +143,13 @@ class AudioService : LifecycleService() {
             startForeground(NOTIFICATION_ID, notification)
         }
 
-        if (!bridge.start(inputDeviceId)) {
+        // Pin RX playback to the built-in speaker by default — otherwise
+        // Android routes Media output to the rig's USB audio input whenever
+        // a USB audio device is connected, and the user hears nothing in
+        // their phone speaker. Wired headsets / BT still override at the
+        // Android audio-policy layer, so plugging in a headset still works.
+        val rxOutputDeviceId = bridge.findBuiltInSpeaker()?.id ?: -1
+        if (!bridge.start(inputDeviceId, rxOutputDeviceId)) {
             stopSelf()
             return
         }
@@ -185,6 +191,20 @@ class AudioService : LifecycleService() {
 
     fun setOutputVolume(volume: Float) {
         audioBridge?.setOutputVolume(volume)
+    }
+
+    /**
+     * TX USB audio output level (0..1). Lowered from the previous hard-coded 5%
+     * because that was too quiet for some rigs (e.g. IC-7300) — ALC barely moved
+     * and the user couldn't reach rated power. The user now drives this from
+     * Settings; too hot a value will slam ALC, so document the rig's USB MOD level.
+     */
+    @Volatile private var txVolume: Float = 0.2f
+
+    fun setTxVolume(volume: Float) {
+        val v = volume.coerceIn(0f, 1f)
+        txVolume = v
+        txAudioTrack?.setVolume(v)
     }
 
     fun getInputDevices(): List<AudioBridge.AudioDevice> {
@@ -309,9 +329,11 @@ class AudioService : LifecycleService() {
             Log.w("AudioService", "TX AudioTrack: USB device $outputDeviceId not found, using default")
         }
 
-        // Attenuate TX output — RADE modem waveform is very hot;
-        // even minimum Android volume can overload the radio's ALC.
-        track.setVolume(0.05f)
+        // User-adjustable TX level. Default 20% — enough for rigs with typical
+        // USB MOD gain (e.g. IC-7300 at default ~50%) to push ALC into the
+        // target region; hotter rigs (IC-9700) may need lower, quieter cables
+        // may need higher. See SettingsScreen "TX Output" slider.
+        track.setVolume(txVolume)
         track.play()
         txAudioTrack = track
 

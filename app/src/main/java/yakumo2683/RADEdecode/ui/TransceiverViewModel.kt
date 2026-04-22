@@ -82,6 +82,7 @@ class TransceiverViewModel(application: Application) : AndroidViewModel(applicat
             // Restore persisted audio settings
             service.setInputGain(prefs.getFloat("input_gain", 4.0f))
             service.setOutputVolume(prefs.getFloat("output_volume", 1.0f))
+            service.setTxVolume(prefs.getFloat("tx_volume", 0.2f))
             _uiState.value = _uiState.value.copy(serviceBound = true)
             startCollectingServiceState()
         }
@@ -355,6 +356,13 @@ class TransceiverViewModel(application: Application) : AndroidViewModel(applicat
     }
 
     fun getSavedVolume(): Float = prefs.getFloat("output_volume", 1.0f)
+
+    fun setTxVolume(volume: Float) {
+        prefs.edit().putFloat("tx_volume", volume).apply()
+        audioService?.setTxVolume(volume)
+    }
+
+    fun getSavedTxVolume(): Float = prefs.getFloat("tx_volume", 0.2f)
 
     fun refreshDevices() {
         val bridge = AudioBridge(getApplication())

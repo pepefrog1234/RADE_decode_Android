@@ -60,7 +60,7 @@ public:
     ~AudioEngine();
 
     /* RX mode */
-    bool start(int inputDeviceId = 0);
+    bool start(int inputDeviceId = 0, int outputDeviceId = 0);
     void stop();
     bool isRunning() const { return running_.load(); }
 
@@ -110,6 +110,7 @@ private:
     std::unique_ptr<OutputCallback> outputCb_;
 
     int inputDeviceId_ = 0;
+    int outputDeviceId_ = 0;
     std::atomic<bool> running_{false};
 
     int actualInputRate_ = 48000;
