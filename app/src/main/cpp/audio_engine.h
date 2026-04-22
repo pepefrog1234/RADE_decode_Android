@@ -24,6 +24,7 @@ extern "C" {
 #include "eoo_callsign_codec_c.h"
 }
 
+constexpr int INPUT_SAMPLE_RATE   = 48000;
 constexpr int MODEM_SAMPLE_RATE   = 8000;
 constexpr int SPEECH_SAMPLE_RATE  = 16000;
 
@@ -82,6 +83,14 @@ public:
     int getSnrEstimate() const { return snrEstimate_.load(); }
     float getFreqOffset() const { return freqOffset_.load(); }
     bool isUnprocessedRejected() const { return unprocessedRejected_.load(); }
+    /**
+     * Session id of the currently open input stream, or -1 if no stream is open.
+     * Exposed so Kotlin can attach AcousticEchoCanceler / NoiseSuppressor /
+     * AutomaticGainControl objects and disable them — some OEMs (notably
+     * Samsung) apply platform audio effects even when Unprocessed is requested,
+     * and explicit effect disabling on the session id is the canonical fix.
+     */
+    int getInputSessionId() const { return inputSessionId_; }
     float getInputLevel() const { return inputLevelDb_.load(); }
     float getOutputLevel() const { return outputLevelDb_.load(); }
 
@@ -136,6 +145,7 @@ private:
     std::atomic<int> snrEstimate_{0};
     std::atomic<float> freqOffset_{0.0f};
     std::atomic<bool> unprocessedRejected_{false};
+    int inputSessionId_ = -1;
 
     std::string lastCallsign_;
     std::mutex callsignMutex_;

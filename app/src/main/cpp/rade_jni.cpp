@@ -441,6 +441,12 @@ JNI_AUDIO(nativeIsUnprocessedRejected)(JNIEnv *env, jobject /* this */) {
     return g_audioEngine->isUnprocessedRejected() ? JNI_TRUE : JNI_FALSE;
 }
 
+JNIEXPORT jint JNICALL
+JNI_AUDIO(nativeGetInputSessionId)(JNIEnv *env, jobject /* this */) {
+    if (!g_audioEngine) return -1;
+    return (jint)g_audioEngine->getInputSessionId();
+}
+
 JNIEXPORT jfloat JNICALL
 JNI_AUDIO(nativeGetInputLevel)(JNIEnv *env, jobject /* this */) {
     if (!g_audioEngine) return -100.0f;

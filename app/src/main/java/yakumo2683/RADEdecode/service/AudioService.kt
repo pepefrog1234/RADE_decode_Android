@@ -148,6 +148,11 @@ class AudioService : LifecycleService() {
             return
         }
 
+        // Disable platform-applied audio effects (AGC, NS, AEC) that would
+        // corrupt the RADE signal on OEMs that ignore the Unprocessed preset
+        // (e.g. Samsung Galaxy S24). Held effects live until bridge.stop().
+        bridge.disableInputEffects()
+
         // Session will be created on first sync (in polling loop)
         currentInputDeviceId = inputDeviceId
 

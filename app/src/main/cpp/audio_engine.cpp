@@ -164,6 +164,7 @@ void AudioEngine::stop() {
     running_.store(false);
     if (inputStream_)  { inputStream_->stop();  inputStream_->close();  inputStream_.reset(); }
     if (outputStream_) { outputStream_->stop(); outputStream_->close(); outputStream_.reset(); }
+    inputSessionId_ = -1;
     releaseModem();
 }
 
@@ -188,15 +189,21 @@ bool AudioEngine::openInputStream() {
            ->setPerformanceMode(oboe::PerformanceMode::LowLatency)
            ->setSharingMode(oboe::SharingMode::Shared)
            ->setFormat(oboe::AudioFormat::Float)
+           // Lock capture to 48 kHz. Our polyphase decimator assumes 48→8 kHz
+           // (decimFactor_=6); accepting the device native rate risks 44.1 kHz
+           // or other values that break modem correlation. If the HW can't
+           // deliver 48 kHz natively, Oboe inserts a high-quality resampler.
+           ->setSampleRate(INPUT_SAMPLE_RATE)
+           ->setSampleRateConversionQuality(oboe::SampleRateConversionQuality::High)
            ->setChannelCount(oboe::ChannelCount::Mono)
-           // Unprocessed: bypass all platform audio processing (AGC, noise
-           // suppression, echo cancellation). Critical for modem signal
-           // integrity — some phone models apply aggressive filtering that
-           // destroys OFDM pilot correlation and prevents sync.
+           // Unprocessed: ask the platform to bypass AGC, NS, AEC. Some OEMs
+           // (Samsung S24, Pixel variants) ignore this hint at the HAL layer,
+           // so we additionally disable effects on the allocated session id
+           // from Kotlin after open — that's the canonical, always-works path.
            ->setInputPreset(oboe::InputPreset::Unprocessed)
+           ->setSessionId(oboe::SessionId::Allocate)
            ->setDataCallback(inputCb_.get())
            ->setErrorCallback(inputCb_.get());
-    // Do NOT set sample rate — capture at device native rate for best quality
 
     if (inputDeviceId_ > 0) builder.setDeviceId(inputDeviceId_);
 
@@ -207,14 +214,18 @@ bool AudioEngine::openInputStream() {
     }
 
     actualInputRate_ = inputStream_->getSampleRate();
+    inputSessionId_ = inputStream_->getSessionId();
     auto actualPreset = inputStream_->getInputPreset();
-    LOGI("Input: rate=%d ch=%d device=%d preset=%d (requested Unprocessed=%d)",
+    auto actualPerf = inputStream_->getPerformanceMode();
+    auto actualFormat = inputStream_->getFormat();
+    auto actualSharing = inputStream_->getSharingMode();
+    LOGI("Input opened: rate=%d ch=%d device=%d preset=%d perf=%d format=%d share=%d session=%d",
          actualInputRate_, inputStream_->getChannelCount(),
-         inputStream_->getDeviceId(), (int)actualPreset,
-         (int)oboe::InputPreset::Unprocessed);
+         inputStream_->getDeviceId(), (int)actualPreset, (int)actualPerf,
+         (int)actualFormat, (int)actualSharing, inputSessionId_);
     if (actualPreset != oboe::InputPreset::Unprocessed) {
         LOGE("Input: device did NOT honor Unprocessed preset (got %d). "
-             "Audio processing may be active — increase digital gain if needed.",
+             "Kotlin will disable effects via session id as a fallback.",
              (int)actualPreset);
         unprocessedRejected_.store(true);
     } else {

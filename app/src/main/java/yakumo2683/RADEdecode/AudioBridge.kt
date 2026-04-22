@@ -3,6 +3,11 @@ package yakumo2683.RADEdecode
 import android.content.Context
 import android.media.AudioDeviceInfo
 import android.media.AudioManager
+import android.media.audiofx.AcousticEchoCanceler
+import android.media.audiofx.AudioEffect
+import android.media.audiofx.AutomaticGainControl
+import android.media.audiofx.NoiseSuppressor
+import android.util.Log
 
 /**
  * Kotlin bridge to the native AudioEngine (C++ / Oboe).
@@ -45,7 +50,10 @@ class AudioBridge(private val context: Context) {
     fun start(inputDeviceId: Int = -1): Boolean = nativeStart(inputDeviceId)
 
     /** Stop the audio engine. */
-    fun stop() = nativeStop()
+    fun stop() {
+        releaseInputEffects()
+        nativeStop()
+    }
 
     /** Check if audio is currently running. */
     val isRunning: Boolean get() = nativeIsRunning()
@@ -73,6 +81,77 @@ class AudioBridge(private val context: Context) {
 
     /** True if the device did not honor the Unprocessed input preset. */
     val isUnprocessedRejected: Boolean get() = nativeIsUnprocessedRejected()
+
+    /** Audio session id of the active input stream, or -1 when not running. */
+    val inputSessionId: Int get() = nativeGetInputSessionId()
+
+    /* Effects attached to the input session id — held so they stay active for
+     * the stream's lifetime. Released by [stop] or [release]. */
+    private val heldInputEffects = mutableListOf<AudioEffect>()
+
+    data class InputEffectsReport(
+        val sessionId: Int,
+        val aecDisabled: Boolean,
+        val nsDisabled: Boolean,
+        val agcDisabled: Boolean
+    )
+
+    /**
+     * Attach and disable all platform audio effects on the active input session.
+     *
+     * Motivation: some OEMs (confirmed on Samsung Galaxy S24 with One UI 6) apply
+     * AGC / noise suppression / voice isolation at the HAL layer even when the
+     * app requests `InputPreset::Unprocessed`. The only reliable way to stop
+     * this from app code is to create the effect control objects on the stream's
+     * session id and explicitly disable them — which is what this does.
+     *
+     * Must be called AFTER [start] returns true. The effect objects are held
+     * alive until [stop] / [release] so the "disabled" state stays latched.
+     */
+    fun disableInputEffects(): InputEffectsReport {
+        releaseInputEffects()
+        val sid = inputSessionId
+        if (sid <= 0) {
+            Log.w("AudioBridge", "disableInputEffects: no session id ($sid)")
+            return InputEffectsReport(sid, false, false, false)
+        }
+        val aecOff = tryDisable("AEC", AcousticEchoCanceler.isAvailable()) {
+            AcousticEchoCanceler.create(sid)
+        }
+        val nsOff = tryDisable("NS", NoiseSuppressor.isAvailable()) {
+            NoiseSuppressor.create(sid)
+        }
+        val agcOff = tryDisable("AGC", AutomaticGainControl.isAvailable()) {
+            AutomaticGainControl.create(sid)
+        }
+        Log.i("AudioBridge", "disableInputEffects: session=$sid AEC=$aecOff NS=$nsOff AGC=$agcOff")
+        return InputEffectsReport(sid, aecOff, nsOff, agcOff)
+    }
+
+    private fun tryDisable(tag: String, available: Boolean, factory: () -> AudioEffect?): Boolean {
+        if (!available) {
+            Log.d("AudioBridge", "$tag not available on this device")
+            return false
+        }
+        return try {
+            val fx = factory() ?: return false.also {
+                Log.w("AudioBridge", "$tag.create returned null")
+            }
+            fx.enabled = false
+            heldInputEffects.add(fx)
+            !fx.enabled
+        } catch (t: Throwable) {
+            Log.w("AudioBridge", "$tag disable failed: ${t.message}")
+            false
+        }
+    }
+
+    private fun releaseInputEffects() {
+        heldInputEffects.forEach { fx ->
+            try { fx.release() } catch (_: Throwable) {}
+        }
+        heldInputEffects.clear()
+    }
 
     /** Input audio level in dB (RMS). */
     val inputLevel: Float get() = nativeGetInputLevel()
@@ -200,6 +279,7 @@ class AudioBridge(private val context: Context) {
     private external fun nativeGetSnrEstimate(): Int
     private external fun nativeGetFreqOffset(): Float
     private external fun nativeIsUnprocessedRejected(): Boolean
+    private external fun nativeGetInputSessionId(): Int
     private external fun nativeGetInputLevel(): Float
     private external fun nativeGetOutputLevel(): Float
     private external fun nativeGetSpectrum(out: FloatArray)
