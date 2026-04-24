@@ -31,9 +31,14 @@ private val bandFilters = listOf(
     BandFilter("All", 0, 0),
     BandFilter("160m", 1_800_000, 2_000_000),
     BandFilter("80m", 3_500_000, 4_000_000),
+    // 60m: widest range that covers US channelised + UK/EU band segments
+    BandFilter("60m", 5_250_000, 5_450_000),
     BandFilter("40m", 7_000_000, 7_300_000),
+    BandFilter("30m", 10_100_000, 10_150_000),
     BandFilter("20m", 14_000_000, 14_350_000),
+    BandFilter("17m", 18_068_000, 18_168_000),
     BandFilter("15m", 21_000_000, 21_450_000),
+    BandFilter("12m", 24_890_000, 24_990_000),
     BandFilter("10m", 28_000_000, 29_700_000),
     BandFilter("VHF+", 50_000_000, Long.MAX_VALUE)
 )
