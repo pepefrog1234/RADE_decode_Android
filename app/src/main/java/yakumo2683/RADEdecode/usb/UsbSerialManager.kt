@@ -156,7 +156,12 @@ class UsbSerialManager(private val context: Context) {
         val devices = mutableListOf<UsbSerialDevice>()
 
         for (usbDevice in usbManager.deviceList.values) {
-            val chipType = detectChipType(usbDevice) ?: continue
+            val chipType = detectChipType(usbDevice)
+            if (chipType == null) {
+                Log.d(TAG, "Skipping non-serial USB device: ${describeDevice(usbDevice)}")
+                continue
+            }
+            Log.i(TAG, "Enumerating serial USB device (detected=$chipType): ${describeDevice(usbDevice)}")
 
             // Find all interfaces that have bulk IN + OUT endpoints
             val serialInterfaces = mutableListOf<Int>()
@@ -265,16 +270,24 @@ class UsbSerialManager(private val context: Context) {
         dtr: Boolean,
         rts: Boolean
     ): String {
+        Log.i(TAG, "openDeviceInternal: ${describeDevice(device.usbDevice)}")
+        Log.i(TAG, "  target: interfaceIndex=${device.interfaceIndex} chip=${device.chipType} baud=$baudRate dtr=$dtr rts=$rts")
+
         try {
             val conn = usbManager.openDevice(device.usbDevice)
             if (conn == null) {
-                setError("Failed to open USB device (null connection)")
+                setError("Failed to open USB device (null connection). Revoke permission and replug the cable.")
                 return ""
             }
             connection = conn
 
-            // Claim the target interface (and CDC control interface if separate)
-            claimInterfaces(device, conn)
+            // Claim the target interface (and paired CDC control interface)
+            val claimOk = claimInterfaces(device, conn)
+            if (!claimOk) {
+                setError("Could not claim USB interface ${device.interfaceIndex} — another app or driver is holding it. Unplug the cable and try again.")
+                closeQuietly(conn)
+                return ""
+            }
 
             // Find bulk endpoints on the target interface
             val iface = device.usbDevice.getInterface(device.interfaceIndex)
@@ -282,27 +295,23 @@ class UsbSerialManager(private val context: Context) {
             if (endpoints == null) {
                 setError("No bulk endpoints on interface ${device.interfaceIndex} " +
                          "(class=${iface.interfaceClass}, endpoints=${iface.endpointCount})")
-                conn.close()
-                connection = null
+                closeQuietly(conn)
                 return ""
             }
             val (epIn, epOut) = endpoints
-            Log.i(TAG, "Using endpoints: IN=${epIn.address} OUT=${epOut.address} " +
-                       "on interface ${device.interfaceIndex}")
+            Log.i(TAG, "  endpoints: IN=0x%02X OUT=0x%02X".format(epIn.address, epOut.address))
 
             // Configure serial parameters
             configureBaudRate(conn, device, baudRate)
             enableDevice(conn, device.chipType, device.interfaceIndex)
             applyModemLinesForDevice(conn, device, dtr, rts)
-            Log.i(TAG, "Modem lines: DTR=$dtr RTS=$rts")
 
             // Start native pty bridge
-            Log.i(TAG, "Starting pty bridge...")
+            Log.i(TAG, "  starting pty bridge…")
             val slavePath = nativeStartBridge(conn, epIn, epOut)
             if (slavePath == null) {
                 setError("pty bridge failed (posix_openpt may be blocked by SELinux)")
-                conn.close()
-                connection = null
+                closeQuietly(conn)
                 return ""
             }
 
@@ -314,20 +323,65 @@ class UsbSerialManager(private val context: Context) {
 
         } catch (e: Exception) {
             Log.e(TAG, "openDeviceInternal failed", e)
-            setError("Open failed: ${e.message}")
+            setError("Open failed: ${e.message ?: e.javaClass.simpleName}")
+            connection?.let { closeQuietly(it) }
             return ""
         }
     }
 
-    private fun claimInterfaces(device: UsbSerialDevice, conn: UsbDeviceConnection) {
+    /** Release any claimed interfaces and close the USB connection. */
+    private fun closeQuietly(conn: UsbDeviceConnection) {
+        claimedInterfaces.forEach { iface ->
+            try { conn.releaseInterface(iface) } catch (_: Exception) {}
+        }
+        claimedInterfaces.clear()
+        try { conn.close() } catch (_: Exception) {}
+        if (connection === conn) connection = null
+    }
+
+    /** Human-readable summary of a USB device's descriptor for logcat. */
+    private fun describeDevice(device: UsbDevice): String {
+        val sb = StringBuilder()
+        sb.append("VID=%04X PID=%04X ".format(device.vendorId, device.productId))
+        sb.append("\"${device.productName ?: "-"}\" by \"${device.manufacturerName ?: "-"}\"")
+        sb.append(" interfaces=${device.interfaceCount}:")
+        for (i in 0 until device.interfaceCount) {
+            val iface = device.getInterface(i)
+            sb.append("\n    [$i] class=${iface.interfaceClass} sub=${iface.interfaceSubclass} proto=${iface.interfaceProtocol} bNum=${iface.id} endpoints=${iface.endpointCount}")
+            for (j in 0 until iface.endpointCount) {
+                val ep = iface.getEndpoint(j)
+                val typeName = when (ep.type) {
+                    UsbConstants.USB_ENDPOINT_XFER_BULK -> "bulk"
+                    UsbConstants.USB_ENDPOINT_XFER_INT -> "interrupt"
+                    UsbConstants.USB_ENDPOINT_XFER_ISOC -> "iso"
+                    UsbConstants.USB_ENDPOINT_XFER_CONTROL -> "ctrl"
+                    else -> "type${ep.type}"
+                }
+                val dir = if (ep.direction == UsbConstants.USB_DIR_IN) "IN" else "OUT"
+                sb.append(" ep0x%02X=%s/%s".format(ep.address, typeName, dir))
+            }
+        }
+        return sb.toString()
+    }
+
+    /**
+     * Claim the target data interface + its paired CDC control interface
+     * (if any). Returns true iff the TARGET data interface was successfully
+     * claimed — without it, bulk transfers cannot happen. Failing to claim the
+     * control interface is logged but not fatal (baud rate commands will
+     * simply fail silently if the control claim was refused).
+     */
+    private fun claimInterfaces(device: UsbSerialDevice, conn: UsbDeviceConnection): Boolean {
         claimedInterfaces.clear()
         val usbDev = device.usbDevice
 
-        // Always claim the target data interface
         val targetIface = usbDev.getInterface(device.interfaceIndex)
-        if (conn.claimInterface(targetIface, true)) {
+        val targetOk = conn.claimInterface(targetIface, true)
+        if (targetOk) {
             claimedInterfaces.add(targetIface)
-            Log.d(TAG, "Claimed target interface ${targetIface.id}")
+            Log.i(TAG, "  claimed target data interface [${device.interfaceIndex}] bNum=${targetIface.id} class=${targetIface.interfaceClass}")
+        } else {
+            Log.e(TAG, "  FAILED to claim target data interface [${device.interfaceIndex}] bNum=${targetIface.id} class=${targetIface.interfaceClass}")
         }
 
         // Claim the CDC control interface that is PAIRED with our data interface.
@@ -338,11 +392,17 @@ class UsbSerialManager(private val context: Context) {
         // serial port, leaving the one we care about unconfigured.
         val paired = findPairedControlInterface(usbDev, device.interfaceIndex)
         if (paired != null && paired !== targetIface) {
-            if (conn.claimInterface(paired, true)) {
+            val pairedOk = conn.claimInterface(paired, true)
+            if (pairedOk) {
                 claimedInterfaces.add(paired)
-                Log.d(TAG, "Claimed paired CDC control interface ${paired.id}")
+                Log.i(TAG, "  claimed paired control interface bNum=${paired.id} class=${paired.interfaceClass}")
+            } else {
+                Log.w(TAG, "  failed to claim paired control interface bNum=${paired.id} class=${paired.interfaceClass} (baud-rate commands may not land)")
             }
+        } else if (paired == null) {
+            Log.i(TAG, "  no paired CDC control interface found for data interface [${device.interfaceIndex}] (not a CDC device?)")
         }
+        return targetOk
     }
 
     /**
