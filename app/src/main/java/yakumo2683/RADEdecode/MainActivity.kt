@@ -137,7 +137,15 @@ fun RADEDecodeApp(viewModel: TransceiverViewModel = viewModel()) {
         ) {
             composable("receiver") { TransceiverScreen(viewModel) }
             composable("rig") { RigScreen(viewModel) }
-            composable("stations") { StationsScreen(viewModel.reporter) }
+            composable("stations") {
+                val uiState by viewModel.uiState.collectAsState()
+                val reporterEnabled by viewModel.reporterEnabledPref.collectAsState()
+                StationsScreen(
+                    reporter = viewModel.reporter,
+                    txCallsign = uiState.txCallsign,
+                    reporterEnabled = reporterEnabled
+                )
+            }
             composable("map") { ReporterMapScreen(viewModel.reporter) }
             composable("log") {
                 LogScreen(onSessionClick = { sessionId ->

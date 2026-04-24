@@ -81,12 +81,21 @@ class FreeDVReporter(private val scope: CoroutineScope) {
     private val _connecting = MutableStateFlow(false)
     val connecting: StateFlow<Boolean> = _connecting.asStateFlow()
 
+    /**
+     * Last observed connection error, for surfacing in the UI. Empty string when
+     * no error is pending (including after a successful Socket.IO handshake).
+     */
+    private val _lastError = MutableStateFlow("")
+    val lastError: StateFlow<String> = _lastError.asStateFlow()
+
     var config = ReporterConfig()
         private set
 
     private val client = OkHttpClient.Builder()
         .readTimeout(0, TimeUnit.MILLISECONDS)
-        .pingInterval(25, TimeUnit.SECONDS)
+        // 15s keeps us under most mobile-carrier NAT idle timeouts (Samsung
+        // devices on some carriers drop idle TCP at ~30s); was 25s.
+        .pingInterval(15, TimeUnit.SECONDS)
         .build()
 
     private var webSocket: WebSocket? = null
@@ -131,7 +140,10 @@ class FreeDVReporter(private val scope: CoroutineScope) {
             }
 
             override fun onFailure(ws: WebSocket, t: Throwable, response: Response?) {
-                Log.e(TAG, "WebSocket failure: ${t.message}")
+                val httpStatus = response?.code?.let { " (HTTP $it)" } ?: ""
+                val msg = "${t.javaClass.simpleName}: ${t.message ?: "unknown"}$httpStatus"
+                Log.e(TAG, "WebSocket failure: $msg")
+                _lastError.value = msg
                 _connected.value = false
                 _connecting.value = false
                 webSocket = null
@@ -140,6 +152,7 @@ class FreeDVReporter(private val scope: CoroutineScope) {
 
             override fun onClosed(ws: WebSocket, code: Int, reason: String) {
                 Log.i(TAG, "WebSocket closed: $reason")
+                if (code != 1000) _lastError.value = "Closed: $reason (code $code)"
                 _connected.value = false
                 _connecting.value = false
                 webSocket = null
@@ -254,11 +267,13 @@ class FreeDVReporter(private val scope: CoroutineScope) {
                     connectionId = obj.optString("sid", null)
                     _connected.value = true
                     _connecting.value = false
+                    _lastError.value = ""
                     resetReconnectDelay()
                     Log.i(TAG, "Socket.IO connected, sid=$connectionId")
                 } catch (_: Exception) {
                     _connected.value = true
                     _connecting.value = false
+                    _lastError.value = ""
                     resetReconnectDelay()
                 }
             }

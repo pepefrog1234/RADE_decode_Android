@@ -35,6 +35,9 @@
     <string name="stations_connected">Connected — %1$d stations online</string>
     <string name="stations_not_connected">Not connected to FreeDV Reporter</string>
     <string name="stations_connecting">Connecting to FreeDV Reporter…</string>
+    <string name="stations_hint_enable_in_settings">Reporter is turned off — enable it in Settings → FreeDV Reporter.</string>
+    <string name="stations_hint_set_callsign">Set your callsign in Settings → TX Callsign to start reporting.</string>
+    <string name="stations_hint_error">Last error: %1$s</string>
     <string name="stations_no_stations">No stations online</string>
     <string name="stations_enable_reporter">Enable Reporter in Settings</string>
     <string name="stations_connect_hint">Connect to qso.freedv.org to see active stations</string>

@@ -39,13 +39,19 @@ private val bandFilters = listOf(
 )
 
 @Composable
-fun StationsScreen(reporter: FreeDVReporter? = null) {
+fun StationsScreen(
+    reporter: FreeDVReporter? = null,
+    txCallsign: String = "",
+    reporterEnabled: Boolean = true
+) {
     val stations by reporter?.stations?.collectAsState()
         ?: remember { mutableStateOf(emptyMap<String, FreeDVReporter.ReporterStation>()) }
     val isConnected by reporter?.connected?.collectAsState()
         ?: remember { mutableStateOf(false) }
     val isConnecting by reporter?.connecting?.collectAsState()
         ?: remember { mutableStateOf(false) }
+    val lastError by reporter?.lastError?.collectAsState()
+        ?: remember { mutableStateOf("") }
     var selectedBand by remember { mutableStateOf(0) }
 
     val namedStations = stations.values.filter { it.callsign.isNotEmpty() }
@@ -114,6 +120,26 @@ fun StationsScreen(reporter: FreeDVReporter? = null) {
                     text = statusText,
                     fontSize = 13.sp,
                     color = statusColor
+                )
+            }
+        }
+
+        // Diagnostic hint — visible only when disconnected & not actively connecting
+        if (!isConnected && !isConnecting) {
+            val hint = when {
+                !reporterEnabled -> stringResource(R.string.stations_hint_enable_in_settings)
+                txCallsign.isEmpty() -> stringResource(R.string.stations_hint_set_callsign)
+                lastError.isNotEmpty() -> stringResource(R.string.stations_hint_error, lastError)
+                else -> null
+            }
+            if (hint != null) {
+                Spacer(Modifier.height(6.dp))
+                Text(
+                    text = hint,
+                    fontSize = 11.sp,
+                    color = OnSurfaceDim,
+                    lineHeight = 16.sp,
+                    modifier = Modifier.padding(horizontal = 4.dp)
                 )
             }
         }

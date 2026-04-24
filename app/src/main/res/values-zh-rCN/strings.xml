@@ -34,6 +34,9 @@
     <string name="stations_connected">已连接 — %1$d 个电台在线</string>
     <string name="stations_not_connected">未连接至 FreeDV Reporter</string>
     <string name="stations_connecting">连接中…</string>
+    <string name="stations_hint_enable_in_settings">报告器已关闭——请到设置 → FreeDV Reporter 启用。</string>
+    <string name="stations_hint_set_callsign">请到设置 → 发射呼号 填入您的呼号才会上线报告。</string>
+    <string name="stations_hint_error">最后错误：%1$s</string>
     <string name="stations_no_stations">当前没有电台在线</string>
     <string name="stations_enable_reporter">请在设置中启用报告器</string>
     <string name="stations_connect_hint">连接至 qso.freedv.org 以查看在线电台</string>
