@@ -319,6 +319,11 @@ class RigController {
     private fun startPolling() {
         pollingJob?.cancel()
         pollingJob = scope.launch {
+            var cycle = 0
+            // Query mode on the very first cycle so the UI shows USB/LSB/etc.
+            // as soon as the rig connects (otherwise the mode label stays blank
+            // until the user triggers a manual setMode — Xiegu G90 etc.).
+            try { getMode() } catch (_: Exception) {}
             while (isActive && _state.value.connected) {
                 try {
                     // Each command releases the lock between calls,
@@ -328,7 +333,15 @@ class RigController {
                     getPtt()
                     delay(100)
                     getSmeter()
+                    // Re-read mode every ~5s — mode changes rarely but the user
+                    // may flip USB/LSB on the rig face, and we want the UI to
+                    // reflect that without forcing them to reconnect.
+                    if (cycle % 5 == 4) {
+                        delay(100)
+                        getMode()
+                    }
                 } catch (_: Exception) {}
+                cycle++
                 delay(1000)
             }
         }

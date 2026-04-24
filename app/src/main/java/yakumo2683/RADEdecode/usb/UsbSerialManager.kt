@@ -330,17 +330,43 @@ class UsbSerialManager(private val context: Context) {
             Log.d(TAG, "Claimed target interface ${targetIface.id}")
         }
 
-        // Also claim the CDC control interface if it exists (often interface N-1)
-        for (i in 0 until usbDev.interfaceCount) {
-            if (i == device.interfaceIndex) continue
-            val iface = usbDev.getInterface(i)
-            if (iface.interfaceClass == USB_CLASS_CDC) {
-                if (conn.claimInterface(iface, true)) {
-                    claimedInterfaces.add(iface)
-                    Log.d(TAG, "Claimed CDC control interface ${iface.id}")
-                }
+        // Claim the CDC control interface that is PAIRED with our data interface.
+        // For composite devices like the Xiegu X6100 (two CDC-ACM ports = four
+        // USB interfaces: ctrl0+data1 for port 1, ctrl2+data3 for port 2),
+        // claiming "any CDC control" would grab port 1's control when the user
+        // actually picked port 2 — and then SET_LINE_CODING configures the wrong
+        // serial port, leaving the one we care about unconfigured.
+        val paired = findPairedControlInterface(usbDev, device.interfaceIndex)
+        if (paired != null && paired !== targetIface) {
+            if (conn.claimInterface(paired, true)) {
+                claimedInterfaces.add(paired)
+                Log.d(TAG, "Claimed paired CDC control interface ${paired.id}")
             }
         }
+    }
+
+    /**
+     * Find the CDC control interface that belongs to the same ACM function as
+     * the given data interface. USB spec groups these consecutively within an
+     * Interface Association Descriptor, so we first try index-1 (standard
+     * ordering) and index+1 (reverse ordering) before falling back to any
+     * CDC-ACM control on the device.
+     */
+    private fun findPairedControlInterface(device: UsbDevice, dataIfaceIndex: Int): UsbInterface? {
+        if (dataIfaceIndex > 0) {
+            val prev = device.getInterface(dataIfaceIndex - 1)
+            if (prev.interfaceClass == USB_CLASS_CDC) return prev
+        }
+        if (dataIfaceIndex + 1 < device.interfaceCount) {
+            val next = device.getInterface(dataIfaceIndex + 1)
+            if (next.interfaceClass == USB_CLASS_CDC) return next
+        }
+        for (i in 0 until device.interfaceCount) {
+            val iface = device.getInterface(i)
+            if (iface.interfaceClass == USB_CLASS_CDC && iface.interfaceSubclass == CDC_SUBCLASS_ACM)
+                return iface
+        }
+        return null
     }
 
     private fun findBulkEndpointsOnInterface(iface: UsbInterface): Pair<UsbEndpoint, UsbEndpoint>? {
@@ -413,7 +439,8 @@ class UsbSerialManager(private val context: Context) {
             ChipType.CDC_ACM, ChipType.PROLIFIC, ChipType.UNKNOWN -> {
                 // USB CDC ACM SET_CONTROL_LINE_STATE: bit 0 = DTR, bit 1 = RTS.
                 val value = (if (dtr) 0x01 else 0) or (if (rts) 0x02 else 0)
-                val ctrlIface = usbDevice?.let { findControlInterfaceNum(it) } ?: 0
+                val ctrlIface = if (usbDevice != null)
+                    findControlInterfaceNum(usbDevice, ifaceIdx) else 0
                 conn.controlTransfer(0x21, SET_CONTROL_LINE_STATE, value, ctrlIface, null, 0, 5000)
             }
             ChipType.CP210X -> {
@@ -440,8 +467,9 @@ class UsbSerialManager(private val context: Context) {
     private fun setCdcBaudRate(conn: UsbDeviceConnection, baudRate: Int, device: UsbSerialDevice): String {
         val data = ByteBuffer.allocate(7).order(ByteOrder.LITTLE_ENDIAN)
             .putInt(baudRate).put(0).put(0).put(8).array()
-        val ctrlIface = findControlInterfaceNum(device.usbDevice)
+        val ctrlIface = findControlInterfaceNum(device.usbDevice, device.interfaceIndex)
         val r = conn.controlTransfer(0x21, SET_LINE_CODING, 0, ctrlIface, data, 7, 5000)
+        Log.d(TAG, "CDC SET_LINE_CODING baud=$baudRate ctrlIface=$ctrlIface dataIdx=${device.interfaceIndex} → $r")
         return "CDC SET_LINE_CODING→$r"
     }
 
@@ -522,8 +550,19 @@ class UsbSerialManager(private val context: Context) {
         }
     }
 
-    private fun findControlInterfaceNum(device: UsbDevice? = _state.value.connectedDevice?.usbDevice): Int {
+    /**
+     * Return the bInterfaceNumber to use as wIndex for CDC control transfers
+     * (SET_LINE_CODING, SET_CONTROL_LINE_STATE). Prefers the control interface
+     * paired with `dataIfaceIndex`; falls back to the first CDC-ACM control.
+     */
+    private fun findControlInterfaceNum(
+        device: UsbDevice? = _state.value.connectedDevice?.usbDevice,
+        dataIfaceIndex: Int = _state.value.connectedDevice?.interfaceIndex ?: -1
+    ): Int {
         device ?: return 0
+        if (dataIfaceIndex >= 0) {
+            findPairedControlInterface(device, dataIfaceIndex)?.let { return it.id }
+        }
         for (i in 0 until device.interfaceCount) {
             val iface = device.getInterface(i)
             if (iface.interfaceClass == USB_CLASS_CDC && iface.interfaceSubclass == CDC_SUBCLASS_ACM)
