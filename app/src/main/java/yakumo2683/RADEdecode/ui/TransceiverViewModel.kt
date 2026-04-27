@@ -110,6 +110,9 @@ class TransceiverViewModel(application: Application) : AndroidViewModel(applicat
         // Reporter toggle defaults to ON so the app auto-connects to qso.freedv.org
         // on launch; users can still opt out in Settings.
         _reporterEnabledPref.value = prefs.getBoolean("reporter_enabled", true)
+        // Load the persistent status message; reporter holds it and re-emits
+        // on every (re)connect, so we just need to give it the saved value.
+        reporter.updateMessage(prefs.getString("reporter_message", "") ?: "")
         syncReporterState()
 
         // Location → grid update (only triggers reconnect if grid actually changes)
@@ -251,6 +254,22 @@ class TransceiverViewModel(application: Application) : AndroidViewModel(applicat
     fun setReporterGrid(grid: String) {
         prefs.edit().putString("reporter_grid", grid).apply()
         syncReporterState()
+    }
+
+    /** Save the status-message draft locally; does not push to the server. */
+    fun setReporterMessageDraft(message: String) {
+        prefs.edit().putString("reporter_message", message).apply()
+    }
+
+    fun getSavedReporterMessage(): String = prefs.getString("reporter_message", "") ?: ""
+
+    /**
+     * Push the given status message to the FreeDV Reporter server now.
+     * The reporter also remembers it and re-emits on every reconnect.
+     */
+    fun updateReporterMessage(message: String) {
+        prefs.edit().putString("reporter_message", message).apply()
+        reporter.updateMessage(message)
     }
 
     private fun startTransmitting() {

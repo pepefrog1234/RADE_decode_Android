@@ -21,6 +21,7 @@ import androidx.compose.ui.unit.sp
 import androidx.lifecycle.viewmodel.compose.viewModel
 import yakumo2683.RADEdecode.R
 import yakumo2683.RADEdecode.ui.theme.Cyan400
+import yakumo2683.RADEdecode.ui.theme.Cyan600
 import yakumo2683.RADEdecode.ui.theme.OnSurfaceDim
 import yakumo2683.RADEdecode.ui.theme.SurfaceCard
 
@@ -341,6 +342,7 @@ fun SettingsScreen(viewModel: TransceiverViewModel = viewModel()) {
                 val reporterConfig = viewModel.reporter.config
                 val reporterEnabled by viewModel.reporterEnabledPref.collectAsState()
                 var gridInput by remember { mutableStateOf(reporterConfig.gridSquare) }
+                var messageInput by remember { mutableStateOf(viewModel.getSavedReporterMessage()) }
                 val locationGrid by viewModel.locationTracker.state.collectAsState()
 
                 Row(
@@ -389,9 +391,46 @@ fun SettingsScreen(viewModel: TransceiverViewModel = viewModel()) {
                 }
 
                 Spacer(Modifier.height(8.dp))
+
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    OutlinedTextField(
+                        value = messageInput,
+                        onValueChange = {
+                            val capped = it.take(80)
+                            messageInput = capped
+                            viewModel.setReporterMessageDraft(capped)
+                        },
+                        label = { Text(stringResource(R.string.settings_reporter_message)) },
+                        placeholder = { Text(stringResource(R.string.settings_reporter_message_placeholder)) },
+                        singleLine = true,
+                        modifier = Modifier.weight(1f),
+                        textStyle = androidx.compose.ui.text.TextStyle(fontSize = 14.sp),
+                        colors = OutlinedTextFieldDefaults.colors(
+                            focusedBorderColor = Cyan400,
+                            focusedLabelColor = Cyan400,
+                            cursorColor = Cyan400
+                        )
+                    )
+                    Button(
+                        onClick = { viewModel.updateReporterMessage(messageInput) },
+                        shape = RoundedCornerShape(10.dp),
+                        colors = ButtonDefaults.buttonColors(containerColor = Cyan600)
+                    ) {
+                        Text(
+                            stringResource(R.string.settings_reporter_message_send),
+                            fontWeight = FontWeight.Bold
+                        )
+                    }
+                }
+
+                Spacer(Modifier.height(8.dp))
                 Text(
-                    "Report decoded callsigns to qso.freedv.org",
-                    fontSize = 11.sp, color = OnSurfaceDim
+                    stringResource(R.string.settings_reporter_message_help),
+                    fontSize = 11.sp, color = OnSurfaceDim, lineHeight = 16.sp
                 )
             }
         }

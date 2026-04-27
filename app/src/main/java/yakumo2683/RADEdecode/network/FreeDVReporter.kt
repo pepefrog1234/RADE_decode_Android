@@ -91,6 +91,16 @@ class FreeDVReporter(private val scope: CoroutineScope) {
     var config = ReporterConfig()
         private set
 
+    /**
+     * Persistent free-text status message, mirrored to the server via the
+     * `message_update` event. Matches the official drowe67/freedv-gui client
+     * behaviour: NOT included in the auth packet — it's emitted (and re-emitted
+     * on every reconnect) once the Socket.IO handshake completes, so the
+     * server keeps it across our reconnects.
+     */
+    private var message: String = ""
+
+
     private val client = OkHttpClient.Builder()
         .readTimeout(0, TimeUnit.MILLISECONDS)
         // 15s keeps us under most mobile-carrier NAT idle timeouts (Samsung
@@ -195,6 +205,23 @@ class FreeDVReporter(private val scope: CoroutineScope) {
         })
     }
 
+    /**
+     * Update our persistent status message. Stored locally and emitted via
+     * `message_update` ({"message": "..."}) on the websocket; the server
+     * keeps the value and we re-emit on every reconnect from
+     * [handleSioPacket]'s SIO_CONNECT branch, mirroring the official
+     * `drowe67/freedv-gui` client.
+     */
+    @Synchronized
+    fun updateMessage(text: String) {
+        message = text
+        if (_connected.value) emitMessageUpdate()
+    }
+
+    private fun emitMessageUpdate() {
+        sendEvent("message_update", JSONObject().apply { put("message", message) })
+    }
+
     /** Report TX on/off state. */
     fun reportTx(transmitting: Boolean) {
         if (!_connected.value) return
@@ -276,6 +303,9 @@ class FreeDVReporter(private val scope: CoroutineScope) {
                     _lastError.value = ""
                     resetReconnectDelay()
                 }
+                // Re-push our persistent status message after every (re)connect,
+                // mirroring official freedv-gui's connection_successful handler.
+                if (message.isNotEmpty()) emitMessageUpdate()
             }
             SIO_DISCONNECT -> {
                 Log.w(TAG, "Server disconnected us: ${data.substring(1)}")
@@ -296,14 +326,27 @@ class FreeDVReporter(private val scope: CoroutineScope) {
             val payload = if (arr.length() > 1) arr.get(1) else null
 
             when (eventName) {
-                "new_connection" -> handleNewConnection(payload as? JSONObject)
+                "new_connection" -> {
+                    Log.d(TAG, "EVENT new_connection payload=${payload?.toString()?.take(400)}")
+                    handleNewConnection(payload as? JSONObject)
+                }
                 "remove_connection" -> handleRemoveConnection(payload as? JSONObject)
                 "bulk_update" -> handleBulkUpdate(payload as? JSONArray)
                 "rx_report" -> handleRxReport(payload as? JSONObject)
                 "tx_report" -> handleTxReport(payload as? JSONObject)
                 "freq_change" -> handleFreqChange(payload as? JSONObject)
+                "message_update" -> {
+                    // Other station updated its status text. We don't render it
+                    // in the stations list yet; just log so logcat stays clean.
+                    val obj = payload as? JSONObject
+                    Log.d(TAG, "message_update sid=${obj?.optString("sid")} msg=${obj?.optString("message")?.take(80)}")
+                }
                 "connection_successful" -> Log.i(TAG, "Reporter: connection successful")
-                else -> Log.d(TAG, "Unhandled event: $eventName")
+                else -> {
+                    // Unknown event — log payload so we can identify the message
+                    // update event name across server versions.
+                    Log.i(TAG, "Unhandled event '$eventName' payload=${payload?.toString()?.take(400)}")
+                }
             }
         } catch (e: Exception) {
             Log.e(TAG, "Failed to parse SIO event: ${e.message}")
@@ -324,6 +367,7 @@ class FreeDVReporter(private val scope: CoroutineScope) {
 
     private fun handleBulkUpdate(data: JSONArray?) {
         data ?: return
+        Log.i(TAG, "bulk_update: ${data.length()} entries; sample[0]=${data.optJSONArray(0)?.toString()?.take(500)}")
         // Replay each entry as an individual event (matches C++ fireEvent behavior)
         for (i in 0 until data.length()) {
             val entry = data.optJSONArray(i) ?: continue

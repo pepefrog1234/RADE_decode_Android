@@ -37,6 +37,10 @@
     <string name="stations_hint_enable_in_settings">レポーターは無効です。設定 → FreeDV Reporter で有効にしてください。</string>
     <string name="stations_hint_set_callsign">レポートを開始するには、設定 → 送信コールサイン でコールサインを入力してください。</string>
     <string name="stations_hint_error">直近のエラー：%1$s</string>
+    <string name="settings_reporter_message">ステータス メッセージ</string>
+    <string name="settings_reporter_message_placeholder">例：PM95 から移動運用、IC-7300 + ダイポール</string>
+    <string name="settings_reporter_message_send">更新</string>
+    <string name="settings_reporter_message_help">qso.freedv.org の自局の隣に表示される自由記述。最大 80 文字。再起動後も保持され、再接続のたびに自動で再送されます。「更新」を押すと現在の文字列を即時送信します。</string>
     <string name="stations_no_stations">現在オンラインの局はありません</string>
     <string name="stations_enable_reporter">設定でレポーターを有効にしてください</string>
     <string name="stations_connect_hint">qso.freedv.org に接続してオンライン局を表示</string>

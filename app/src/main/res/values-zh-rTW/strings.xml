@@ -37,6 +37,10 @@
     <string name="stations_hint_enable_in_settings">回報器已關閉——請到設定 → FreeDV Reporter 啟用。</string>
     <string name="stations_hint_set_callsign">請到設定 → 發射呼號 填入您的呼號才會上線回報。</string>
     <string name="stations_hint_error">最後錯誤：%1$s</string>
+    <string name="settings_reporter_message">狀態訊息</string>
+    <string name="settings_reporter_message_placeholder">例如：行動中於 PL04，IC-7300 + 偶極</string>
+    <string name="settings_reporter_message_send">更新</string>
+    <string name="settings_reporter_message_help">會顯示在 qso.freedv.org 您的電台旁邊的自由文字。最多 80 字元。重啟後仍保留，並在每次重新連線時自動重送一次；按「更新」會立刻把目前文字推到伺服器。</string>
     <string name="stations_no_stations">目前沒有電台在線</string>
     <string name="stations_enable_reporter">請在設定中啟用回報器</string>
     <string name="stations_connect_hint">連線至 qso.freedv.org 以檢視在線電台</string>
