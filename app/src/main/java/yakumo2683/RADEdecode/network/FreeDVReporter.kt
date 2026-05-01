@@ -186,14 +186,24 @@ class FreeDVReporter(private val scope: CoroutineScope) {
         _stations.value = emptyMap()
     }
 
-    /** Report a decoded callsign + SNR to the reporter network. */
-    fun reportRx(callsign: String, snr: Int, frequency: Long = 14236000) {
+    /**
+     * Push an `rx_report` to the FreeDV Reporter network.
+     *
+     * Match the official drowe67/freedv-gui contract: payload is exactly
+     * `{callsign, mode, snr}`. The server fills in `receiver_callsign`,
+     * `receiver_grid_square`, `sid`, `last_update` from the auth dict and
+     * the most recent `freq_change`; we don't send frequency here.
+     *
+     * Pass an empty callsign when sync is up but no EOO callsign has been
+     * decoded yet — the server uses the recency of these emits to drive the
+     * "currently receiving / blue dot" indicator on qso.freedv.org's map.
+     */
+    fun reportRx(callsign: String, snr: Int) {
         if (!_connected.value || config.callsign.isEmpty()) return
         sendEvent("rx_report", JSONObject().apply {
             put("callsign", callsign)
-            put("snr", snr)
             put("mode", "RADEV1")
-            put("frequency", frequency)
+            put("snr", snr)
         })
     }
 

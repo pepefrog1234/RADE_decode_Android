@@ -60,6 +60,7 @@ class AudioService : LifecycleService() {
 
     // Session splitting: finalize session when sync lost > 2 seconds
     private var lastSyncedTime: Long = 0   // last time syncState was 2 (0 = never synced this session)
+    private var lastRxReportMs: Long = 0   // last time we emitted an rx_report to the reporter
 
     companion object {
         const val CHANNEL_ID = "rade_decode_channel"
@@ -560,6 +561,16 @@ class AudioService : LifecycleService() {
                     spectrum = spec,
                     unprocessedRejected = rejected
                 ) }
+
+                // Heartbeat rx_report while we're in sync. qso.freedv.org's
+                // "currently receiving / blue dot" indicator is driven purely
+                // by the recency of rx_report emits — without periodic empty-
+                // callsign reports we'd only show as "receiving" for a moment
+                // when an EOO callsign is actually decoded (= once per over).
+                if (isSynced && now - lastRxReportMs >= 2000) {
+                    reporter?.reportRx("", snr)
+                    lastRxReportMs = now
+                }
 
                 // Periodically update DB with current WAV size (~every 3 seconds)
                 if (totalModemFrames % 20 == 0) {
