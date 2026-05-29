@@ -131,7 +131,7 @@
     <string name="rig_password">Password</string>
     <string name="rig_network_hint">Connect to the IC-705 over Wi-Fi using its built-in server. On the radio: Set ▸ Network ▸ Network Control = ON, and set a Network User name/password. Enter the radio\'s IP address. Control and audio both run over Wi-Fi — no USB cable needed.</string>
     <string name="rig_net_audio_on">Audio (Wi-Fi): connected</string>
-    <string name="rig_net_audio_off">Audio (Wi-Fi): not connected</string></string>
+    <string name="rig_net_audio_off">Audio (Wi-Fi): not connected</string>
     <string name="rig_host">Host</string>
     <string name="rig_port">Port</string>
     <string name="rig_device">Device</string>
