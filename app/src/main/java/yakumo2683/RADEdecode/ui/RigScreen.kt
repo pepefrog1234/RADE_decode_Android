@@ -815,6 +815,30 @@ fun RigScreen(viewModel: TransceiverViewModel = viewModel()) {
             }
         }
 
+        // Wi-Fi audio-stream status (full wireless). Only shown in network mode
+        // once control is up — tells the user whether RX/TX audio rides Wi-Fi.
+        if (connMode == 2 && rigState.connected) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                Box(
+                    modifier = Modifier
+                        .size(10.dp)
+                        .clip(CircleShape)
+                        .background(if (icomState.audioConnected) GreenBright else Red400)
+                )
+                Text(
+                    if (icomState.audioConnected) stringResource(R.string.rig_net_audio_on)
+                    else stringResource(R.string.rig_net_audio_off),
+                    fontSize = 12.sp,
+                    color = if (icomState.audioConnected) GreenBright else Red400,
+                    fontFamily = FontFamily.Monospace
+                )
+            }
+        }
+
         // ── Frequency ──
         SectionLabel(stringResource(R.string.header_frequency))
 

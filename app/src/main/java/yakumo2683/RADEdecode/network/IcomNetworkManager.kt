@@ -201,7 +201,10 @@ class IcomNetworkManager {
                 if (_state.value.error.isEmpty()) fail("Timed out waiting for the serial/audio grant")
                 disconnect(); return ""
             }
-            _state.value = State(connected = true, deviceName = _state.value.deviceName)
+            // Preserve audioConnected/deviceName — openAudio runs in the background
+            // and may have already (or will soon) set audioConnected. Using copy()
+            // here instead of a fresh State() avoids clobbering it back to false.
+            _state.value = _state.value.copy(connecting = false, connected = true, error = "")
             Log.i(TAG, "Icom network connected, pty=$pty device=${_state.value.deviceName}")
             return pty
         } catch (e: CancellationException) {
@@ -361,6 +364,9 @@ class IcomNetworkManager {
      * strictly in sequence order reconstructs the stream for the decimator.
      */
     private suspend fun audioRxLoop(aud: IcomStream) {
+        var pcmPackets = 0L
+        var fedSamples = 0L
+        var sawConsumer = false
         val jitter = AudioJitter { pkt ->
             val payloadLen = pkt.size - 24
             if (payloadLen <= 0) return@AudioJitter
@@ -371,12 +377,21 @@ class IcomNetworkManager {
                 shorts[i] = ((pkt[bi].toInt() and 0xFF) or (pkt[bi + 1].toInt() shl 8)).toShort()
                 bi += 2
             }
-            onAudioPcm?.invoke(shorts)
+            val cb = onAudioPcm
+            if (cb != null) {
+                if (!sawConsumer) { sawConsumer = true; Log.i(TAG, "audio RX: first PCM delivered to decoder") }
+                cb(shorts)
+                fedSamples += n
+            }
         }
         try {
             aud.incoming.consumeEach { r ->
                 if (r.size >= 580 &&
                     ((r.u(0) == 0x6c && r.u(1) == 0x05) || (r.u(0) == 0x44 && r.u(1) == 0x02))) {
+                    if (pcmPackets == 0L) Log.i(TAG, "audio RX: first audio packet from radio (size=${r.size})")
+                    pcmPackets++
+                    if (pcmPackets % 250L == 0L)
+                        Log.i(TAG, "audio RX: $pcmPackets pkts, fed=$fedSamples samples, consumer=${onAudioPcm != null}")
                     jitter.add(u16le(r, 6), r)
                 }
             }
@@ -630,7 +645,18 @@ class IcomNetworkManager {
 
         suspend fun open(): Boolean {
             return try {
-                val sock = DatagramSocket()
+                // Bind the LOCAL udp port to the same number as the radio's port
+                // (control 50001 / serial 50002 / audio 50003). The IC-705 streams
+                // data — especially audio on 50003 — back to that specific local
+                // port, so an ephemeral source port can leave audio never arriving
+                // even though the handshake succeeds. kappanhang binds local==remote
+                // for all three streams. Fall back to ephemeral if the port is busy.
+                val sock = try {
+                    DatagramSocket(port)
+                } catch (e: Exception) {
+                    Log.w(TAG, "$name: bind local port $port failed (${e.message}); using ephemeral")
+                    DatagramSocket()
+                }
                 sock.connect(InetSocketAddress(InetAddress.getByName(host), port))
                 sock.soTimeout = 400
                 socket = sock

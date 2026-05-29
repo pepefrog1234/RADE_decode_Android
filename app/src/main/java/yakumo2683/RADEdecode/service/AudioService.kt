@@ -258,6 +258,10 @@ class AudioService : LifecycleService() {
             startForeground(NOTIFICATION_ID, notification)
         }
 
+        val audioUp = net.state.value.audioConnected
+        Log.i("AudioService", "startNetworkDecoding: audioStreamConnected=$audioUp " +
+            "(if false, no RX audio will arrive over Wi-Fi — check radio audio settings)")
+
         // Decoded speech to the phone speaker (no USB rig audio to avoid feedback).
         val rxOutputDeviceId = bridge.findBuiltInSpeaker()?.id ?: -1
         if (!bridge.startNetRx(rxOutputDeviceId, yakumo2683.RADEdecode.network.IcomNetworkManager.NET_AUDIO_RATE)) {
@@ -314,6 +318,9 @@ class AudioService : LifecycleService() {
         }
 
         if (callsign.isNotEmpty()) bridge.setTxCallsign(callsign)
+
+        Log.i("AudioService", "startNetworkTransmitting: audioStreamConnected=${net.state.value.audioConnected} " +
+            "mic=$inputDeviceId (if audio stream down, TX modulation won't reach the radio)")
 
         if (!bridge.startNetTx(inputDeviceId, yakumo2683.RADEdecode.network.IcomNetworkManager.NET_AUDIO_RATE)) {
             Log.e("AudioService", "startNetTx failed")

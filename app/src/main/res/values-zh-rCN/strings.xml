@@ -129,6 +129,8 @@
     <string name="rig_username">用户名</string>
     <string name="rig_password">密码</string>
     <string name="rig_network_hint">使用 IC-705 内置服务器通过 Wi-Fi 连接。请在电台上设置：Set ▸ Network ▸ Network Control = ON，并设置网络用户名与密码。在此输入电台的 IP 地址。控制与音频均通过 Wi-Fi 传输，无需 USB 线。</string>
+    <string name="rig_net_audio_on">音频 (Wi-Fi)：已连接</string>
+    <string name="rig_net_audio_off">音频 (Wi-Fi)：未连接</string>
     <string name="rig_host">主机</string>
     <string name="rig_port">端口</string>
     <string name="rig_device">设备</string>

@@ -217,9 +217,13 @@ class TransceiverViewModel(application: Application) : AndroidViewModel(applicat
 
     /* ── RX ─────────────────────────────────────────────────── */
 
-    /** True when rig control is over the IC-705's Wi-Fi AND its audio stream
-     *  (UDP 50003) is up — i.e. "full wireless" mode, no USB sound card. */
-    private fun useNetworkAudio(): Boolean = icomNetwork.state.value.audioConnected
+    /** True when rig control is running over the IC-705's Wi-Fi (control stream up).
+     *  In that mode there is no USB sound card, so RX/TX audio must use the network
+     *  path regardless of whether the audio sub-stream has finished its handshake —
+     *  routing on the deterministic control-connected flag (not the racy
+     *  audioConnected flag) is what makes Start actually pick the wireless path.
+     *  The audioConnected flag is surfaced separately in the UI for status. */
+    private fun useNetworkAudio(): Boolean = icomNetwork.isConnected
 
     fun startReceiving() {
         val app = getApplication<Application>()
