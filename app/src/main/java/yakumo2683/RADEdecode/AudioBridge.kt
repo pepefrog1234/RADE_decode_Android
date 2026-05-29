@@ -208,6 +208,28 @@ class AudioBridge(private val context: Context) {
     /** Set the output device for TX. */
     fun setTxOutputDevice(deviceId: Int) = nativeSetTxOutputDevice(deviceId)
 
+    /* ── Network audio (Icom RS-BA1 / IC-705 Wi-Fi) ──────────────
+     * Same DSP as the USB path; the rig-facing audio rides UDP 50003 via
+     * IcomNetworkManager rather than an Oboe USB stream. RX: feed received
+     * PCM with [feedNetRx]; decoded speech still plays on the phone speaker
+     * via the normal Oboe output. TX: read encoded modem frames with
+     * [fillNetTxFrame] and UDP-send them. */
+
+    /** Start network RX: decode UDP audio (netRate int16 mono) → phone speaker. */
+    fun startNetRx(outputDeviceId: Int = -1, netRate: Int = 48000): Boolean =
+        nativeStartNetRx(outputDeviceId, netRate)
+
+    /** Push a received network audio chunk into the RX modem pipeline. */
+    fun feedNetRx(pcm: ShortArray, count: Int) = nativeFeedNetRx(pcm, count)
+
+    /** Start network TX: mic → RADE encoder → modem PCM for UDP send. */
+    fun startNetTx(inputDeviceId: Int = -1, netRate: Int = 48000): Boolean =
+        nativeStartNetTx(inputDeviceId, netRate)
+
+    /** Fill [outBuf] with one TX frame at netRate (returns samples written). */
+    fun fillNetTxFrame(outBuf: ShortArray, numSamples: Int): Int =
+        nativeFillNetTxFrame(outBuf, numSamples)
+
     /* ── USB Audio Device Discovery ──────────────────────────── */
 
     data class AudioDevice(
@@ -314,6 +336,12 @@ class AudioBridge(private val context: Context) {
     private external fun nativeSetTxOutputDevice(deviceId: Int)
     external fun nativeReadTxRing(outBuf: ShortArray, maxSamples: Int): Int
     external fun nativeIsTxUsingJavaOutput(): Boolean
+
+    /* Network audio (Icom RS-BA1 / IC-705 Wi-Fi) */
+    external fun nativeStartNetRx(outputDeviceId: Int, netRate: Int): Boolean
+    external fun nativeFeedNetRx(pcm: ShortArray, count: Int)
+    external fun nativeStartNetTx(inputDeviceId: Int, netRate: Int): Boolean
+    external fun nativeFillNetTxFrame(outBuf: ShortArray, numSamples: Int): Int
 
     private fun deviceTypeName(type: Int): String = when (type) {
         AudioDeviceInfo.TYPE_BUILTIN_MIC -> "Built-in Mic"

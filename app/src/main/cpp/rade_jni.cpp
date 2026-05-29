@@ -549,4 +549,38 @@ JNI_AUDIO(nativeIsTxRunning)(JNIEnv *env, jobject /* this */) {
     return g_audioEngine->isTxRunning() ? JNI_TRUE : JNI_FALSE;
 }
 
+/* ── Network audio (Icom RS-BA1 / IC-705 Wi-Fi) JNI methods ──── */
+
+JNIEXPORT jboolean JNICALL
+JNI_AUDIO(nativeStartNetRx)(JNIEnv *env, jobject /* this */, jint outputDeviceId, jint netRate) {
+    if (!g_audioEngine) return JNI_FALSE;
+    return g_audioEngine->startNetRx(outputDeviceId, netRate) ? JNI_TRUE : JNI_FALSE;
+}
+
+/** Push received network PCM (int16 mono at netRate) into the RX modem pipeline. */
+JNIEXPORT void JNICALL
+JNI_AUDIO(nativeFeedNetRx)(JNIEnv *env, jobject /* this */, jshortArray pcm, jint count) {
+    if (!g_audioEngine) return;
+    jshort *buf = env->GetShortArrayElements(pcm, nullptr);
+    if (!buf) return;
+    g_audioEngine->feedNetRx(reinterpret_cast<int16_t*>(buf), count);
+    env->ReleaseShortArrayElements(pcm, buf, JNI_ABORT);
+}
+
+JNIEXPORT jboolean JNICALL
+JNI_AUDIO(nativeStartNetTx)(JNIEnv *env, jobject /* this */, jint inputDeviceId, jint netRate) {
+    if (!g_audioEngine) return JNI_FALSE;
+    return g_audioEngine->startNetTx(inputDeviceId, netRate) ? JNI_TRUE : JNI_FALSE;
+}
+
+/** Pull one frame of TX modem audio upsampled to netRate (zero-padded on underrun). */
+JNIEXPORT jint JNICALL
+JNI_AUDIO(nativeFillNetTxFrame)(JNIEnv *env, jobject /* this */, jshortArray outBuf, jint numSamples) {
+    if (!g_audioEngine) return 0;
+    jshort *buf = env->GetShortArrayElements(outBuf, nullptr);
+    int got = g_audioEngine->fillNetTxFrame(reinterpret_cast<int16_t*>(buf), numSamples);
+    env->ReleaseShortArrayElements(outBuf, buf, 0);
+    return got;
+}
+
 } /* extern "C" */

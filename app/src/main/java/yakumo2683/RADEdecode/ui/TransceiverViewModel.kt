@@ -18,6 +18,7 @@ import kotlinx.coroutines.flow.map
 import yakumo2683.RADEdecode.AudioBridge
 import yakumo2683.RADEdecode.location.LocationTracker
 import yakumo2683.RADEdecode.network.FreeDVReporter
+import yakumo2683.RADEdecode.network.IcomNetworkManager
 import yakumo2683.RADEdecode.network.RigController
 import yakumo2683.RADEdecode.network.RigctldProcess
 import yakumo2683.RADEdecode.service.AudioService
@@ -37,6 +38,10 @@ class TransceiverViewModel(application: Application) : AndroidViewModel(applicat
     /* ── USB serial (for local rigctld via USB Host API) ─── */
     val usbSerialManager = UsbSerialManager(application)
     val usbSerialState: StateFlow<UsbSerialManager.UsbSerialState> = usbSerialManager.state
+
+    /* ── Icom network rig control (RS-BA1 WLAN, e.g. IC-705) ─── */
+    private val icomNetwork = IcomNetworkManager()
+    val icomNetworkState: StateFlow<IcomNetworkManager.State> = icomNetwork.state
 
     data class UiState(
         val isRunning: Boolean = false,    // RX is active
@@ -79,6 +84,7 @@ class TransceiverViewModel(application: Application) : AndroidViewModel(applicat
             val service = (binder as AudioService.LocalBinder).service
             audioService = service
             service.reporter = reporter
+            service.icomNetwork = icomNetwork   // enables full-wireless audio when IC-705 Wi-Fi is up
             // Restore persisted audio settings
             service.setInputGain(prefs.getFloat("input_gain", 4.0f))
             service.setOutputVolume(prefs.getFloat("output_volume", 1.0f))
@@ -211,6 +217,10 @@ class TransceiverViewModel(application: Application) : AndroidViewModel(applicat
 
     /* ── RX ─────────────────────────────────────────────────── */
 
+    /** True when rig control is over the IC-705's Wi-Fi AND its audio stream
+     *  (UDP 50003) is up — i.e. "full wireless" mode, no USB sound card. */
+    private fun useNetworkAudio(): Boolean = icomNetwork.state.value.audioConnected
+
     fun startReceiving() {
         val app = getApplication<Application>()
 
@@ -224,10 +234,14 @@ class TransceiverViewModel(application: Application) : AndroidViewModel(applicat
                 delay(100)
                 attempts++
             }
-            audioService?.startDecoding(
-                inputDeviceId = _uiState.value.selectedDeviceId,
-                recordWav = false
-            )
+            if (useNetworkAudio()) {
+                audioService?.startNetworkDecoding()
+            } else {
+                audioService?.startDecoding(
+                    inputDeviceId = _uiState.value.selectedDeviceId,
+                    recordWav = false
+                )
+            }
         }
     }
 
@@ -296,6 +310,19 @@ class TransceiverViewModel(application: Application) : AndroidViewModel(applicat
     /** Switch from RX → TX (stops RX, starts TX, keys PTT) */
     fun switchToTx() {
         if (!_uiState.value.isRunning) return
+        // Auto-PTT via rigctld (both paths)
+        if (rigController.isConnected) {
+            viewModelScope.launch { rigController.setPtt(true) }
+        }
+        if (useNetworkAudio()) {
+            // Full wireless: mic → encoder → UDP 50003. No USB audio devices.
+            Log.i("TransceiverVM", "switchToTx (network): micId=${_uiState.value.builtInMicId}")
+            audioService?.startNetworkTransmitting(
+                inputDeviceId = _uiState.value.builtInMicId,
+                callsign = _uiState.value.txCallsign
+            )
+            return
+        }
         // Refresh devices to pick up USB audio output if available
         refreshDevices()
         val outId = _uiState.value.selectedOutputDeviceId
@@ -308,10 +335,6 @@ class TransceiverViewModel(application: Application) : AndroidViewModel(applicat
             outputDeviceId = outId,
             callsign = _uiState.value.txCallsign
         )
-        // Auto-PTT via rigctld
-        if (rigController.isConnected) {
-            viewModelScope.launch { rigController.setPtt(true) }
-        }
     }
 
     /** Switch from TX → RX (unkeys PTT, stops TX, resumes RX) */
@@ -326,10 +349,14 @@ class TransceiverViewModel(application: Application) : AndroidViewModel(applicat
         // Resume RX
         viewModelScope.launch {
             delay(100) // brief pause for clean transition
-            audioService?.startDecoding(
-                inputDeviceId = _uiState.value.selectedDeviceId,
-                recordWav = false
-            )
+            if (useNetworkAudio()) {
+                audioService?.startNetworkDecoding()
+            } else {
+                audioService?.startDecoding(
+                    inputDeviceId = _uiState.value.selectedDeviceId,
+                    recordWav = false
+                )
+            }
         }
     }
 
@@ -414,6 +441,51 @@ class TransceiverViewModel(application: Application) : AndroidViewModel(applicat
         rigController.disconnect()
         rigctldProcess.stop()
         usbSerialManager.close()
+        icomNetwork.disconnect()
+    }
+
+    /**
+     * Start rig control over the radio's own Wi-Fi (Icom RS-BA1 network protocol,
+     * e.g. IC-705).  Brings up the control + CI-V tunnel, exposes it as a local pty,
+     * then runs the bundled rigctld (model 3085 = IC-705) against that pty so the
+     * normal [RigController] path works.  Audio still flows over USB in this phase.
+     */
+    fun rigStartIcomNetwork(host: String, controlPort: Int, username: String, password: String) {
+        if (_rigConnecting.value || rigController.isConnected) return
+        _rigConnecting.value = true
+        rigMfg = "Icom"
+
+        viewModelScope.launch(Dispatchers.IO) {
+            try {
+                rigctldProcess.stop()
+                val ptyPath = icomNetwork.connect(host, controlPort, username, password)
+                if (ptyPath.isEmpty()) return@launch   // icomNetwork.state carries the error
+
+                val ok = rigctldProcess.startWithPty(
+                    model = 3085,          // IC-705
+                    ptyPath = ptyPath,
+                    speed = 115200,        // baud is irrelevant for a pty
+                    civAddr = ""
+                )
+                if (!ok) {
+                    icomNetwork.disconnect()
+                    return@launch
+                }
+
+                var connected = false
+                for (attempt in 1..10) {
+                    delay(1000)
+                    rigController.connect("127.0.0.1", 4532)
+                    if (rigController.isConnected) { connected = true; break }
+                }
+                if (!connected) {
+                    rigctldProcess.stop()
+                    icomNetwork.disconnect()
+                }
+            } finally {
+                _rigConnecting.value = false
+            }
+        }
     }
 
     /** Start local rigctld process (serial mode, device path) then connect to it */
@@ -560,6 +632,7 @@ class TransceiverViewModel(application: Application) : AndroidViewModel(applicat
         rigController.destroy()
         rigctldProcess.destroy()
         usbSerialManager.destroy()
+        icomNetwork.disconnect()
         try {
             getApplication<Application>().unbindService(serviceConnection)
         } catch (_: Exception) { }

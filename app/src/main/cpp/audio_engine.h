@@ -74,6 +74,19 @@ public:
     int readTxRing(int16_t *buf, int maxSamples) { return txPlaybackRing_.read(buf, maxSamples); }
     bool isTxUsingJavaOutput() const { return txUseJavaOutput_; }
 
+    /* ── Network audio (Icom RS-BA1 / IC-705 Wi-Fi) ──────────────
+     * Same DSP pipeline as the USB/Oboe path, but the rig-facing audio
+     * travels over UDP instead of an Oboe input/output stream:
+     *   RX: feedNetRx() pushes received PCM into the modem (no Oboe input)
+     *   TX: mic → encoder → txPlaybackRing_, drained via readTxRing()
+     *       (reuses the existing txUseJavaOutput_ path; no Oboe output) */
+    bool startNetRx(int outputDeviceId, int netRate);
+    void feedNetRx(const int16_t *pcm, int count);
+    bool startNetTx(int inputDeviceId, int netRate);
+    /** Read one TX frame upsampled to the network rate (zero-padded on underrun). */
+    int fillNetTxFrame(int16_t *out, int numSamples);
+    bool isNetRx() const { return netRxRunning_.load(); }
+
     void setInputDevice(int deviceId);
     void setOutputVolume(float volume);
     void setInputGain(float gain);
@@ -183,6 +196,8 @@ private:
     int txInputDeviceId_ = 0;
     int txOutputDeviceId_ = 0;
     bool txUseJavaOutput_ = false;
+    bool txNetMode_ = false;            // TX audio goes to UDP, not Oboe/AudioTrack
+    std::atomic<bool> netRxRunning_{false};  // RX audio comes from UDP, not Oboe input
 
     LPCNetEncState *lpcnetEnc_ = nullptr;
     AudioRingBuffer txPlaybackRing_{RING_BUFFER_SIZE};

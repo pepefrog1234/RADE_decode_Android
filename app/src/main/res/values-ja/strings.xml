@@ -125,6 +125,10 @@
     <string name="header_connection">接続設定</string>
     <string name="rig_tcp_mode">TCP（rigctld）</string>
     <string name="rig_serial_mode">シリアル（ローカル）</string>
+    <string name="rig_network_mode">Wi-Fi（IC-705）</string>
+    <string name="rig_username">ユーザー名</string>
+    <string name="rig_password">パスワード</string>
+    <string name="rig_network_hint">IC-705 の内蔵サーバーを使って Wi-Fi で接続します。無線機側で Set ▸ Network ▸ Network Control = ON にし、ネットワークユーザー名とパスワードを設定してください。ここに無線機の IP アドレスを入力します。制御も音声も Wi-Fi で動作し、USB ケーブルは不要です。</string>
     <string name="rig_host">ホスト</string>
     <string name="rig_port">ポート</string>
     <string name="rig_device">デバイス</string>

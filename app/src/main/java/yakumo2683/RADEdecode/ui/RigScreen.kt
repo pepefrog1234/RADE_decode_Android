@@ -24,6 +24,7 @@ import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -239,6 +240,7 @@ fun RigScreen(viewModel: TransceiverViewModel = viewModel()) {
     val state by viewModel.uiState.collectAsState()
     val rigState by viewModel.rigState.collectAsState()
     val usbState by viewModel.usbSerialState.collectAsState()
+    val icomState by viewModel.icomNetworkState.collectAsState()
     val connecting by viewModel.rigConnecting.collectAsState()
     val focusManager = LocalFocusManager.current
 
@@ -247,6 +249,10 @@ fun RigScreen(viewModel: TransceiverViewModel = viewModel()) {
     var hostInput by remember { mutableStateOf(rigPrefs.getString("host", "192.168.1.100") ?: "192.168.1.100") }
     var portInput by remember { mutableStateOf(rigPrefs.getString("port", "4532") ?: "4532") }
     var freqInput by remember { mutableStateOf("") }
+    // Network (Icom RS-BA1 / IC-705 Wi-Fi) mode fields
+    var icomPortInput by remember { mutableStateOf(rigPrefs.getString("icom_port", "50001") ?: "50001") }
+    var icomUser by remember { mutableStateOf(rigPrefs.getString("icom_user", "") ?: "") }
+    var icomPass by remember { mutableStateOf(rigPrefs.getString("icom_pass", "") ?: "") }
     // Serial mode fields
     var serialSpeed by remember { mutableStateOf(rigPrefs.getString("baud", "19200") ?: "19200") }
     var selectedRigIndex by remember { mutableIntStateOf(rigPrefs.getInt("rig_index", 0).coerceIn(0, rigModels.size - 1)) }
@@ -288,7 +294,11 @@ fun RigScreen(viewModel: TransceiverViewModel = viewModel()) {
             modifier = Modifier.fillMaxWidth(),
             horizontalArrangement = Arrangement.spacedBy(8.dp)
         ) {
-            listOf(stringResource(R.string.rig_tcp_mode) to 0, stringResource(R.string.rig_serial_mode) to 1).forEach { (label, idx) ->
+            listOf(
+                stringResource(R.string.rig_tcp_mode) to 0,
+                stringResource(R.string.rig_serial_mode) to 1,
+                stringResource(R.string.rig_network_mode) to 2
+            ).forEach { (label, idx) ->
                 val selected = connMode == idx
                 Surface(
                     onClick = { if (!rigState.connected) connMode = idx },
@@ -360,6 +370,61 @@ fun RigScreen(viewModel: TransceiverViewModel = viewModel()) {
                             )
                         )
                     }
+                } else if (connMode == 2) {
+                    // Network (Icom RS-BA1) mode — IC-705 over Wi-Fi
+                    Text(
+                        stringResource(R.string.rig_network_hint),
+                        color = OnSurfaceDim,
+                        fontSize = 11.sp
+                    )
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(10.dp)
+                    ) {
+                        OutlinedTextField(
+                            value = hostInput,
+                            onValueChange = { hostInput = it },
+                            label = { Text(stringResource(R.string.rig_host)) },
+                            singleLine = true,
+                            enabled = !rigState.connected,
+                            modifier = Modifier.weight(2f),
+                            textStyle = androidx.compose.ui.text.TextStyle(fontFamily = FontFamily.Monospace, fontSize = 14.sp),
+                            colors = OutlinedTextFieldDefaults.colors(focusedBorderColor = Cyan400, focusedLabelColor = Cyan400, cursorColor = Cyan400)
+                        )
+                        OutlinedTextField(
+                            value = icomPortInput,
+                            onValueChange = { icomPortInput = it.filter { c -> c.isDigit() }.take(5) },
+                            label = { Text(stringResource(R.string.rig_port)) },
+                            singleLine = true,
+                            enabled = !rigState.connected,
+                            modifier = Modifier.weight(1f),
+                            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                            textStyle = androidx.compose.ui.text.TextStyle(fontFamily = FontFamily.Monospace, fontSize = 14.sp),
+                            colors = OutlinedTextFieldDefaults.colors(focusedBorderColor = Cyan400, focusedLabelColor = Cyan400, cursorColor = Cyan400)
+                        )
+                    }
+                    OutlinedTextField(
+                        value = icomUser,
+                        onValueChange = { icomUser = it },
+                        label = { Text(stringResource(R.string.rig_username)) },
+                        singleLine = true,
+                        enabled = !rigState.connected,
+                        modifier = Modifier.fillMaxWidth(),
+                        textStyle = androidx.compose.ui.text.TextStyle(fontFamily = FontFamily.Monospace, fontSize = 14.sp),
+                        colors = OutlinedTextFieldDefaults.colors(focusedBorderColor = Cyan400, focusedLabelColor = Cyan400, cursorColor = Cyan400)
+                    )
+                    OutlinedTextField(
+                        value = icomPass,
+                        onValueChange = { icomPass = it },
+                        label = { Text(stringResource(R.string.rig_password)) },
+                        singleLine = true,
+                        enabled = !rigState.connected,
+                        visualTransformation = PasswordVisualTransformation(),
+                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
+                        modifier = Modifier.fillMaxWidth(),
+                        textStyle = androidx.compose.ui.text.TextStyle(fontFamily = FontFamily.Monospace, fontSize = 14.sp),
+                        colors = OutlinedTextFieldDefaults.colors(focusedBorderColor = Cyan400, focusedLabelColor = Cyan400, cursorColor = Cyan400)
+                    )
                 } else {
                     // Serial mode — manufacturer + model dropdowns
                     val mfgFilteredModels = remember(selectedMfg) {
@@ -638,12 +703,18 @@ fun RigScreen(viewModel: TransceiverViewModel = viewModel()) {
                                 .putInt("rig_index", selectedRigIndex)
                                 .putString("civ_addr", civAddrInput)
                                 .putString("mfg_filter", selectedMfg)
+                                .putString("icom_port", icomPortInput)
+                                .putString("icom_user", icomUser)
+                                .putString("icom_pass", icomPass)
                                 .apply()
 
                             if (connMode == 0) {
                                 val port = portInput.toIntOrNull() ?: 4532
                                 viewModel.rigMfg = rigModels[selectedRigIndex].mfg
                                 viewModel.rigConnect(hostInput, port)
+                            } else if (connMode == 2) {
+                                val port = icomPortInput.toIntOrNull() ?: 50001
+                                viewModel.rigStartIcomNetwork(hostInput, port, icomUser, icomPass)
                             } else {
                                 val rig = rigModels[selectedRigIndex]
                                 viewModel.rigMfg = rig.mfg
@@ -663,7 +734,7 @@ fun RigScreen(viewModel: TransceiverViewModel = viewModel()) {
                             }
                         }
                     },
-                    enabled = !connecting && (rigState.connected || connMode == 0 || usbState.devices.isNotEmpty()),
+                    enabled = !connecting && (rigState.connected || connMode == 0 || connMode == 2 || usbState.devices.isNotEmpty()),
                     modifier = Modifier.fillMaxWidth().height(46.dp),
                     shape = RoundedCornerShape(10.dp),
                     colors = ButtonDefaults.buttonColors(
@@ -706,6 +777,9 @@ fun RigScreen(viewModel: TransceiverViewModel = viewModel()) {
                 }
                 if (usbState.error.isNotEmpty() && connMode == 1) {
                     Text(usbState.error, color = Red400, fontSize = 12.sp)
+                }
+                if (icomState.error.isNotEmpty() && connMode == 2) {
+                    Text(icomState.error, color = Red400, fontSize = 12.sp)
                 }
             }
         }

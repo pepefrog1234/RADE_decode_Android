@@ -163,6 +163,7 @@ bool AudioEngine::start(int inputDeviceId, int outputDeviceId) {
 
 void AudioEngine::stop() {
     running_.store(false);
+    netRxRunning_.store(false);
     if (inputStream_)  { inputStream_->stop();  inputStream_->close();  inputStream_.reset(); }
     if (outputStream_) { outputStream_->stop(); outputStream_->close(); outputStream_.reset(); }
     inputSessionId_ = -1;
@@ -758,6 +759,7 @@ void AudioEngine::stopTx() {
     txRunning_.store(false);
     if (txOutputStream_) { txOutputStream_->stop(); txOutputStream_->close(); txOutputStream_.reset(); }
     releaseTxModem();
+    txNetMode_ = false;
     LOGI("TX: stopped");
 }
 
@@ -1019,4 +1021,190 @@ void AudioEngine::renderTxOutput(float *output, int32_t numFrames) {
             }
         }
     }
+}
+
+/* ════════════════════════════════════════════════════════════════
+ *  Network audio (Icom RS-BA1 / IC-705 Wi-Fi) — Phase 2 "full wireless"
+ *
+ *  Same modem/vocoder pipeline as the USB path, but the rig-facing audio
+ *  is carried over UDP (port 50003) by IcomNetworkManager instead of an
+ *  Oboe stream to/from a USB sound card:
+ *    RX: UDP PCM → feedNetRx() → decimate netRate→8k → modem → FARGAN
+ *        → playbackRing_ → Oboe output (phone speaker). No Oboe input.
+ *    TX: mic → Oboe input → LPCNet/RADE encoder → txPlaybackRing_ (8k),
+ *        drained + upsampled to netRate by fillNetTxFrame(). No Oboe output.
+ * ════════════════════════════════════════════════════════════════ */
+
+bool AudioEngine::startNetRx(int outputDeviceId, int netRate) {
+    if (running_.load() || netRxRunning_.load()) return true;
+    outputDeviceId_ = (outputDeviceId > 0) ? outputDeviceId : 0;
+
+    if (!initModem()) return false;
+
+    int ninMax = rade_nin_max(rade_);
+    modemInputBuf_.resize(ninMax * 2, 0);
+    modemInputPos_ = 0;
+    fftInputPos_ = 0;
+    playbackRing_.reset();
+
+    // running_ drives renderOutput/synthesizeSpeech and sync callbacks; there is
+    // simply no Oboe input stream — feedNetRx() is the sample source instead.
+    running_.store(true);
+    netRxRunning_.store(true);
+
+    if (!openOutputStream()) {
+        running_.store(false); netRxRunning_.store(false); releaseModem(); return false;
+    }
+
+    designDecimFilter(netRate, MODEM_SAMPLE_RATE);
+    actualInputRate_ = netRate;
+
+    LOGI("Net RX started: netRate=%dHz(÷%d) outDev=%d", netRate, decimFactor_, outputDeviceId_);
+    return true;
+}
+
+void AudioEngine::feedNetRx(const int16_t *pcm, int count) {
+    if (!netRxRunning_.load()) return;
+    int totalTaps = (int)decimCoeffs_.size();
+    if (totalTaps <= 0) return;
+
+    float gain = inputGain_.load();
+    float rmsSum = 0.0f;
+
+    for (int i = 0; i < count; i++) {
+        float raw = ((float)pcm[i] / 32768.0f) * gain;
+        rmsSum += raw * raw;
+
+        decimHistory_[decimHistPos_] = raw;
+        decimHistPos_ = (decimHistPos_ + 1) % totalTaps;
+
+        decimPhase_++;
+        if (decimPhase_ >= decimFactor_) {
+            decimPhase_ = 0;
+
+            float filtered = 0.0f;
+            int idx = decimHistPos_;
+            for (int j = 0; j < totalTaps; j++) {
+                idx--;
+                if (idx < 0) idx = totalTaps - 1;
+                filtered += decimHistory_[idx] * decimCoeffs_[j];
+            }
+
+            filtered = std::clamp(filtered, -0.999f, 0.999f);
+            int16_t s16 = (int16_t)(filtered * 32767.0f);
+            feedModem(&s16, 1);
+
+            if (fftInputPos_ < FFT_SIZE) fftInput_[fftInputPos_++] = filtered;
+            if (fftInputPos_ >= FFT_SIZE) { computeFFT(); fftInputPos_ = 0; }
+        }
+    }
+
+    if (count > 0)
+        inputLevelDb_.store(10.0f * log10f(rmsSum / (float)count + 1e-10f));
+}
+
+bool AudioEngine::startNetTx(int inputDeviceId, int netRate) {
+    if (txRunning_.load()) return true;
+    if (running_.load()) stop();  // stop RX first
+
+    txInputDeviceId_ = (inputDeviceId > 0) ? inputDeviceId : 0;
+    txOutputDeviceId_ = 0;
+    txNetMode_ = true;
+    txUseJavaOutput_ = true;     // reuse: no Oboe output stream, skip drain wait
+    txOutputRate_ = netRate;
+    LOGI("Net TX: startNetTx inputDev=%d netRate=%d", txInputDeviceId_, netRate);
+
+    if (!initTxModem()) { txNetMode_ = false; return false; }
+
+    txPlaybackRing_.reset();
+    txRunning_.store(true);
+
+    if (!openTxInputStream()) {
+        txRunning_.store(false); txNetMode_ = false; releaseTxModem(); return false;
+    }
+
+    // Pre-fill the ring with silence-encoded frames to absorb startup jitter
+    // (same approach as the USB TX path).
+    {
+        std::vector<int16_t> silence(TX_SPEECH_FRAME, 0);
+        float features[NB_TOTAL_FEATURES];
+        for (int prefill = 0; prefill < 3; prefill++) {
+            for (int f = 0; f < txFeaturesPerTx_; f++) {
+                lpcnet_compute_single_frame_features(lpcnetEnc_, silence.data(), features, 0);
+                int offset = f * NB_TOTAL_FEATURES;
+                memcpy(txFeatureAccum_.data() + offset, features, NB_TOTAL_FEATURES * sizeof(float));
+            }
+            int nTxOut = rade_n_tx_out(rade_);
+            std::vector<RADE_COMP> txOut(nTxOut);
+            int produced = rade_tx(rade_, txOut.data(), txFeatureAccum_.data());
+            for (int i = 0; i < produced; i++) {
+                float sample = std::clamp(txOut[i].real, -0.999f, 0.999f);
+                int16_t s16 = (int16_t)(sample * 32767.0f);
+                txPlaybackRing_.write(&s16, 1);
+            }
+        }
+        LOGI("Net TX: pre-filled ring with %d samples", txPlaybackRing_.availableToRead());
+    }
+
+    // Design mic-rate → 16kHz decimation if needed (same as USB TX path).
+    if (txActualInputRate_ != SPEECH_SAMPLE_RATE) {
+        txDecimFactor_ = txActualInputRate_ / SPEECH_SAMPLE_RATE;
+        if (txDecimFactor_ < 1) txDecimFactor_ = 1;
+        int totalTaps = DECIM_FIR_TAPS * txDecimFactor_;
+        float fc = (float)SPEECH_SAMPLE_RATE / (2.0f * (float)txActualInputRate_);
+        txDecimCoeffs_.resize(totalTaps);
+        float sum = 0;
+        int M = totalTaps - 1;
+        for (int i = 0; i < totalTaps; i++) {
+            float n = (float)i - (float)M / 2.0f;
+            float h = (fabsf(n) < 1e-6f) ? 2.0f * fc :
+                      sinf(2.0f * (float)M_PI * fc * n) / ((float)M_PI * n);
+            float w = 0.35875f
+                    - 0.48829f * cosf(2.0f * (float)M_PI * (float)i / (float)M)
+                    + 0.14128f * cosf(4.0f * (float)M_PI * (float)i / (float)M)
+                    - 0.01168f * cosf(6.0f * (float)M_PI * (float)i / (float)M);
+            txDecimCoeffs_[i] = h * w;
+            sum += txDecimCoeffs_[i];
+        }
+        for (int i = 0; i < totalTaps; i++) txDecimCoeffs_[i] /= sum;
+        txDecimHistory_.resize(totalTaps, 0.0f);
+        txDecimHistPos_ = 0;
+        txDecimPhase_ = 0;
+        LOGI("Net TX: decimation %dHz→%dHz factor=%d", txActualInputRate_, SPEECH_SAMPLE_RATE, txDecimFactor_);
+    } else {
+        txDecimFactor_ = 1;
+        txDecimCoeffs_.clear();
+        txDecimHistory_.clear();
+    }
+
+    LOGI("Net TX: started, input=%dHz netRate=%d", txActualInputRate_, txOutputRate_);
+    return true;
+}
+
+int AudioEngine::fillNetTxFrame(int16_t *out, int numSamples) {
+    if (numSamples <= 0) return 0;
+    // Read modem-rate (8kHz) samples and linear-interpolate up to the network
+    // rate (txOutputRate_, e.g. 48kHz). Always returns numSamples — zero-padded
+    // on underrun so the radio receives an uninterrupted stream.
+    double ratio = (double)MODEM_SAMPLE_RATE / (double)txOutputRate_;  // e.g. 8000/48000
+    int modemNeeded = (int)((double)numSamples * ratio) + 2;
+    int16_t tmp[4096];
+    int32_t toRead = std::min(modemNeeded, 4096);
+    int got = txPlaybackRing_.read(tmp, toRead);
+
+    for (int i = 0; i < numSamples; i++) {
+        double srcPos = (double)i * ratio;
+        int idx = (int)srcPos;
+        float frac = (float)(srcPos - (double)idx);
+        if (idx >= got) {
+            out[i] = 0;
+        } else if (idx + 1 < got) {
+            float s0 = (float)tmp[idx];
+            float s1 = (float)tmp[idx + 1];
+            out[i] = (int16_t)(s0 + frac * (s1 - s0));
+        } else {
+            out[i] = tmp[idx];
+        }
+    }
+    return numSamples;
 }

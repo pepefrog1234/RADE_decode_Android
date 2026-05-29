@@ -79,6 +79,7 @@ add_library(rade_jni SHARED
     audio_engine.cpp
     audio_ring_buffer.cpp
     usb_serial_helper.c
+    icom_pty.c
 )
 
 target_compile_features(rade_jni PRIVATE cxx_std_17)

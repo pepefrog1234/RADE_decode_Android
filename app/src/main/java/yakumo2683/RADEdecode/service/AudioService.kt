@@ -43,6 +43,10 @@ class AudioService : LifecycleService() {
 
     private val binder = LocalBinder()
     var reporter: yakumo2683.RADEdecode.network.FreeDVReporter? = null
+    /** Set by the ViewModel when rig control runs over the IC-705's Wi-Fi.
+     *  When non-null and its audio stream is up, RX/TX audio rides UDP 50003
+     *  instead of a USB sound card ("full wireless"). */
+    var icomNetwork: yakumo2683.RADEdecode.network.IcomNetworkManager? = null
     private var audioBridge: AudioBridge? = null
     private var pollingJob: Job? = null
     private var notificationUpdateJob: Job? = null
@@ -176,6 +180,10 @@ class AudioService : LifecycleService() {
         stopPolling()
         stopNotificationUpdates()
 
+        // Detach the network-audio feed before tearing down the engine.
+        icomNetwork?.onAudioPcm = null
+        networkAudioMode = false
+
         // Stop native WAV recording
         audioBridge?.stopRecording()
 
@@ -214,6 +222,135 @@ class AudioService : LifecycleService() {
 
     fun getOutputDevices(): List<AudioBridge.AudioDevice> {
         return audioBridge?.getOutputDevices() ?: emptyList()
+    }
+
+    /* ── Network audio (IC-705 Wi-Fi, full wireless) ─────────── */
+
+    private var networkAudioMode = false
+    private var netTxPumpJob: Job? = null
+
+    /**
+     * RX over Wi-Fi: decode audio arriving on UDP 50003 (via [icomNetwork]) and
+     * play the recovered speech on the phone speaker. No USB sound card involved.
+     */
+    fun startNetworkDecoding() {
+        if (_state.value.isRunning || _state.value.isTx) return
+        val net = icomNetwork ?: run {
+            Log.e("AudioService", "startNetworkDecoding: icomNetwork not set")
+            return
+        }
+
+        val bridge = AudioBridge(applicationContext)
+        audioBridge = bridge
+        bridge.callback = object : AudioBridge.Callback {
+            override fun onSyncStateChanged(state: Int) = handleSyncChange(state)
+            override fun onCallsignDecoded(callsign: String) = handleCallsignDecoded(callsign)
+        }
+
+        val notification = buildNotification(getString(R.string.notification_starting), 0, "")
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            startForeground(
+                NOTIFICATION_ID, notification,
+                ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE or
+                    ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PLAYBACK
+            )
+        } else {
+            startForeground(NOTIFICATION_ID, notification)
+        }
+
+        // Decoded speech to the phone speaker (no USB rig audio to avoid feedback).
+        val rxOutputDeviceId = bridge.findBuiltInSpeaker()?.id ?: -1
+        if (!bridge.startNetRx(rxOutputDeviceId, yakumo2683.RADEdecode.network.IcomNetworkManager.NET_AUDIO_RATE)) {
+            Log.e("AudioService", "startNetRx failed")
+            stopSelf()
+            return
+        }
+
+        // Received UDP PCM → modem. The callback fires on the audio stream's
+        // consume coroutine; feedNetRx is a no-op once the engine is stopped.
+        net.onAudioPcm = { pcm -> audioBridge?.feedNetRx(pcm, pcm.size) }
+
+        networkAudioMode = true
+        currentInputDeviceId = -1
+        _state.value = _state.value.copy(isRunning = true)
+        startPolling()
+        startNotificationUpdates()
+    }
+
+    /**
+     * TX over Wi-Fi: mic → RADE encoder → UDP 50003 audio frames to the radio.
+     * @param inputDeviceId built-in mic device id (USB audio is the rig's RX feed).
+     */
+    fun startNetworkTransmitting(inputDeviceId: Int, callsign: String) {
+        if (_state.value.isTx) return
+        val net = icomNetwork ?: run {
+            Log.e("AudioService", "startNetworkTransmitting: icomNetwork not set")
+            return
+        }
+
+        // Stop network RX (mute + tear down the RX engine), keep foreground.
+        if (_state.value.isRunning) {
+            stopPolling()
+            stopNotificationUpdates()
+            net.onAudioPcm = null
+            audioBridge?.setOutputVolume(0f)
+            audioBridge?.stop()
+            audioBridge?.release()
+            audioBridge = null
+        }
+
+        val bridge = AudioBridge(applicationContext)
+        audioBridge = bridge
+
+        val notification = buildNotification(getString(R.string.btn_tx), 0, callsign)
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            startForeground(
+                NOTIFICATION_ID, notification,
+                ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE or
+                    ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PLAYBACK
+            )
+        } else {
+            startForeground(NOTIFICATION_ID, notification)
+        }
+
+        if (callsign.isNotEmpty()) bridge.setTxCallsign(callsign)
+
+        if (!bridge.startNetTx(inputDeviceId, yakumo2683.RADEdecode.network.IcomNetworkManager.NET_AUDIO_RATE)) {
+            Log.e("AudioService", "startNetTx failed")
+            bridge.release()
+            audioBridge = null
+            stopSelf()
+            return
+        }
+
+        networkAudioMode = true
+        _state.value = _state.value.copy(isTx = true, isRunning = false)
+        startNetTxPump(bridge, net)
+        startTxPolling()
+        startNotificationUpdates()
+    }
+
+    /** Pull encoded modem audio every 20 ms and ship it to the radio over UDP. */
+    private fun startNetTxPump(
+        bridge: AudioBridge,
+        net: yakumo2683.RADEdecode.network.IcomNetworkManager
+    ) {
+        val n = yakumo2683.RADEdecode.network.IcomNetworkManager.NET_AUDIO_FRAME_SAMPLES
+        netTxPumpJob = lifecycleScope.launch(Dispatchers.IO) {
+            val frame = ShortArray(n)
+            while (isActive && bridge.isTxRunning) {
+                // fillNetTxFrame zero-pads on underrun, so the radio gets a
+                // continuous stream (it expects steady 20 ms frames).
+                val got = bridge.fillNetTxFrame(frame, n)
+                if (got > 0) net.sendAudioFrame(frame)
+                delay(20)
+            }
+        }
+    }
+
+    private fun stopNetTxPump() {
+        netTxPumpJob?.cancel()
+        netTxPumpJob = null
     }
 
     /* ── TX (Transmit) ──────────────────────────────────────── */
@@ -280,8 +417,10 @@ class AudioService : LifecycleService() {
 
     fun stopTransmitting() {
         stopTxAudioTrackPump()
+        stopNetTxPump()
         stopTxPolling()
         stopNotificationUpdates()
+        networkAudioMode = false
 
         audioBridge?.stopTx()
         audioBridge?.release()
