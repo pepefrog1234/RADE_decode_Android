@@ -28,6 +28,14 @@ constexpr int INPUT_SAMPLE_RATE   = 48000;
 constexpr int MODEM_SAMPLE_RATE   = 8000;
 constexpr int SPEECH_SAMPLE_RATE  = 16000;
 
+// Attenuation applied to RS-BA1 network RX audio (Icom IC-705 over UDP 50003).
+// The radio sends near-full-scale digital audio — far hotter than the quiet
+// Android mic / USB line input the input-gain default targets — so without this
+// the modem input clips even with the user's digital-gain slider at minimum.
+// ~-16.5 dB. Only the network RX path uses it; USB RX is unaffected. The user's
+// digital gain still multiplies on top.
+constexpr float NET_RX_ATTEN = 0.15f;
+
 constexpr int FFT_SIZE            = 1024;
 constexpr int FFT_BINS            = FFT_SIZE / 2;
 constexpr int FARGAN_WARMUP_FRAMES = 5;

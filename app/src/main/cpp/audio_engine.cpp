@@ -1068,7 +1068,11 @@ void AudioEngine::feedNetRx(const int16_t *pcm, int count) {
     int totalTaps = (int)decimCoeffs_.size();
     if (totalTaps <= 0) return;
 
-    float gain = inputGain_.load();
+    // RS-BA1 network audio arrives near full-scale (the radio's digital line
+    // level), far hotter than the Android mic/USB input the default input gain
+    // was tuned for. Attenuate here so the modem sees a healthy level even with
+    // the user's digital-gain slider at minimum; user gain still applies on top.
+    float gain = inputGain_.load() * NET_RX_ATTEN;
     float rmsSum = 0.0f;
 
     for (int i = 0; i < count; i++) {
@@ -1123,12 +1127,17 @@ bool AudioEngine::startNetTx(int inputDeviceId, int netRate) {
         txRunning_.store(false); txNetMode_ = false; releaseTxModem(); return false;
     }
 
-    // Pre-fill the ring with silence-encoded frames to absorb startup jitter
-    // (same approach as the USB TX path).
+    // Pre-fill the ring with silence-encoded modem frames to absorb startup
+    // jitter and the phone-vs-radio clock difference. Target ~200 ms so the
+    // deadline-paced UDP TX pump (AudioService.startNetTxPump) never underruns
+    // mid-over — an underrun forces zero-padding that corrupts the continuous
+    // RADE waveform and makes the far end unable to decode.
     {
         std::vector<int16_t> silence(TX_SPEECH_FRAME, 0);
         float features[NB_TOTAL_FEATURES];
-        for (int prefill = 0; prefill < 3; prefill++) {
+        const int prefillTarget = MODEM_SAMPLE_RATE / 5;  // ~200 ms @ 8 kHz
+        int prefillGuard = 0;
+        while (txPlaybackRing_.availableToRead() < prefillTarget && prefillGuard++ < 64) {
             for (int f = 0; f < txFeaturesPerTx_; f++) {
                 lpcnet_compute_single_frame_features(lpcnetEnc_, silence.data(), features, 0);
                 int offset = f * NB_TOTAL_FEATURES;

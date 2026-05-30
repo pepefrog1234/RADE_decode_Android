@@ -192,7 +192,10 @@ fun SettingsScreen(viewModel: TransceiverViewModel = viewModel()) {
                 Slider(
                     value = inputGain,
                     onValueChange = { inputGain = it; viewModel.setInputGain(it) },
-                    valueRange = 1f..30f,
+                    // Floor below unity (down to 0.1x = -20 dB) so a hot source —
+                    // e.g. the IC-705's near-full-scale Wi-Fi audio — can be
+                    // attenuated manually on top of the fixed network-RX trim.
+                    valueRange = 0.1f..30f,
                     colors = SliderDefaults.colors(thumbColor = Cyan400, activeTrackColor = Cyan400)
                 )
                 Text(

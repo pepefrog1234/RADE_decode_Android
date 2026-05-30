@@ -345,12 +345,27 @@ class AudioService : LifecycleService() {
         val n = yakumo2683.RADEdecode.network.IcomNetworkManager.NET_AUDIO_FRAME_SAMPLES
         netTxPumpJob = lifecycleScope.launch(Dispatchers.IO) {
             val frame = ShortArray(n)
+            // Deadline-based pacing. The radio expects a steady 50 frames/sec
+            // (one 20 ms frame). A plain delay(20) sleeps 20 ms PLUS the JNI+UDP
+            // work each loop, so it under-delivers (~45 fps): the radio's audio
+            // buffer starves every ~1-2 s (the reported dropouts) and the modem
+            // sample stream is broken so the far end can't decode. Anchoring each
+            // send to an absolute deadline keeps the long-term rate at exactly
+            // 50 fps regardless of per-loop overhead.
+            val periodNs = 20_000_000L  // 20 ms
+            var nextDeadline = System.nanoTime() + periodNs
             while (isActive && bridge.isTxRunning) {
-                // fillNetTxFrame zero-pads on underrun, so the radio gets a
-                // continuous stream (it expects steady 20 ms frames).
                 val got = bridge.fillNetTxFrame(frame, n)
                 if (got > 0) net.sendAudioFrame(frame)
-                delay(20)
+                val sleepNs = nextDeadline - System.nanoTime()
+                if (sleepNs > 0) {
+                    delay(sleepNs / 1_000_000L)
+                } else {
+                    // Fell behind (GC/scheduler hiccup) — resync so we don't fire
+                    // a burst of catch-up frames that would overrun the radio.
+                    nextDeadline = System.nanoTime()
+                }
+                nextDeadline += periodNs
             }
         }
     }
