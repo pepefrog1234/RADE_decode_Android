@@ -237,6 +237,15 @@ private:
     int txInterpFactor_ = 6;
     std::vector<float> txInterpCoeffs_;
 
+    /* Network TX polyphase interpolator (8 kHz → netRate). State is carried
+     * across 20 ms frames so there is no per-frame boundary glitch. */
+    std::vector<std::vector<float>> netTxInterpPhases_;  // [L][tapsPerPhase]
+    std::vector<float> netTxInterpHist_;                 // input history (circular)
+    int netTxInterpHistPos_ = 0;
+    int netTxInterpL_ = 6;
+    int netTxTapsPerPhase_ = 0;
+    void designNetTxInterpFilter(int interpFactor);
+
     /* TX callsign for EOO */
     std::string txCallsign_;
     std::mutex txCallsignMutex_;
