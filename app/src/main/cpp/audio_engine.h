@@ -36,6 +36,13 @@ constexpr int SPEECH_SAMPLE_RATE  = 16000;
 // digital gain still multiplies on top.
 constexpr float NET_RX_ATTEN = 0.15f;
 
+// Taps per phase for the network-TX polyphase anti-imaging interpolator
+// (8 kHz modem → 48 kHz UDP audio, integer factor 6). Linear interpolation
+// droops ~4 dB by 3 kHz and rejects images poorly — it sounds fine but distorts
+// the RADE constellation so the far end can't decode. The USB TX path avoids
+// this only because Android's own resampler does the 8→48 kHz conversion.
+constexpr int NET_TX_INTERP_TAPS = 24;
+
 constexpr int FFT_SIZE            = 1024;
 constexpr int FFT_BINS            = FFT_SIZE / 2;
 constexpr int FARGAN_WARMUP_FRAMES = 5;

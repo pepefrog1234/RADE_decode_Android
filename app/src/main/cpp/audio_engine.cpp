@@ -1127,6 +1127,10 @@ bool AudioEngine::startNetTx(int inputDeviceId, int netRate) {
         txRunning_.store(false); txNetMode_ = false; releaseTxModem(); return false;
     }
 
+    // Build the anti-imaging interpolation filter now that txOutputRate_ (netRate)
+    // is known. Must precede the first fillNetTxFrame() call.
+    designNetTxInterpFilter(txOutputRate_ / MODEM_SAMPLE_RATE);
+
     // Pre-fill the ring with silence-encoded modem frames to absorb startup
     // jitter and the phone-vs-radio clock difference. Target ~200 ms so the
     // deadline-paced UDP TX pump (AudioService.startNetTxPump) never underruns
@@ -1190,30 +1194,87 @@ bool AudioEngine::startNetTx(int inputDeviceId, int netRate) {
     return true;
 }
 
+/**
+ * Design the polyphase anti-imaging FIR for 8 kHz → netRate network TX audio.
+ * Windowed-sinc low-pass prototype at the output rate, decomposed into
+ * `interpFactor` phases each normalized to unity sum (flat unity passband).
+ */
+void AudioEngine::designNetTxInterpFilter(int interpFactor) {
+    netTxInterpL_ = (interpFactor >= 1) ? interpFactor : 1;
+    int tpp = NET_TX_INTERP_TAPS;
+    netTxTapsPerPhase_ = tpp;
+    int totalTaps = tpp * netTxInterpL_;
+
+    // Cutoff 3.5 kHz: passes the full RADE/SSB passband flat while rejecting the
+    // upsampling images that begin at 4 kHz (the 8 kHz Nyquist).
+    float fcNorm = 3500.0f / (float)(MODEM_SAMPLE_RATE * netTxInterpL_);
+    std::vector<float> proto(totalTaps);
+    int M = totalTaps - 1;
+    for (int i = 0; i < totalTaps; i++) {
+        float n = (float)i - (float)M / 2.0f;
+        float h = (fabsf(n) < 1e-6f) ? 2.0f * fcNorm
+                  : sinf(2.0f * (float)M_PI * fcNorm * n) / ((float)M_PI * n);
+        float w = 0.35875f
+                - 0.48829f * cosf(2.0f * (float)M_PI * (float)i / (float)M)
+                + 0.14128f * cosf(4.0f * (float)M_PI * (float)i / (float)M)
+                - 0.01168f * cosf(6.0f * (float)M_PI * (float)i / (float)M);
+        proto[i] = h * w;
+    }
+
+    netTxInterpPhases_.assign(netTxInterpL_, std::vector<float>(tpp, 0.0f));
+    for (int p = 0; p < netTxInterpL_; p++) {
+        float sum = 0.0f;
+        for (int k = 0; k < tpp; k++) {
+            int idx = k * netTxInterpL_ + p;
+            float c = (idx < totalTaps) ? proto[idx] : 0.0f;
+            netTxInterpPhases_[p][k] = c;
+            sum += c;
+        }
+        if (fabsf(sum) > 1e-9f)
+            for (int k = 0; k < tpp; k++) netTxInterpPhases_[p][k] /= sum;
+    }
+    netTxInterpHist_.assign(tpp, 0.0f);
+    netTxInterpHistPos_ = 0;
+    LOGI("Net TX interp: 8kHz->%dHz L=%d tapsPerPhase=%d", txOutputRate_, netTxInterpL_, tpp);
+}
+
 int AudioEngine::fillNetTxFrame(int16_t *out, int numSamples) {
     if (numSamples <= 0) return 0;
-    // Read modem-rate (8kHz) samples and linear-interpolate up to the network
-    // rate (txOutputRate_, e.g. 48kHz). Always returns numSamples — zero-padded
-    // on underrun so the radio receives an uninterrupted stream.
-    double ratio = (double)MODEM_SAMPLE_RATE / (double)txOutputRate_;  // e.g. 8000/48000
-    int modemNeeded = (int)((double)numSamples * ratio) + 2;
-    int16_t tmp[4096];
-    int32_t toRead = std::min(modemNeeded, 4096);
-    int got = txPlaybackRing_.read(tmp, toRead);
+    int L = netTxInterpL_;
+    int tpp = netTxTapsPerPhase_;
+    if (L < 1 || tpp <= 0 || (int)netTxInterpPhases_.size() != L) {
+        // Filter not initialized — emit silence rather than garbage.
+        for (int i = 0; i < numSamples; i++) out[i] = 0;
+        return numSamples;
+    }
 
-    for (int i = 0; i < numSamples; i++) {
-        double srcPos = (double)i * ratio;
-        int idx = (int)srcPos;
-        float frac = (float)(srcPos - (double)idx);
-        if (idx >= got) {
-            out[i] = 0;
-        } else if (idx + 1 < got) {
-            float s0 = (float)tmp[idx];
-            float s1 = (float)tmp[idx + 1];
-            out[i] = (int16_t)(s0 + frac * (s1 - s0));
-        } else {
-            out[i] = tmp[idx];
+    // Integer polyphase interpolation: each 8 kHz input sample yields L outputs.
+    // History is retained across calls, so 20 ms frames join seamlessly (the old
+    // linear path both drooped the passband AND dropped ~2 samples per frame).
+    int inNeeded = numSamples / L;
+    int16_t in[1024];
+    if (inNeeded > 1024) inNeeded = 1024;
+    int got = txPlaybackRing_.read(in, inNeeded);
+
+    int outPos = 0;
+    for (int n = 0; n < inNeeded; n++) {
+        // Zero-pad on underrun so the radio still receives a continuous stream.
+        float xs = (n < got) ? (float)in[n] : 0.0f;
+        netTxInterpHist_[netTxInterpHistPos_] = xs;
+        netTxInterpHistPos_ = (netTxInterpHistPos_ + 1) % tpp;
+
+        for (int p = 0; p < L && outPos < numSamples; p++) {
+            const float *hp = netTxInterpPhases_[p].data();
+            float acc = 0.0f;
+            int idx = netTxInterpHistPos_;
+            for (int k = 0; k < tpp; k++) {
+                idx--; if (idx < 0) idx = tpp - 1;
+                acc += netTxInterpHist_[idx] * hp[k];
+            }
+            acc = std::clamp(acc, -32767.0f, 32767.0f);
+            out[outPos++] = (int16_t)acc;
         }
     }
+    while (outPos < numSamples) out[outPos++] = 0;
     return numSamples;
 }
