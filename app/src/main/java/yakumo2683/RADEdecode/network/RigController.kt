@@ -24,7 +24,11 @@ class RigController {
     companion object {
         private const val TAG = "RigController"
         private const val CONNECT_TIMEOUT_MS = 3000
-        private const val READ_TIMEOUT_MS = 3000
+        // Per-command socket read timeout. Bounds how long a single (possibly
+        // unanswered) CAT command can hold the serial lock. Kept well above real
+        // CAT response times (tens of ms) but far below "several seconds" — the
+        // old 3000 ms let one slow Xiegu G90 status read block a PTT for 3 s.
+        private const val READ_TIMEOUT_MS = 1000
         private const val DEFAULT_PORT = 4532
     }
 
@@ -48,6 +52,22 @@ class RigController {
     private var writer: PrintWriter? = null
     private var reader: BufferedReader? = null
     private val lock = Object()
+
+    /**
+     * Number of user-initiated commands (PTT, set freq, etc.) currently waiting
+     * for or holding the serial lock. The background status poller yields to
+     * these: JVM `synchronized` is not fair, so without this a chatty poller can
+     * repeatedly re-acquire the lock ahead of a waiting PTT and starve it for
+     * seconds — the cause of the multi-second PTT delay on slow-CAT rigs like the
+     * Xiegu G90.
+     */
+    private val userCmdPending = java.util.concurrent.atomic.AtomicInteger(0)
+
+    /** Run a latency-critical user command with priority over the poller. */
+    private inline fun <T> priority(block: () -> T): T {
+        userCmdPending.incrementAndGet()
+        try { return block() } finally { userCmdPending.decrementAndGet() }
+    }
 
     private var pollingJob: Job? = null
     private val scope = CoroutineScope(Dispatchers.IO + SupervisorJob())
@@ -166,7 +186,7 @@ class RigController {
     /* ── Frequency ──────────────────────────────────────────── */
 
     suspend fun setFreq(hz: Long) = withContext(Dispatchers.IO) {
-        val resp = sendCommand("F $hz")
+        val resp = priority { sendCommand("F $hz") }
         if (resp != null) {
             _state.value = _state.value.copy(freqHz = hz)
         }
@@ -272,7 +292,9 @@ class RigController {
 
     suspend fun setPtt(on: Boolean) = withContext(Dispatchers.IO) {
         Log.i(TAG, "setPtt($on) sending...")
-        val resp = sendCommand("T ${if (on) 1 else 0}")
+        // Priority over the poller: keying/unkeying must not wait behind a slow
+        // background status read (the Xiegu G90 multi-second PTT delay).
+        val resp = priority { sendCommand("T ${if (on) 1 else 0}") }
         Log.i(TAG, "setPtt($on) response: $resp")
         if (resp != null) {
             _state.value = _state.value.copy(ptt = on)
@@ -305,13 +327,13 @@ class RigController {
     /* ── Power control ──────────────────────────────────────── */
 
     suspend fun setPowerstat(on: Boolean) = withContext(Dispatchers.IO) {
-        sendCommand("\\set_powerstat ${if (on) 1 else 0}")
+        priority { sendCommand("\\set_powerstat ${if (on) 1 else 0}") }
     }
 
     /* ── VFO ────────────────────────────────────────────────── */
 
     suspend fun setVfo(vfo: String) = withContext(Dispatchers.IO) {
-        sendCommand("V $vfo")
+        priority { sendCommand("V $vfo") }
     }
 
     /* ── Polling loop ───────────────────────────────────────── */
@@ -320,29 +342,42 @@ class RigController {
         pollingJob?.cancel()
         pollingJob = scope.launch {
             var cycle = 0
+            // Before each status read, stand down if a user command (PTT, freq…)
+            // is pending or in flight, and don't issue a new one until it clears.
+            // This is what keeps PTT responsive on slow-CAT rigs (Xiegu G90):
+            // the poller voluntarily yields the unfair `synchronized` lock.
+            suspend fun gate() { while (userCmdPending.get() > 0 && isActive) delay(15) }
+
             // Query mode on the very first cycle so the UI shows USB/LSB/etc.
             // as soon as the rig connects (otherwise the mode label stays blank
             // until the user triggers a manual setMode — Xiegu G90 etc.).
-            try { getMode() } catch (_: Exception) {}
+            try { gate(); getMode() } catch (_: Exception) {}
             while (isActive && _state.value.connected) {
                 try {
-                    // Each command releases the lock between calls,
-                    // giving user-initiated commands a chance to execute
-                    getFreq()
+                    // Each command releases the lock between calls; gate() ahead of
+                    // each one yields priority to user-initiated commands.
+                    gate(); getFreq()
                     delay(100)
-                    getPtt()
+                    gate(); getPtt()
                     delay(100)
-                    getSmeter()
+                    gate(); getSmeter()
                     // Re-read mode every ~5s — mode changes rarely but the user
                     // may flip USB/LSB on the rig face, and we want the UI to
                     // reflect that without forcing them to reconnect.
                     if (cycle % 5 == 4) {
                         delay(100)
-                        getMode()
+                        gate(); getMode()
                     }
                 } catch (_: Exception) {}
                 cycle++
-                delay(1000)
+                // Idle ~1s between cycles, sliced so a PTT pressed mid-wait is
+                // serviced immediately (loop back → gate yields) instead of after
+                // the full second.
+                var slept = 0
+                while (slept < 1000 && isActive && _state.value.connected &&
+                       userCmdPending.get() == 0) {
+                    delay(50); slept += 50
+                }
             }
         }
     }
