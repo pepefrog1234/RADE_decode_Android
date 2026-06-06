@@ -234,6 +234,25 @@ bool AudioEngine::openInputStream() {
         unprocessedRejected_.store(false);
     }
 
+    // Buffer-size headroom against overruns. The default LowLatency buffer is a
+    // single burst — the tightest setting — which breaks up on weak / heavily
+    // loaded devices (e.g. Huawei MediaPad M5) during the CPU-heavy startup
+    // window: this is the reported "reception breaks up right after start, then
+    // stable once settled; screen off→on (which restarts the stream after the
+    // spike) fixes it". A few bursts of headroom let the capture ride through
+    // transient CPU starvation. Costs negligible latency — the modem already
+    // sits behind a ring buffer. Applied here so cold-open AND restart get it.
+    {
+        int32_t burst = inputStream_->getFramesPerBurst();
+        if (burst > 0) {
+            auto bufR = inputStream_->setBufferSizeInFrames(burst * 4);
+            if (bufR) {
+                LOGI("Input buffer: %d frames (burst=%d cap=%d)", bufR.value(),
+                     burst, inputStream_->getBufferCapacityInFrames());
+            }
+        }
+    }
+
     result = inputStream_->requestStart();
     if (result != oboe::Result::OK) {
         LOGE("Failed to start input: %s", oboe::convertToText(result));
@@ -271,6 +290,19 @@ bool AudioEngine::openOutputStream() {
     LOGI("Output opened: rate=%d ch=%d device=%d (requested=%d)",
          outputStream_->getSampleRate(), outputStream_->getChannelCount(),
          outputStream_->getDeviceId(), outputDeviceId_);
+
+    // Buffer headroom against underruns during the CPU-heavy startup window
+    // (see openInputStream for the full rationale — same MediaPad M5 symptom).
+    {
+        int32_t burst = outputStream_->getFramesPerBurst();
+        if (burst > 0) {
+            auto bufR = outputStream_->setBufferSizeInFrames(burst * 4);
+            if (bufR) {
+                LOGI("Output buffer: %d frames (burst=%d cap=%d)", bufR.value(),
+                     burst, outputStream_->getBufferCapacityInFrames());
+            }
+        }
+    }
 
     result = outputStream_->requestStart();
     if (result != oboe::Result::OK) {
