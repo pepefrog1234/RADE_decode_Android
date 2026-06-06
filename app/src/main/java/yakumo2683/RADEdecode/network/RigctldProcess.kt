@@ -112,10 +112,21 @@ class RigctldProcess(private val context: Context) {
 
         val cmd = mutableListOf(
             binary.absolutePath,
-            "-vvvvv",              // verbose for debugging
+            // NOTE: do NOT pass -vvvvv here. Max verbosity makes rigctld emit many
+            // stderr lines per command (piped through JNI to logcat); combined with
+            // the slow Xiegu G90 CI-V it contributed to multi-second PTT lag.
             "-m", model.toString(),
             "-t", port.toString(),
-            "-r", ptyPath
+            "-r", ptyPath,
+            // Bound how long a single serial transaction can take. Hamlib's Icom
+            // backend reads PTT back to verify after "T 1"/"T 0"; the G90's CI-V is
+            // slow/flaky to answer, and with the default timeout + retries each PTT
+            // could stall for seconds. Tight timeout + no retries makes set-PTT
+            // return promptly instead of blocking on readback retries.
+            // (One comma-separated -C list — rigctld applies each -C once.)
+            // Verified tokens exist in bundled Hamlib 4.5.5: timeout, retry,
+            // post_write_delay.
+            "--set-conf=timeout=200,retry=0,post_write_delay=0"
         )
 
         if (speed > 0) {
