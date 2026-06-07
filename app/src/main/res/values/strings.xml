@@ -108,6 +108,9 @@
     <string name="settings_output_devices">Output Devices</string>
     <string name="settings_tx_output_help">Select the audio interface for RADE TX modulated output.</string>
     <string name="settings_no_output_devices">No audio output devices found</string>
+    <string name="header_performance">PERFORMANCE</string>
+    <string name="settings_power_save_mode">Power Save Mode</string>
+    <string name="settings_power_save_mode_help">Hides the spectrum and waterfall and stops FFT processing to lighten the load on low-end devices, helping decoding run smoothly.</string>
     <string name="header_about">ABOUT</string>
     <string name="about_app_name">RADE Decode</string>
     <string name="about_description">HF digital voice transceiver. Decodes and encodes RADE OFDM signals using on-device FARGAN neural vocoder.</string>

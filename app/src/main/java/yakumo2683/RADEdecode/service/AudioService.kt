@@ -66,11 +66,19 @@ class AudioService : LifecycleService() {
     private var lastSyncedTime: Long = 0   // last time syncState was 2 (0 = never synced this session)
     private var lastRxReportMs: Long = 0   // last time we emitted an rx_report to the reporter
 
+    /** Power-save (低效能裝置) mode: skip the native FFT and stop publishing
+     *  spectrum updates so weak devices can keep decoding smoothly. Set by the
+     *  ViewModel; read on the polling loop, hence @Volatile. */
+    @Volatile
+    var powerSaveMode: Boolean = false
+
     companion object {
         const val CHANNEL_ID = "rade_decode_channel"
         const val NOTIFICATION_ID = 1
         const val ACTION_STOP = "yakumo2683.RADEdecode.STOP"
         private const val SYNC_LOST_TIMEOUT_MS = 2000L
+        /** Shared flat spectrum published while in power-save mode (never mutated). */
+        private val FLAT_SPECTRUM = FloatArray(AudioBridge.SPECTRUM_BINS) { -100f }
     }
 
     data class ServiceState(
@@ -676,7 +684,12 @@ class AudioService : LifecycleService() {
         pollingJob = lifecycleScope.launch {
             while (isActive) {
                 val bridge = audioBridge ?: break
-                bridge.getSpectrum(spectrumBuffer)
+                // Power-save mode: skip the native FFT entirely — it's the most
+                // expensive per-poll work and the UI hides the spectrum anyway.
+                val saving = powerSaveMode
+                if (!saving) {
+                    bridge.getSpectrum(spectrumBuffer)
+                }
 
                 val now = System.currentTimeMillis()
                 val isSynced = _state.value.syncState == 2
@@ -711,7 +724,7 @@ class AudioService : LifecycleService() {
                 val inLvl = bridge.inputLevel
                 val outLvl = bridge.outputLevel
                 val cs = bridge.lastCallsign
-                val spec = spectrumBuffer.copyOf()
+                val spec = if (saving) FLAT_SPECTRUM else spectrumBuffer.copyOf()
                 val rejected = bridge.isUnprocessedRejected
                 _state.update { it.copy(
                     snrDb = snr,

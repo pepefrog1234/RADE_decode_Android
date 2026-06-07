@@ -438,6 +438,41 @@ fun SettingsScreen(viewModel: TransceiverViewModel = viewModel()) {
             }
         }
 
+        // ── Performance (效能節約模式) ──
+        SectionHeader(stringResource(R.string.header_performance))
+
+        Surface(
+            shape = RoundedCornerShape(12.dp),
+            color = SurfaceCard,
+            modifier = Modifier
+                .fillMaxWidth()
+                .border(1.dp, MaterialTheme.colorScheme.outline, RoundedCornerShape(12.dp))
+        ) {
+            Column(modifier = Modifier.padding(16.dp)) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text(
+                        stringResource(R.string.settings_power_save_mode),
+                        fontWeight = FontWeight.Bold,
+                        color = MaterialTheme.colorScheme.onSurface
+                    )
+                    Switch(
+                        checked = state.powerSaveMode,
+                        onCheckedChange = { viewModel.setPowerSaveMode(it) },
+                        colors = SwitchDefaults.colors(checkedTrackColor = Cyan400)
+                    )
+                }
+                Spacer(Modifier.height(8.dp))
+                Text(
+                    stringResource(R.string.settings_power_save_mode_help),
+                    fontSize = 11.sp, color = OnSurfaceDim, lineHeight = 16.sp
+                )
+            }
+        }
+
         SectionHeader(stringResource(R.string.header_about))
 
         Surface(

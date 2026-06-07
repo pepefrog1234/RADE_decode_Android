@@ -107,6 +107,9 @@
     <string name="settings_output_devices">输出设备</string>
     <string name="settings_tx_output_help">选择用于 RADE 发射调制输出的音频接口。</string>
     <string name="settings_no_output_devices">找不到音频输出设备</string>
+    <string name="header_performance">性能</string>
+    <string name="settings_power_save_mode">性能节约模式</string>
+    <string name="settings_power_save_mode_help">隐藏频谱图与瀑布图并停止 FFT 运算，减轻低性能设备的负担，让解码能流畅运行。</string>
     <string name="header_about">关于</string>
     <string name="about_app_name">RADE Decode</string>
     <string name="about_description">HF 数字语音收发器。使用设备上的 FARGAN 神经网络声码器来解码和编码 RADE OFDM 信号。</string>

@@ -107,6 +107,9 @@
     <string name="settings_output_devices">出力デバイス</string>
     <string name="settings_tx_output_help">RADE送信変調出力に使用するオーディオインターフェースを選択します。</string>
     <string name="settings_no_output_devices">音声出力デバイスが見つかりません</string>
+    <string name="header_performance">パフォーマンス</string>
+    <string name="settings_power_save_mode">省電力モード</string>
+    <string name="settings_power_save_mode_help">スペクトラムとウォーターフォール表示を非表示にし、FFT処理を停止して低スペック端末の負荷を軽減し、デコードを安定して動作させます。</string>
     <string name="header_about">概要</string>
     <string name="about_app_name">RADE Decode</string>
     <string name="about_description">HFデジタル音声トランシーバー。デバイス上のFARGANニューラルネットワークボコーダーでRADE OFDM信号をデコード・エンコードします。</string>

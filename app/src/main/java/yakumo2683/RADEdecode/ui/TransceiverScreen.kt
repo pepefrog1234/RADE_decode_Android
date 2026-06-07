@@ -86,8 +86,8 @@ fun TransceiverScreen(viewModel: TransceiverViewModel = viewModel()) {
             }
         }
 
-        // ── Spectrum (RX) ──
-        if (!state.isTx) {
+        // ── Spectrum (RX) — hidden in power-save mode (效能節約模式) ──
+        if (!state.isTx && !state.powerSaveMode) {
             SpectrumChart(
                 spectrum = state.spectrum,
                 isSynced = state.isSynced,

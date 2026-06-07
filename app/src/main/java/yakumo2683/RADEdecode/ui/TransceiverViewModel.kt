@@ -61,7 +61,8 @@ class TransceiverViewModel(application: Application) : AndroidViewModel(applicat
         val selectedDeviceId: Int = -1,
         val selectedOutputDeviceId: Int = -1,
         val builtInMicId: Int = -1,
-        val serviceBound: Boolean = false
+        val serviceBound: Boolean = false,
+        val powerSaveMode: Boolean = false   // 效能節約模式: hide spectrum/waterfall + skip FFT on weak devices
     ) {
         val syncText: String get() = when (syncState) {
             0 -> "SEARCH"
@@ -89,6 +90,7 @@ class TransceiverViewModel(application: Application) : AndroidViewModel(applicat
             service.setInputGain(prefs.getFloat("input_gain", 4.0f))
             service.setOutputVolume(prefs.getFloat("output_volume", 1.0f))
             service.setTxVolume(prefs.getFloat("tx_volume", 0.2f))
+            service.powerSaveMode = _uiState.value.powerSaveMode
             _uiState.value = _uiState.value.copy(serviceBound = true)
             startCollectingServiceState()
         }
@@ -116,6 +118,11 @@ class TransceiverViewModel(application: Application) : AndroidViewModel(applicat
         // Reporter toggle defaults to ON so the app auto-connects to qso.freedv.org
         // on launch; users can still opt out in Settings.
         _reporterEnabledPref.value = prefs.getBoolean("reporter_enabled", true)
+
+        // Power-save mode (效能節約模式) — off by default; restored across launches.
+        _uiState.value = _uiState.value.copy(
+            powerSaveMode = prefs.getBoolean("power_save_mode", false)
+        )
         // Load the persistent status message; reporter holds it and re-emits
         // on every (re)connect, so we just need to give it the saved value.
         reporter.updateMessage(prefs.getString("reporter_message", "") ?: "")
@@ -267,6 +274,16 @@ class TransceiverViewModel(application: Application) : AndroidViewModel(applicat
         prefs.edit().putBoolean("reporter_enabled", enabled).apply()
         _reporterEnabledPref.value = enabled
         syncReporterState()
+    }
+
+    /* ── Performance (效能節約模式) ─────────────────────────── */
+
+    /** Toggle power-save mode: hides the spectrum/waterfall in the UI and stops
+     *  the native FFT in the service so low-end devices can keep decoding. */
+    fun setPowerSaveMode(enabled: Boolean) {
+        prefs.edit().putBoolean("power_save_mode", enabled).apply()
+        _uiState.value = _uiState.value.copy(powerSaveMode = enabled)
+        audioService?.powerSaveMode = enabled
     }
 
     fun setReporterGrid(grid: String) {
