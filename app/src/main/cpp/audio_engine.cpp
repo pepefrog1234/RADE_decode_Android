@@ -142,6 +142,24 @@ bool AudioEngine::start(int inputDeviceId, int outputDeviceId) {
     fftInputPos_ = 0;
     playbackRing_.reset();
 
+    // Pre-fill the playback ring with silence so the output stream has a cushion
+    // to drain through the CPU-heavy startup AND TX→RX-resume windows. FARGAN
+    // synthesis runs in the INPUT callback, so on a weak device the cold-CPU
+    // window can't keep this ring filled and renderOutput emits gaps — the
+    // reported "break-up that settles once warm; screen off→on or TX re-triggers
+    // it". The TX path already pre-fills its ring for the same reason (see
+    // startTx); RX never did. This is OUTPUT-side only — it cannot affect modem
+    // sync — and costs a one-time ~300 ms of added RX latency, negligible for a
+    // receive decoder (RADE end-to-end latency is already ~1 s). Done before the
+    // output stream opens so the cushion is in place before it starts draining.
+    {
+        const int prefill = SPEECH_SAMPLE_RATE * 3 / 10;  // ~300 ms @ 16 kHz
+        std::vector<int16_t> silence(prefill, 0);
+        int wrote = playbackRing_.write(silence.data(), prefill);
+        LOGI("RX: pre-filled playback ring with %d samples (~%dms)",
+             wrote, wrote * 1000 / SPEECH_SAMPLE_RATE);
+    }
+
     running_.store(true);
 
     if (!openOutputStream()) {
