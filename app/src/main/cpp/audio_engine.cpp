@@ -188,16 +188,7 @@ void AudioEngine::setInputGain(float gain) {
 bool AudioEngine::openInputStream() {
     oboe::AudioStreamBuilder builder;
     builder.setDirection(oboe::Direction::Input)
-           // RX capture does NOT need low latency — it feeds the modem through a
-           // ring buffer, so we trade latency we don't need for robustness we do.
-           // LowLatency opens an MMAP "fast" track whose buffer CAPACITY is only
-           // ~2–3 bursts, so the v1.5.6 setBufferSizeInFrames(burst*4) headroom
-           // got clamped away and capture still overran during the FARGAN-warmup
-           // CPU spike on weak devices (Huawei MediaPad M5). PerformanceMode::None
-           // uses the normal mixer path, whose far larger capacity lets real
-           // headroom stick — the actual fix for the "breaks up at start / after
-           // TX, screen-off→on restores it" report.
-           ->setPerformanceMode(oboe::PerformanceMode::None)
+           ->setPerformanceMode(oboe::PerformanceMode::LowLatency)
            ->setSharingMode(oboe::SharingMode::Shared)
            ->setFormat(oboe::AudioFormat::Float)
            // Lock capture to 48 kHz. Our polyphase decimator assumes 48→8 kHz
@@ -243,16 +234,18 @@ bool AudioEngine::openInputStream() {
         unprocessedRejected_.store(false);
     }
 
-    // Generous buffer headroom so capture rides through the CPU-heavy startup
-    // and TX→RX-resume windows (UI inflation + FARGAN neural warmup + modem open)
-    // without overrunning on weak devices. With PerformanceMode::None the buffer
-    // capacity is large, so this request actually sticks — under the old
-    // LowLatency track it was clamped to a couple of bursts and did nothing.
-    // setBufferSizeInFrames clamps to capacity, so over-requesting is safe.
+    // Buffer-size headroom against overruns. The default LowLatency buffer is a
+    // single burst — the tightest setting — which breaks up on weak / heavily
+    // loaded devices (e.g. Huawei MediaPad M5) during the CPU-heavy startup
+    // window: this is the reported "reception breaks up right after start, then
+    // stable once settled; screen off→on (which restarts the stream after the
+    // spike) fixes it". A few bursts of headroom let the capture ride through
+    // transient CPU starvation. Costs negligible latency — the modem already
+    // sits behind a ring buffer. Applied here so cold-open AND restart get it.
     {
         int32_t burst = inputStream_->getFramesPerBurst();
         if (burst > 0) {
-            auto bufR = inputStream_->setBufferSizeInFrames(burst * 8);
+            auto bufR = inputStream_->setBufferSizeInFrames(burst * 4);
             if (bufR) {
                 LOGI("Input buffer: %d frames (burst=%d cap=%d)", bufR.value(),
                      burst, inputStream_->getBufferCapacityInFrames());
@@ -271,12 +264,7 @@ bool AudioEngine::openInputStream() {
 bool AudioEngine::openOutputStream() {
     oboe::AudioStreamBuilder builder;
     builder.setDirection(oboe::Direction::Output)
-           // Same rationale as the input stream: decoded speech plays out of the
-           // FARGAN ring buffer, so low latency buys nothing but a tiny, easily
-           // starved buffer. None gives the larger, underrun-resistant mixer
-           // buffer — this is the stream whose underruns the user hears as the
-           // reported "break-up".
-           ->setPerformanceMode(oboe::PerformanceMode::None)
+           ->setPerformanceMode(oboe::PerformanceMode::LowLatency)
            ->setSharingMode(oboe::SharingMode::Shared)
            ->setFormat(oboe::AudioFormat::Float)
            ->setSampleRate(SPEECH_SAMPLE_RATE)
@@ -303,14 +291,12 @@ bool AudioEngine::openOutputStream() {
          outputStream_->getSampleRate(), outputStream_->getChannelCount(),
          outputStream_->getDeviceId(), outputDeviceId_);
 
-    // Generous buffer headroom against playback underruns during the CPU-heavy
-    // startup and TX→RX-resume windows (see openInputStream for the full
-    // rationale — same MediaPad M5 symptom). None's large capacity lets this
-    // request stick where the old LowLatency track clamped it away.
+    // Buffer headroom against underruns during the CPU-heavy startup window
+    // (see openInputStream for the full rationale — same MediaPad M5 symptom).
     {
         int32_t burst = outputStream_->getFramesPerBurst();
         if (burst > 0) {
-            auto bufR = outputStream_->setBufferSizeInFrames(burst * 8);
+            auto bufR = outputStream_->setBufferSizeInFrames(burst * 4);
             if (bufR) {
                 LOGI("Output buffer: %d frames (burst=%d cap=%d)", bufR.value(),
                      burst, outputStream_->getBufferCapacityInFrames());
