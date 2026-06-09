@@ -40,6 +40,9 @@ data class RigModel(val id: Int, val mfg: String, val name: String) {
     val displayName: String get() = "$mfg $name"
 }
 
+private const val TCP_PROFILE_GENERIC = "generic"
+private const val TCP_PROFILE_HERMES_LITE2 = "hermes_lite2"
+
 /** All hamlib 4.5.5 rig models (348 rigs) */
 private val rigModels = listOf(
     // Hamlib
@@ -126,11 +129,11 @@ private val rigModels = listOf(
     RigModel(2045, "Elecraft", "KX3"),
     RigModel(2047, "Elecraft", "K4"),
     RigModel(2038, "Elecraft", "XG3"),
-    // FlexRadio (Kenwood backend)
+    // FlexRadio / OpenHPSDR / SDR app CAT servers
     RigModel(2036, "FlexRadio", "6xxx/SSDR"),
-    RigModel(2048, "FlexRadio", "PowerSDR"),
+    RigModel(2048, "FlexRadio/Apache", "PowerSDR/Thetis"),
+    RigModel(2040, "OpenHPSDR", "PiHPSDR"),
     // Other Kenwood-protocol
-    RigModel(2040, "Apache Labs", "HPSDR"),
     RigModel(2049, "Malahit", "Malachite DSP"),
     RigModel(2050, "Lab599", "TX-500"),
     RigModel(2051, "SDRplay", "SDRuno"),
@@ -249,6 +252,9 @@ fun RigScreen(viewModel: TransceiverViewModel = viewModel()) {
     var hostInput by remember { mutableStateOf(rigPrefs.getString("host", "192.168.1.100") ?: "192.168.1.100") }
     var portInput by remember { mutableStateOf(rigPrefs.getString("port", "4532") ?: "4532") }
     var freqInput by remember { mutableStateOf("") }
+    var tcpProfile by remember {
+        mutableStateOf(rigPrefs.getString("tcp_profile", TCP_PROFILE_GENERIC) ?: TCP_PROFILE_GENERIC)
+    }
     // Network (Icom RS-BA1 / IC-705 Wi-Fi) mode fields
     var icomPortInput by remember { mutableStateOf(rigPrefs.getString("icom_port", "50001") ?: "50001") }
     var icomUser by remember { mutableStateOf(rigPrefs.getString("icom_user", "") ?: "") }
@@ -336,6 +342,46 @@ fun RigScreen(viewModel: TransceiverViewModel = viewModel()) {
             Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
                 if (connMode == 0) {
                     // TCP mode
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        listOf(
+                            stringResource(R.string.rig_tcp_profile_generic) to TCP_PROFILE_GENERIC,
+                            stringResource(R.string.rig_tcp_profile_hl2) to TCP_PROFILE_HERMES_LITE2
+                        ).forEach { (label, profile) ->
+                            val selected = tcpProfile == profile
+                            Surface(
+                                onClick = { if (!rigState.connected) tcpProfile = profile },
+                                modifier = Modifier
+                                    .weight(1f)
+                                    .border(
+                                        1.dp,
+                                        if (selected) Cyan400 else MaterialTheme.colorScheme.outline,
+                                        RoundedCornerShape(8.dp)
+                                    ),
+                                shape = RoundedCornerShape(8.dp),
+                                color = if (selected) Cyan600.copy(alpha = 0.18f) else MaterialTheme.colorScheme.surface
+                            ) {
+                                Text(
+                                    text = label,
+                                    modifier = Modifier.padding(vertical = 8.dp, horizontal = 6.dp),
+                                    textAlign = TextAlign.Center,
+                                    fontWeight = FontWeight.Bold,
+                                    fontFamily = FontFamily.Monospace,
+                                    fontSize = 12.sp,
+                                    color = if (selected) Cyan400 else OnSurfaceDim
+                                )
+                            }
+                        }
+                    }
+                    if (tcpProfile == TCP_PROFILE_HERMES_LITE2) {
+                        Text(
+                            stringResource(R.string.rig_tcp_hl2_hint),
+                            color = OnSurfaceDim,
+                            fontSize = 11.sp
+                        )
+                    }
                     Row(
                         modifier = Modifier.fillMaxWidth(),
                         horizontalArrangement = Arrangement.spacedBy(10.dp)
@@ -699,6 +745,7 @@ fun RigScreen(viewModel: TransceiverViewModel = viewModel()) {
                                 .putInt("conn_mode", connMode)
                                 .putString("host", hostInput)
                                 .putString("port", portInput)
+                                .putString("tcp_profile", tcpProfile)
                                 .putString("baud", serialSpeed)
                                 .putInt("rig_index", selectedRigIndex)
                                 .putString("civ_addr", civAddrInput)
@@ -710,7 +757,11 @@ fun RigScreen(viewModel: TransceiverViewModel = viewModel()) {
 
                             if (connMode == 0) {
                                 val port = portInput.toIntOrNull() ?: 4532
-                                viewModel.rigMfg = rigModels[selectedRigIndex].mfg
+                                viewModel.rigMfg = if (tcpProfile == TCP_PROFILE_HERMES_LITE2) {
+                                    "OpenHPSDR"
+                                } else {
+                                    rigModels[selectedRigIndex].mfg
+                                }
                                 viewModel.rigConnect(hostInput, port)
                             } else if (connMode == 2) {
                                 val port = icomPortInput.toIntOrNull() ?: 50001

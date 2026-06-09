@@ -129,6 +129,9 @@
     <string name="rig_tcp_mode">TCP（rigctld）</string>
     <string name="rig_serial_mode">序列埠（本機）</string>
     <string name="rig_network_mode">Wi-Fi（IC-705）</string>
+    <string name="rig_tcp_profile_generic">一般 rigctld</string>
+    <string name="rig_tcp_profile_hl2">Hermes-Lite 2</string>
+    <string name="rig_tcp_hl2_hint">連線到 Thetis、Quisk、SparkSDR、piHPSDR 或其他 HL2 SDR 軟體提供的 rigctl 相容伺服器。RADE 音訊仍使用 Android 音訊裝置，不會直接連接 OpenHPSDR I/Q 串流。</string>
     <string name="rig_username">使用者名稱</string>
     <string name="rig_password">密碼</string>
     <string name="rig_network_hint">使用 IC-705 內建伺服器透過 Wi-Fi 連線。請在電台上設定：Set ▸ Network ▸ Network Control = ON，並設定網路使用者名稱與密碼。在此輸入電台的 IP 位址。控制與音訊皆透過 Wi-Fi 傳輸，無需 USB 線。</string>

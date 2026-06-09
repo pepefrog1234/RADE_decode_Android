@@ -130,6 +130,9 @@
     <string name="rig_tcp_mode">TCP (rigctld)</string>
     <string name="rig_serial_mode">Serial (local)</string>
     <string name="rig_network_mode">Wi-Fi (IC-705)</string>
+    <string name="rig_tcp_profile_generic">Generic rigctld</string>
+    <string name="rig_tcp_profile_hl2">Hermes-Lite 2</string>
+    <string name="rig_tcp_hl2_hint">Connect to a rigctl-compatible server from Thetis, Quisk, SparkSDR, piHPSDR, or another HL2 SDR app. RADE audio still uses Android audio devices; direct OpenHPSDR I/Q streaming is not used.</string>
     <string name="rig_username">Username</string>
     <string name="rig_password">Password</string>
     <string name="rig_network_hint">Connect to the IC-705 over Wi-Fi using its built-in server. On the radio: Set ▸ Network ▸ Network Control = ON, and set a Network User name/password. Enter the radio\'s IP address. Control and audio both run over Wi-Fi — no USB cable needed.</string>
