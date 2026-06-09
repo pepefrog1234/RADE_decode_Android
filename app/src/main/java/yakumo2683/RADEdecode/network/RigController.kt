@@ -332,10 +332,16 @@ class RigController {
     /* ── Levels (S-meter, RF power, SWR) ────────────────────── */
 
     suspend fun getSmeter(): Int = withContext(Dispatchers.IO) {
-        val resp = sendCommand("l STRENGTH") ?: return@withContext -54
-        val db = resp.trim().toIntOrNull() ?: -54
-        _state.value = _state.value.copy(sMeter = db)
-        db
+        val resp = sendCommand("l STRENGTH")
+        val db = resp?.trim()?.toIntOrNull()
+        // Hamlib STRENGTH is dB relative to S9. If the rigctld text stream ever
+        // desyncs, this read can accidentally consume a frequency line such as
+        // "14115000", which previously rendered as "S9+14115000dB". Reject
+        // implausible readings and keep the last valid meter value.
+        if (db != null && db in -80..80) {
+            _state.value = _state.value.copy(sMeter = db)
+        }
+        _state.value.sMeter
     }
 
     suspend fun getRfPower(): Float = withContext(Dispatchers.IO) {
