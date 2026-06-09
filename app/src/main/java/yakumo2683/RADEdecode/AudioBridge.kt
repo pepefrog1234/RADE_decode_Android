@@ -180,6 +180,12 @@ class AudioBridge(private val context: Context) {
     /** Stop recording. */
     fun stopRecording() = nativeStopRecording()
 
+    /** Start recording raw 8 kHz modem input to WAV file. */
+    fun startModemRecording(path: String): Boolean = nativeStartModemRecording(path)
+
+    /** Stop raw modem input recording. */
+    fun stopModemRecording() = nativeStopModemRecording()
+
     /** Release native resources. Call when done. */
     fun release() {
         stop()
@@ -311,6 +317,8 @@ class AudioBridge(private val context: Context) {
     private external fun nativeGetInputGain(): Float
     private external fun nativeStartRecording(path: String): Boolean
     private external fun nativeStopRecording()
+    private external fun nativeStartModemRecording(path: String): Boolean
+    private external fun nativeStopModemRecording()
     private external fun nativeSetCallback(callback: Any)
     private external fun nativeStart(inputDeviceId: Int, outputDeviceId: Int): Boolean
     private external fun nativeStop()

@@ -55,6 +55,7 @@ class AudioService : LifecycleService() {
 
     // Current session tracking
     private var currentWavPath: String? = null
+    private var currentModemWavPath: String? = null
     private var currentSession: ReceptionSession? = null
     private var sessionStartTime: Long = 0
     private var lastSyncState: Int = 0
@@ -133,6 +134,8 @@ class AudioService : LifecycleService() {
 
         val bridge = AudioBridge(applicationContext)
         audioBridge = bridge
+        bridge.setInputGain(rxInputGain)
+        bridge.setOutputVolume(rxOutputVolume)
 
         bridge.callback = object : AudioBridge.Callback {
             override fun onSyncStateChanged(state: Int) {
@@ -167,6 +170,13 @@ class AudioService : LifecycleService() {
             return
         }
 
+        val modemDir = java.io.File(applicationContext.filesDir, "recordings")
+        if (!modemDir.exists()) modemDir.mkdirs()
+        val modemPath = java.io.File(modemDir, "rx_modem8k_${System.currentTimeMillis()}.wav").absolutePath
+        if (bridge.startModemRecording(modemPath)) {
+            currentModemWavPath = modemPath
+        }
+
         // Disable platform-applied audio effects (AGC, NS, AEC) that would
         // corrupt the RADE signal on OEMs that ignore the Unprocessed preset
         // (e.g. Samsung Galaxy S24). Held effects live until bridge.stop().
@@ -181,6 +191,7 @@ class AudioService : LifecycleService() {
     }
 
     fun setInputGain(gain: Float) {
+        rxInputGain = gain
         audioBridge?.setInputGain(gain)
     }
 
@@ -194,6 +205,7 @@ class AudioService : LifecycleService() {
 
         // Stop native WAV recording
         audioBridge?.stopRecording()
+        audioBridge?.stopModemRecording()
 
         audioBridge?.stop()
         audioBridge?.release()
@@ -207,8 +219,12 @@ class AudioService : LifecycleService() {
     }
 
     fun setOutputVolume(volume: Float) {
+        rxOutputVolume = volume
         audioBridge?.setOutputVolume(volume)
     }
+
+    @Volatile private var rxInputGain: Float = 4.0f
+    @Volatile private var rxOutputVolume: Float = 1.0f
 
     /**
      * TX USB audio output level (0..1). Lowered from the previous hard-coded 5%
@@ -250,6 +266,8 @@ class AudioService : LifecycleService() {
 
         val bridge = AudioBridge(applicationContext)
         audioBridge = bridge
+        bridge.setInputGain(rxInputGain)
+        bridge.setOutputVolume(rxOutputVolume)
         bridge.callback = object : AudioBridge.Callback {
             override fun onSyncStateChanged(state: Int) = handleSyncChange(state)
             override fun onCallsignDecoded(callsign: String) = handleCallsignDecoded(callsign)
@@ -629,6 +647,7 @@ class AudioService : LifecycleService() {
 
         currentSession = null
         currentWavPath = null
+        currentModemWavPath = null
     }
 
     private fun handleSyncChange(newState: Int) {
