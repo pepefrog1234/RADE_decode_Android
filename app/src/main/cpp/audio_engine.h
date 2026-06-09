@@ -11,9 +11,7 @@
 
 #include <oboe/Oboe.h>
 #include <atomic>
-#include <condition_variable>
 #include <mutex>
-#include <thread>
 #include <vector>
 #include <cstdio>
 
@@ -132,10 +130,6 @@ public:
     bool startRecording(const char *path);
     /** Stop recording and finalize WAV header. */
     void stopRecording();
-    /** Start recording raw 8kHz modem input after RX decimation/gain. */
-    bool startModemRecording(const char *path);
-    /** Stop raw modem-input recording and finalize WAV header. */
-    void stopModemRecording();
 
 private:
     std::shared_ptr<oboe::AudioStream> inputStream_;
@@ -149,8 +143,6 @@ private:
 
     int actualInputRate_ = 48000;
     int decimFactor_ = 6;   // 48000/8000
-    int decimInputRate_ = INPUT_SAMPLE_RATE;
-    int decimOutputRate_ = MODEM_SAMPLE_RATE;
 
     struct rade *rade_ = nullptr;
     FARGANState *fargan_ = nullptr;
@@ -163,24 +155,10 @@ private:
     std::vector<float> decimCoeffs_;   // FIR coefficients
     std::vector<float> decimHistory_;  // circular buffer
     int decimHistPos_ = 0;
-    int decimPhase_ = 0;               // output-rate accumulator modulo input rate
-    int rxSelectedChannel_ = 0;        // selected raw input channel for USB stereo interfaces
-    std::vector<float> rxWorkInput_;   // selected input channel, with short-dropout concealment applied
-    std::vector<float> rxLastGoodInput_;
-    std::vector<int16_t> rxModemOut_;
-    bool rxLastGoodValid_ = false;
-    float rxLastGoodRmsDb_ = -100.0f;
-    float rxLastGoodPeak_ = 0.0f;
-    int rxConcealRun_ = 0;
-    int rxCallbacksSinceGood_ = 999;
+    int decimPhase_ = 0;               // counts samples mod decimFactor_
 
     std::vector<int16_t> modemInputBuf_;
     int modemInputPos_ = 0;
-    std::mutex modemMutex_;
-    std::condition_variable modemCv_;
-    std::thread modemThread_;
-    std::atomic<bool> modemWorkerRunning_{false};
-    uint32_t modemQueueDropSamples_ = 0;
 
     std::vector<float> fftInput_;
     int fftInputPos_ = 0;
@@ -206,9 +184,6 @@ private:
     FILE *wavFile_ = nullptr;
     uint32_t wavDataBytes_ = 0;
     std::mutex wavMutex_;
-    FILE *modemWavFile_ = nullptr;
-    uint32_t modemWavDataBytes_ = 0;
-    std::mutex modemWavMutex_;
 
     bool initModem();
     void releaseModem();
@@ -216,11 +191,7 @@ private:
 
     void processInputFrames(const float *data, int32_t numFrames, int32_t channelCount);
     void feedModem(const int16_t *samples8k, int count);
-    void processModemFrame(const int16_t *frame, int nin);
-    void startModemWorker();
-    void stopModemWorker();
-    void modemWorkerLoop();
-    void recordModemSamples(const int16_t *samples8k, int count);
+    void processModemFrame();
     void synthesizeSpeech(const float *features, int nFeatures);
     void computeFFT();
     void renderOutput(float *data, int32_t numFrames);

@@ -489,20 +489,6 @@ JNI_AUDIO(nativeStopRecording)(JNIEnv *env, jobject /* this */) {
     if (g_audioEngine) g_audioEngine->stopRecording();
 }
 
-JNIEXPORT jboolean JNICALL
-JNI_AUDIO(nativeStartModemRecording)(JNIEnv *env, jobject /* this */, jstring path) {
-    if (!g_audioEngine) return JNI_FALSE;
-    const char *p = env->GetStringUTFChars(path, nullptr);
-    bool ok = g_audioEngine->startModemRecording(p);
-    env->ReleaseStringUTFChars(path, p);
-    return ok ? JNI_TRUE : JNI_FALSE;
-}
-
-JNIEXPORT void JNICALL
-JNI_AUDIO(nativeStopModemRecording)(JNIEnv *env, jobject /* this */) {
-    if (g_audioEngine) g_audioEngine->stopModemRecording();
-}
-
 /* ── TX (Transmit) JNI methods ───────────────────────────────── */
 
 JNIEXPORT jboolean JNICALL

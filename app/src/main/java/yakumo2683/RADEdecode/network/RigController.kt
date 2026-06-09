@@ -193,10 +193,20 @@ class RigController {
     }
 
     suspend fun getFreq(): Long = withContext(Dispatchers.IO) {
-        val resp = sendCommand("f") ?: return@withContext 0L
-        val freq = resp.trim().toLongOrNull() ?: 0L
-        _state.value = _state.value.copy(freqHz = freq)
-        freq
+        val resp = sendCommand("f")
+        val freq = resp?.trim()?.toLongOrNull()
+        // Only accept a plausible HF/VHF/UHF frequency. rigctld get_freq can return
+        // "RPRT -n" (error), an empty/partial line, or — if the text response
+        // stream ever desyncs — a value belonging to another field (passband,
+        // s-meter, ptt). The old code wrote whatever it got (0 on any failure)
+        // straight into freqHz, so a momentarily-slow rig flashed "00000"/garbage
+        // to the display and made the set-frequency field jump so it couldn't be
+        // set — the reported fault after long receive, made frequent by v1.5.5's
+        // retry=0. Reject implausible reads and keep the last good frequency.
+        if (freq != null && freq in 10_000L..1_300_000_000L) {
+            _state.value = _state.value.copy(freqHz = freq)
+        }
+        _state.value.freqHz
     }
 
     /* ── Mode ───────────────────────────────────────────────── */
@@ -276,8 +286,19 @@ class RigController {
             val r = reader ?: return@withContext Pair("", 0)
             try {
                 w.println("m")
-                mode = r.readLine()?.trim() ?: ""
-                bw = r.readLine()?.trim()?.toIntOrNull() ?: 0
+                // get_mode succeeds with TWO lines (mode, then passband); on error
+                // rigctld sends a SINGLE "RPRT -n". Reading a 2nd line unconditionally
+                // meant that on error we either stalled the full read timeout or, if
+                // the response arrived late, consumed the NEXT command's reply —
+                // desyncing the stream so every later "f" read returned the wrong
+                // field (garbage frequency). Only consume the passband line when the
+                // first line is a real mode token (starts with a letter, not RPRT).
+                val line1 = r.readLine()?.trim() ?: ""
+                if (line1.isNotEmpty() && !line1.startsWith("RPRT") &&
+                    line1.first().isLetter()) {
+                    mode = line1
+                    bw = r.readLine()?.trim()?.toIntOrNull() ?: 0
+                }
             } catch (_: java.net.SocketTimeoutException) {
                 // Non-fatal
             } catch (_: Exception) {}

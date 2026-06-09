@@ -121,12 +121,21 @@ class RigctldProcess(private val context: Context) {
             // Bound how long a single serial transaction can take. Hamlib's Icom
             // backend reads PTT back to verify after "T 1"/"T 0"; the G90's CI-V is
             // slow/flaky to answer, and with the default timeout + retries each PTT
-            // could stall for seconds. Tight timeout + no retries makes set-PTT
-            // return promptly instead of blocking on readback retries.
+            // could stall for seconds. A tight 200 ms timeout keeps set-PTT prompt.
+            //
+            // retry: keep ONE retry (not 0). retry=0 plus the tight timeout made
+            // ordinary get_freq/get_mode polls fail outright whenever the rig was a
+            // hair slow to answer CI-V — over a long receive those failures piled up
+            // and corrupted the on-screen frequency (00000 / garbage, set field
+            // unusable). One retry restores readback resilience while bounding PTT
+            // readback to <=400 ms — still far below the original multi-second lag.
+            //
+            // post_write_delay: do NOT force 0. Let Hamlib use the per-backend
+            // default (sane inter-command spacing) so sustained polling doesn't
+            // congest the rig's CI-V bus.
             // (One comma-separated -C list — rigctld applies each -C once.)
-            // Verified tokens exist in bundled Hamlib 4.5.5: timeout, retry,
-            // post_write_delay.
-            "--set-conf=timeout=200,retry=0,post_write_delay=0"
+            // Verified tokens exist in bundled Hamlib 4.5.5: timeout, retry.
+            "--set-conf=timeout=200,retry=1"
         )
 
         if (speed > 0) {
