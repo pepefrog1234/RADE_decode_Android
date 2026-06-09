@@ -31,6 +31,13 @@ class RigctldProcess(private val context: Context) {
 
         @JvmStatic
         external fun nativeKill(pid: Int)
+
+        private val FAST_PTY_CAT_MODELS = setOf(
+            3076, // Xiegu X108G
+            3087, // Xiegu X6100
+            3088, // Xiegu G90
+            3089  // Xiegu X5105
+        )
     }
 
     private var process: Process? = null
@@ -117,25 +124,7 @@ class RigctldProcess(private val context: Context) {
             // the slow Xiegu G90 CI-V it contributed to multi-second PTT lag.
             "-m", model.toString(),
             "-t", port.toString(),
-            "-r", ptyPath,
-            // Bound how long a single serial transaction can take. Hamlib's Icom
-            // backend reads PTT back to verify after "T 1"/"T 0"; the G90's CI-V is
-            // slow/flaky to answer, and with the default timeout + retries each PTT
-            // could stall for seconds. A tight 200 ms timeout keeps set-PTT prompt.
-            //
-            // retry: keep ONE retry (not 0). retry=0 plus the tight timeout made
-            // ordinary get_freq/get_mode polls fail outright whenever the rig was a
-            // hair slow to answer CI-V — over a long receive those failures piled up
-            // and corrupted the on-screen frequency (00000 / garbage, set field
-            // unusable). One retry restores readback resilience while bounding PTT
-            // readback to <=400 ms — still far below the original multi-second lag.
-            //
-            // post_write_delay: do NOT force 0. Let Hamlib use the per-backend
-            // default (sane inter-command spacing) so sustained polling doesn't
-            // congest the rig's CI-V bus.
-            // (One comma-separated -C list — rigctld applies each -C once.)
-            // Verified tokens exist in bundled Hamlib 4.5.5: timeout, retry.
-            "--set-conf=timeout=200,retry=1"
+            "-r", ptyPath
         )
 
         if (speed > 0) {
@@ -144,6 +133,13 @@ class RigctldProcess(private val context: Context) {
 
         if (civAddr.isNotEmpty()) {
             cmd.addAll(listOf("-c", civAddr))
+        }
+
+        if (model in FAST_PTY_CAT_MODELS) {
+            // Bound Xiegu CI-V/PTT readback stalls without applying the tight
+            // timeout to Icom RS-BA1/IC-705 network ptys. IC-705 Wi-Fi can exceed
+            // 200 ms and then fails get_freq, preventing FreeDV Reporter freq_change.
+            cmd.add("--set-conf=timeout=200,retry=1")
         }
 
         return launchProcess(cmd)
