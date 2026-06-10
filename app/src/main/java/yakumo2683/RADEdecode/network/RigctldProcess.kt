@@ -85,7 +85,7 @@ class RigctldProcess(private val context: Context) {
         }
 
         if (civAddr.isNotEmpty()) {
-            cmd.addAll(listOf("-c", civAddr))
+            cmd.addAll(listOf("-c", civAddrArg(civAddr)))
         }
 
         return launchProcess(cmd)
@@ -132,7 +132,7 @@ class RigctldProcess(private val context: Context) {
         }
 
         if (civAddr.isNotEmpty()) {
-            cmd.addAll(listOf("-c", civAddr))
+            cmd.addAll(listOf("-c", civAddrArg(civAddr)))
         }
 
         if (model in FAST_PTY_CAT_MODELS) {
@@ -144,6 +144,14 @@ class RigctldProcess(private val context: Context) {
 
         return launchProcess(cmd)
     }
+
+    /**
+     * Hamlib parses `--civaddr` as DECIMAL unless the value is 0x-prefixed
+     * (icom.c TOK_CIVADDR: atoi() vs strtol(.., 16)). The CI-V field in this
+     * app is hex ("94" means 0x94), so always pass the 0x form.
+     */
+    private fun civAddrArg(civAddr: String): String =
+        "0x" + civAddr.removePrefix("0x").removePrefix("0X")
 
     private fun launchProcess(cmd: List<String>): Boolean {
         Log.i(TAG, "Starting: ${cmd.joinToString(" ")}")
