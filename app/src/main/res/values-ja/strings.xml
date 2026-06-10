@@ -26,6 +26,11 @@
     <string name="btn_tx">送信</string>
     <string name="tx_hint_ready">マイクに向かって話し、送信をタップしてください。\nスマホの音量ボタンで送信音量を調整 — ALC はできるだけ振れないようにしてください。</string>
     <string name="tx_hint_active">送信中… もう一度タップすると受信に戻ります。\nALC はできるだけ振れないように — 振れている場合はスマホの音量を下げてください。</string>
+    <string name="tx_hint_hold_ready">送信ボタンを押しながら話してください。離すと受信に戻ります。\nスマホの音量ボタンで送信音量を調整 — ALC はできるだけ振れないようにしてください。</string>
+    <string name="tx_hint_hold_active">送信中… ボタンを離すと受信に戻ります。\nALC はできるだけ振れないように — 振れている場合はスマホの音量を下げてください。</string>
+    <string name="header_ptt">PTT</string>
+    <string name="settings_ptt_hold">押し続けて送信（PTT）</string>
+    <string name="settings_ptt_hold_help">オンにすると送信ボタンがトランシーバー式になります：押している間だけ送信し、離すとすぐに受信へ戻ります。オフの場合はタップで送信／受信を切り替えます。</string>
     <string name="btn_stop">停止</string>
     <string name="btn_start">開始</string>
 

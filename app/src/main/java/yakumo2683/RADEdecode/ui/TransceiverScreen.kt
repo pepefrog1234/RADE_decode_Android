@@ -9,6 +9,8 @@ import androidx.compose.animation.core.tween
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
+import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.foundation.interaction.collectIsPressedAsState
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
@@ -140,17 +142,20 @@ fun TransceiverScreen(viewModel: TransceiverViewModel = viewModel()) {
         if (isActive) {
             TxButton(
                 isTx = state.isTx,
+                holdMode = state.pttHoldMode,
                 onClick = {
                     if (state.isTx) {
                         viewModel.switchToRx()
                     } else {
                         viewModel.switchToTx()
                     }
-                }
+                },
+                onHoldPress = { viewModel.switchToTx() },
+                onHoldRelease = { viewModel.pttHoldRelease() }
             )
             if (state.isTx) {
                 Text(
-                    stringResource(R.string.tx_hint_active),
+                    stringResource(if (state.pttHoldMode) R.string.tx_hint_hold_active else R.string.tx_hint_active),
                     fontSize = 11.sp,
                     color = OnSurfaceDim,
                     textAlign = TextAlign.Center,
@@ -158,7 +163,7 @@ fun TransceiverScreen(viewModel: TransceiverViewModel = viewModel()) {
                 )
             } else {
                 Text(
-                    stringResource(R.string.tx_hint_ready),
+                    stringResource(if (state.pttHoldMode) R.string.tx_hint_hold_ready else R.string.tx_hint_ready),
                     fontSize = 11.sp,
                     color = OnSurfaceDim,
                     textAlign = TextAlign.Center,
@@ -516,28 +521,53 @@ fun LevelMeter(label: String, levelDb: Float, modifier: Modifier = Modifier) {
 /* ── TX Button ───────────────────────────────────────────────── */
 
 @Composable
-private fun TxButton(isTx: Boolean, onClick: () -> Unit) {
+private fun TxButton(
+    isTx: Boolean,
+    holdMode: Boolean,
+    onClick: () -> Unit,
+    onHoldPress: () -> Unit,
+    onHoldRelease: () -> Unit
+) {
     val containerColor by animateColorAsState(
         targetValue = if (isTx) Color(0xFF880000) else Red400,
         animationSpec = tween(300), label = "txbtn"
     )
 
+    // Hold-to-talk: key TX while the button is pressed; lifting the finger OR
+    // a gesture cancel (finger slides off the button) both count as release,
+    // so the rig can never stay keyed unintentionally.
+    val interactionSource = remember { MutableInteractionSource() }
+    if (holdMode) {
+        val pressed by interactionSource.collectIsPressedAsState()
+        var holdActive by remember { mutableStateOf(false) }
+        LaunchedEffect(pressed) {
+            if (pressed) {
+                holdActive = true
+                onHoldPress()
+            } else if (holdActive) {
+                holdActive = false
+                onHoldRelease()
+            }
+        }
+    }
+
     Button(
-        onClick = onClick,
+        onClick = { if (!holdMode) onClick() },
         modifier = Modifier
             .fillMaxWidth()
             .height(54.dp),
         shape = RoundedCornerShape(14.dp),
-        colors = ButtonDefaults.buttonColors(containerColor = containerColor)
+        colors = ButtonDefaults.buttonColors(containerColor = containerColor),
+        interactionSource = interactionSource
     ) {
         Icon(
-            imageVector = if (isTx) Icons.Default.Stop else Icons.Default.Mic,
+            imageVector = if (isTx && !holdMode) Icons.Default.Stop else Icons.Default.Mic,
             contentDescription = null,
             modifier = Modifier.size(26.dp)
         )
         Spacer(Modifier.width(10.dp))
         Text(
-            text = if (isTx) stringResource(R.string.btn_back_to_rx) else stringResource(R.string.btn_tx),
+            text = if (isTx && !holdMode) stringResource(R.string.btn_back_to_rx) else stringResource(R.string.btn_tx),
             fontSize = 16.sp,
             fontWeight = FontWeight.Black,
             letterSpacing = 3.sp

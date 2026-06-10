@@ -26,6 +26,11 @@
     <string name="btn_tx">發射</string>
     <string name="tx_hint_ready">對著麥克風說話，然後點擊發射。\n使用手機音量鍵調整發射音量 — ALC 應盡量不起錶。</string>
     <string name="tx_hint_active">發射中… 再次點擊發射以切回接收。\nALC 應盡量不起錶 — 如果 ALC 有偏轉，請降低手機音量。</string>
+    <string name="tx_hint_hold_ready">按住發射鍵並說話，放開即返回接收。\n使用手機音量鍵調整發射音量 — ALC 應盡量不起錶。</string>
+    <string name="tx_hint_hold_active">發射中… 放開按鍵即切回接收。\nALC 應盡量不起錶 — 如果 ALC 有偏轉，請降低手機音量。</string>
+    <string name="header_ptt">PTT</string>
+    <string name="settings_ptt_hold">按住發話（PTT）</string>
+    <string name="settings_ptt_hold_help">開啟後，發射鍵變成對講機式操作：按住才發射，放開立即返回接收。關閉時，點一下發射鍵即可切換發射／接收。</string>
     <string name="btn_stop">停止</string>
     <string name="btn_start">啟動</string>
 

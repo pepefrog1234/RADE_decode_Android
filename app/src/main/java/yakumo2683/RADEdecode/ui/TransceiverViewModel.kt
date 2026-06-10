@@ -62,7 +62,8 @@ class TransceiverViewModel(application: Application) : AndroidViewModel(applicat
         val selectedOutputDeviceId: Int = -1,
         val builtInMicId: Int = -1,
         val serviceBound: Boolean = false,
-        val powerSaveMode: Boolean = false   // 效能節約模式: hide spectrum/waterfall + skip FFT on weak devices
+        val powerSaveMode: Boolean = false,  // 效能節約模式: hide spectrum/waterfall + skip FFT on weak devices
+        val pttHoldMode: Boolean = false     // hold-to-talk: TX is keyed only while the TX button is held
     ) {
         val syncText: String get() = when (syncState) {
             0 -> "SEARCH"
@@ -121,7 +122,8 @@ class TransceiverViewModel(application: Application) : AndroidViewModel(applicat
 
         // Power-save mode (效能節約模式) — off by default; restored across launches.
         _uiState.value = _uiState.value.copy(
-            powerSaveMode = prefs.getBoolean("power_save_mode", false)
+            powerSaveMode = prefs.getBoolean("power_save_mode", false),
+            pttHoldMode = prefs.getBoolean("ptt_hold_mode", false)
         )
         // Load the persistent status message; reporter holds it and re-emits
         // on every (re)connect, so we just need to give it the saved value.
@@ -284,6 +286,29 @@ class TransceiverViewModel(application: Application) : AndroidViewModel(applicat
         prefs.edit().putBoolean("power_save_mode", enabled).apply()
         _uiState.value = _uiState.value.copy(powerSaveMode = enabled)
         audioService?.powerSaveMode = enabled
+    }
+
+    /** Hold-to-talk: when enabled the TX button keys TX only while held. */
+    fun setPttHoldMode(enabled: Boolean) {
+        prefs.edit().putBoolean("ptt_hold_mode", enabled).apply()
+        _uiState.value = _uiState.value.copy(pttHoldMode = enabled)
+    }
+
+    /**
+     * Release of the held TX button. A very short press can be released
+     * before TX has finished engaging (isTx still false), and switchToRx()
+     * would no-op then — leaving the rig keyed. Wait briefly for TX to
+     * engage before switching back.
+     */
+    fun pttHoldRelease() {
+        viewModelScope.launch {
+            var waitedMs = 0
+            while (!_uiState.value.isTx && waitedMs < 3000) {
+                delay(50)
+                waitedMs += 50
+            }
+            if (_uiState.value.isTx) switchToRx()
+        }
     }
 
     fun setReporterGrid(grid: String) {

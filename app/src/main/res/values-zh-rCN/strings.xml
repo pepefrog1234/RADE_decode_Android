@@ -26,6 +26,11 @@
     <string name="btn_tx">发射</string>
     <string name="tx_hint_ready">对着麦克风说话，然后点击发射。\n使用手机音量键调整发射音量 — ALC 应尽量不起表。</string>
     <string name="tx_hint_active">发射中… 再次点击发射以切回接收。\nALC 应尽量不起表 — 如果 ALC 有偏转，请降低手机音量。</string>
+    <string name="tx_hint_hold_ready">按住发射键并说话，松开即返回接收。\n使用手机音量键调整发射音量 — ALC 应尽量不起表。</string>
+    <string name="tx_hint_hold_active">发射中… 松开按键即切回接收。\nALC 应尽量不起表 — 如果 ALC 有偏转，请降低手机音量。</string>
+    <string name="header_ptt">PTT</string>
+    <string name="settings_ptt_hold">按住发话（PTT）</string>
+    <string name="settings_ptt_hold_help">开启后，发射键变成对讲机式操作：按住才发射，松开立即返回接收。关闭时，点一下发射键即可切换发射／接收。</string>
     <string name="btn_stop">停止</string>
     <string name="btn_start">启动</string>
 

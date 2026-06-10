@@ -27,6 +27,11 @@
     <string name="btn_tx">TX</string>
     <string name="tx_hint_ready">Speak into the mic, then tap TX to transmit.\nUse phone volume keys to adjust TX level — ALC should show minimal or no deflection.</string>
     <string name="tx_hint_active">Transmitting… Tap TX again to return to RX.\nALC should show minimal or no deflection — lower phone volume if ALC is moving.</string>
+    <string name="tx_hint_hold_ready">Hold the TX button and speak; release to return to RX.\nUse phone volume keys to adjust TX level — ALC should show minimal or no deflection.</string>
+    <string name="tx_hint_hold_active">Transmitting… Release the button to return to RX.\nALC should show minimal or no deflection — lower phone volume if ALC is moving.</string>
+    <string name="header_ptt">PTT</string>
+    <string name="settings_ptt_hold">Hold-to-Talk PTT</string>
+    <string name="settings_ptt_hold_help">When on, the TX button works like a walkie-talkie: transmit only while the button is held, and return to RX the moment it is released. When off, tapping TX toggles between transmit and receive.</string>
     <string name="btn_stop">STOP</string>
     <string name="btn_start">START</string>
 
