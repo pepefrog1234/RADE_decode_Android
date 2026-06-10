@@ -43,6 +43,20 @@ data class RigModel(val id: Int, val mfg: String, val name: String) {
 private const val TCP_PROFILE_GENERIC = "generic"
 private const val TCP_PROFILE_HERMES_LITE2 = "hermes_lite2"
 
+// Which CAT dialect the HL2 SDR app serves. Thetis and piHPSDR expose
+// Kenwood-style CAT over TCP — NOT the rigctld protocol — so the app must
+// bridge through the bundled rigctld with a "host:port" network rig device.
+// SparkSDR/Quisk do speak the rigctld protocol (hamlib NET rigctl, model 2).
+private const val HL2_BACKEND_THETIS = "thetis"        // hamlib 2048 PowerSDR/Thetis
+private const val HL2_BACKEND_PIHPSDR = "pihpsdr"      // hamlib 2040 OpenHPSDR/PiHPSDR
+private const val HL2_BACKEND_NETRIGCTL = "netrigctl"  // hamlib 2 NET rigctl
+
+private fun hl2BackendModel(backend: String): Int = when (backend) {
+    HL2_BACKEND_PIHPSDR -> 2040
+    HL2_BACKEND_NETRIGCTL -> 2
+    else -> 2048
+}
+
 /** All hamlib 4.5.5 rig models (348 rigs) */
 private val rigModels = listOf(
     // Hamlib
@@ -255,6 +269,9 @@ fun RigScreen(viewModel: TransceiverViewModel = viewModel()) {
     var tcpProfile by remember {
         mutableStateOf(rigPrefs.getString("tcp_profile", TCP_PROFILE_GENERIC) ?: TCP_PROFILE_GENERIC)
     }
+    var hl2Backend by remember {
+        mutableStateOf(rigPrefs.getString("hl2_backend", HL2_BACKEND_THETIS) ?: HL2_BACKEND_THETIS)
+    }
     // Network (Icom RS-BA1 / IC-705 Wi-Fi) mode fields
     var icomPortInput by remember { mutableStateOf(rigPrefs.getString("icom_port", "50001") ?: "50001") }
     var icomUser by remember { mutableStateOf(rigPrefs.getString("icom_user", "") ?: "") }
@@ -376,6 +393,40 @@ fun RigScreen(viewModel: TransceiverViewModel = viewModel()) {
                         }
                     }
                     if (tcpProfile == TCP_PROFILE_HERMES_LITE2) {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            listOf(
+                                "Thetis" to HL2_BACKEND_THETIS,
+                                "piHPSDR" to HL2_BACKEND_PIHPSDR,
+                                "Spark/Quisk" to HL2_BACKEND_NETRIGCTL
+                            ).forEach { (label, backend) ->
+                                val selected = hl2Backend == backend
+                                Surface(
+                                    onClick = { if (!rigState.connected) hl2Backend = backend },
+                                    modifier = Modifier
+                                        .weight(1f)
+                                        .border(
+                                            1.dp,
+                                            if (selected) Cyan400 else MaterialTheme.colorScheme.outline,
+                                            RoundedCornerShape(8.dp)
+                                        ),
+                                    shape = RoundedCornerShape(8.dp),
+                                    color = if (selected) Cyan600.copy(alpha = 0.18f) else MaterialTheme.colorScheme.surface
+                                ) {
+                                    Text(
+                                        text = label,
+                                        modifier = Modifier.padding(vertical = 8.dp, horizontal = 4.dp),
+                                        textAlign = TextAlign.Center,
+                                        fontWeight = FontWeight.Bold,
+                                        fontFamily = FontFamily.Monospace,
+                                        fontSize = 11.sp,
+                                        color = if (selected) Cyan400 else OnSurfaceDim
+                                    )
+                                }
+                            }
+                        }
                         Text(
                             stringResource(R.string.rig_tcp_hl2_hint),
                             color = OnSurfaceDim,
@@ -746,6 +797,7 @@ fun RigScreen(viewModel: TransceiverViewModel = viewModel()) {
                                 .putString("host", hostInput)
                                 .putString("port", portInput)
                                 .putString("tcp_profile", tcpProfile)
+                                .putString("hl2_backend", hl2Backend)
                                 .putString("baud", serialSpeed)
                                 .putInt("rig_index", selectedRigIndex)
                                 .putString("civ_addr", civAddrInput)
@@ -757,12 +809,21 @@ fun RigScreen(viewModel: TransceiverViewModel = viewModel()) {
 
                             if (connMode == 0) {
                                 val port = portInput.toIntOrNull() ?: 4532
-                                viewModel.rigMfg = if (tcpProfile == TCP_PROFILE_HERMES_LITE2) {
-                                    "OpenHPSDR"
+                                if (tcpProfile == TCP_PROFILE_HERMES_LITE2) {
+                                    // Thetis/piHPSDR CAT servers speak Kenwood
+                                    // dialects, not the rigctld protocol — bridge
+                                    // through the bundled rigctld instead of
+                                    // connecting the rigctld client directly.
+                                    viewModel.rigMfg = "OpenHPSDR"
+                                    viewModel.rigStartTcpBridge(
+                                        model = hl2BackendModel(hl2Backend),
+                                        host = hostInput,
+                                        port = port
+                                    )
                                 } else {
-                                    rigModels[selectedRigIndex].mfg
+                                    viewModel.rigMfg = rigModels[selectedRigIndex].mfg
+                                    viewModel.rigConnect(hostInput, port)
                                 }
-                                viewModel.rigConnect(hostInput, port)
                             } else if (connMode == 2) {
                                 val port = icomPortInput.toIntOrNull() ?: 50001
                                 viewModel.rigStartIcomNetwork(hostInput, port, icomUser, icomPass)

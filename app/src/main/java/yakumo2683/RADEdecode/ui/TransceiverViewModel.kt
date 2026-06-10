@@ -521,6 +521,37 @@ class TransceiverViewModel(application: Application) : AndroidViewModel(applicat
         }
     }
 
+    /**
+     * TCP CAT bridge: run the bundled rigctld with a network rig device —
+     * hamlib treats a "host:port" pathname as a TCP connection in place of a
+     * serial port. Needed for SDR apps whose CAT servers speak Kenwood
+     * dialects rather than the rigctld protocol (Thetis = model 2048,
+     * piHPSDR = model 2040); NET rigctl (model 2) covers SparkSDR/Quisk with
+     * hamlib's proper \chk_vfo / \dump_state handshake.
+     */
+    fun rigStartTcpBridge(model: Int, host: String, port: Int) {
+        if (_rigConnecting.value || rigController.isConnected) return
+        _rigConnecting.value = true
+
+        viewModelScope.launch(Dispatchers.IO) {
+            try {
+                rigctldProcess.stop()
+                val ok = rigctldProcess.start(model = model, device = "$host:$port", speed = 0)
+                if (!ok) return@launch
+
+                var connected = false
+                for (attempt in 1..10) {
+                    delay(1000)
+                    rigController.connect("127.0.0.1", 4532)
+                    if (rigController.isConnected) { connected = true; break }
+                }
+                if (!connected) rigctldProcess.stop()
+            } finally {
+                _rigConnecting.value = false
+            }
+        }
+    }
+
     private val _rigConnecting = MutableStateFlow(false)
     val rigConnecting: StateFlow<Boolean> = _rigConnecting.asStateFlow()
 

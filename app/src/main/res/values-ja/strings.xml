@@ -131,7 +131,7 @@
     <string name="rig_network_mode">Wi-Fi（IC-705）</string>
     <string name="rig_tcp_profile_generic">汎用 rigctld</string>
     <string name="rig_tcp_profile_hl2">Hermes-Lite 2</string>
-    <string name="rig_tcp_hl2_hint">Thetis、Quisk、SparkSDR、piHPSDR などの HL2 SDR アプリが提供する rigctl 互換サーバーへ接続します。RADE 音声は Android の音声デバイスを使い、OpenHPSDR I/Q ストリームには直接接続しません。</string>
+    <string name="rig_tcp_hl2_hint">CAT を提供する SDR ソフトを選択してください。接続は内蔵 Hamlib 経由でブリッジされます：Thetis = TCP/IP CAT サーバー、piHPSDR = RigCtl ポート（既定 19090）、Spark/Quisk = rigctld プロトコルサーバー（SparkSDR、Quisk）。RADE 音声は Android の音声デバイスを使い、OpenHPSDR I/Q ストリームには直接接続しません。</string>
     <string name="rig_username">ユーザー名</string>
     <string name="rig_password">パスワード</string>
     <string name="rig_network_hint">IC-705 の内蔵サーバーを使って Wi-Fi で接続します。無線機側で Set ▸ Network ▸ Network Control = ON にし、ネットワークユーザー名とパスワードを設定してください。ここに無線機の IP アドレスを入力します。制御も音声も Wi-Fi で動作し、USB ケーブルは不要です。</string>
