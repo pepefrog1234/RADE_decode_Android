@@ -123,6 +123,7 @@
     <string name="license_title">LGPL-2.1 许可</string>
     <string name="license_description">本应用程序依据 GNU 宽通用公共许可协议第 2.1 版授权使用。</string>
     <string name="license_third_party">第三方库</string>
+    <string name="license_icon_design">应用图标设计</string>
 
     <!-- 电台控制画面 -->
     <string name="header_connection">连接设置</string>

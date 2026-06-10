@@ -123,6 +123,7 @@
     <string name="license_title">LGPL-2.1 ライセンス</string>
     <string name="license_description">このアプリケーションはGNU劣等一般公衆利用許諾書バージョン2.1に基づきライセンスされています。</string>
     <string name="license_third_party">サードパーティライブラリ</string>
+    <string name="license_icon_design">アプリアイコンデザイン</string>
 
     <!-- リグ制御画面 -->
     <string name="header_connection">接続設定</string>

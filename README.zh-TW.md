@@ -309,6 +309,7 @@ cd RADE_decode_Android
 | OkHttp | Square | Apache 2.0 |
 | osmdroid | osmdroid 貢獻者 | Apache 2.0 |
 | [FreeDV Reporter](https://qso.freedv.org) | FreeDV 專案 | — |
+| App 圖示設計 | [megabits.xyz](https://megabits.xyz) | — |
 
 本 App 始於 iOS FreeDV RADE 接收器的 Android 移植，現已發展為完整的收發機。
 

@@ -124,6 +124,7 @@
     <string name="license_title">LGPL-2.1 License</string>
     <string name="license_description">This application is licensed under the GNU Lesser General Public License v2.1.</string>
     <string name="license_third_party">Third-Party Libraries</string>
+    <string name="license_icon_design">App Icon Design</string>
 
     <!-- Rig Screen -->
     <string name="header_connection">CONNECTION</string>

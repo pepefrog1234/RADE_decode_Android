@@ -1,10 +1,12 @@
 package yakumo2683.RADEdecode.ui
 
 import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.ui.platform.LocalUriHandler
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Usb
@@ -538,6 +540,29 @@ fun SettingsScreen(viewModel: TransceiverViewModel = viewModel()) {
                 LicenseRow("Jetpack Compose", "Google", "Apache 2.0")
                 LicenseRow("AndroidX Libraries", "Google", "Apache 2.0")
                 LicenseRow("Play Services Location", "Google", "Proprietary")
+                HorizontalDivider(color = MaterialTheme.colorScheme.outline)
+                val uriHandler = LocalUriHandler.current
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clickable { uriHandler.openUri("https://megabits.xyz") }
+                        .padding(vertical = 2.dp),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.Top
+                ) {
+                    Text(
+                        stringResource(R.string.license_icon_design),
+                        fontSize = 12.sp,
+                        fontWeight = FontWeight.Medium,
+                        color = MaterialTheme.colorScheme.onSurface
+                    )
+                    Text(
+                        "megabits.xyz",
+                        fontSize = 11.sp,
+                        fontFamily = FontFamily.Monospace,
+                        color = Cyan400
+                    )
+                }
             }
         }
 

@@ -123,6 +123,7 @@
     <string name="license_title">LGPL-2.1 授權</string>
     <string name="license_description">本應用程式依據 GNU 較寬鬆通用公共授權條款第 2.1 版授權使用。</string>
     <string name="license_third_party">第三方程式庫</string>
+    <string name="license_icon_design">App 圖示設計</string>
 
     <!-- 電台控制畫面 -->
     <string name="header_connection">連線設定</string>

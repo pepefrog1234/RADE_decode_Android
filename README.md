@@ -352,6 +352,7 @@ Standing on the shoulders of:
 | OkHttp | Square | Apache 2.0 |
 | osmdroid | osmdroid contributors | Apache 2.0 |
 | [FreeDV Reporter](https://qso.freedv.org) | FreeDV project | — |
+| App icon design | [megabits.xyz](https://megabits.xyz) | — |
 
 The app began as an Android port of the iOS FreeDV RADE receiver and has grown
 into a full transceiver.
