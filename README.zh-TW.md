@@ -4,7 +4,7 @@
 ![ABI](https://img.shields.io/badge/ABI-arm64--v8a-blue)
 ![License](https://img.shields.io/badge/license-LGPL--2.1-orange)
 
-[English](README.md) | **繁體中文**
+[English](README.md) | **繁體中文** | [日本語](README.ja.md)
 
 **RADE_decode** 把 Android 手機變成一台完整的 **FreeDV RADE** 短波（HF）數位語音收發機。
 它能即時接收**並發射** RADE（Radio Autoencoder，無線電自編碼器）波形，全部在裝置端完成

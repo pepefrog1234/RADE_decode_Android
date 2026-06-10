@@ -4,7 +4,7 @@
 ![ABI](https://img.shields.io/badge/ABI-arm64--v8a-blue)
 ![License](https://img.shields.io/badge/license-LGPL--2.1-orange)
 
-**English** | [繁體中文](README.zh-TW.md)
+**English** | [繁體中文](README.zh-TW.md) | [日本語](README.ja.md)
 
 **RADE_decode** turns an Android phone into a complete **FreeDV RADE** digital voice
 transceiver for HF amateur radio. It receives *and* transmits the RADE (Radio
