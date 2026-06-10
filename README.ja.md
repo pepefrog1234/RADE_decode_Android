@@ -4,7 +4,7 @@
 ![ABI](https://img.shields.io/badge/ABI-arm64--v8a-blue)
 ![License](https://img.shields.io/badge/license-LGPL--2.1-orange)
 
-[English](README.md) | [繁體中文](README.zh-TW.md) | **日本語**
+[English](README.md) | [繁體中文](README.zh-TW.md) | [简体中文](README.zh-CN.md) | **日本語**
 
 **RADE_decode** は、Android スマートフォンを完全な **FreeDV RADE** HF デジタル音声
 トランシーバーに変えるアプリです。RADE（Radio Autoencoder）波形をリアルタイムで
