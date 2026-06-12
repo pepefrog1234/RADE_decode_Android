@@ -236,6 +236,8 @@ class AudioService : LifecycleService() {
 
     private var networkAudioMode = false
     private var netTxPumpJob: Job? = null
+    /** Counted down when the net TX pump has drained the EOO out of the ring. */
+    private var netTxPumpDone: java.util.concurrent.CountDownLatch? = null
 
     /**
      * RX over Wi-Fi: decode audio arriving on UDP 50003 (via [icomNetwork]) and
@@ -351,29 +353,37 @@ class AudioService : LifecycleService() {
         net: yakumo2683.RADEdecode.network.IcomNetworkManager
     ) {
         val n = yakumo2683.RADEdecode.network.IcomNetworkManager.NET_AUDIO_FRAME_SAMPLES
+        val done = java.util.concurrent.CountDownLatch(1)
+        netTxPumpDone = done
         netTxPumpJob = lifecycleScope.launch(Dispatchers.IO) {
-            val frame = ShortArray(n)
-            // Deadline-based pacing. The radio expects a steady 50 frames/sec
-            // (one 20 ms frame). A plain delay(20) sleeps 20 ms PLUS the JNI+UDP
-            // work each loop, so it under-delivers (~45 fps): the radio's audio
-            // buffer starves every ~1-2 s (the reported dropouts) and the modem
-            // sample stream is broken so the far end can't decode. Anchoring each
-            // send to an absolute deadline keeps the long-term rate at exactly
-            // 50 fps regardless of per-loop overhead.
-            val periodNs = 20_000_000L  // 20 ms
-            var nextDeadline = System.nanoTime() + periodNs
-            while (isActive && bridge.isTxRunning) {
-                val got = bridge.fillNetTxFrame(frame, n)
-                if (got > 0) net.sendAudioFrame(frame)
-                val sleepNs = nextDeadline - System.nanoTime()
-                if (sleepNs > 0) {
-                    delay(sleepNs / 1_000_000L)
-                } else {
-                    // Fell behind (GC/scheduler hiccup) — resync so we don't fire
-                    // a burst of catch-up frames that would overrun the radio.
-                    nextDeadline = System.nanoTime()
+            try {
+                val frame = ShortArray(n)
+                // Deadline-based pacing. The radio expects a steady 50 frames/sec
+                // (one 20 ms frame). A plain delay(20) sleeps 20 ms PLUS the JNI+UDP
+                // work each loop, so it under-delivers (~45 fps): the radio's audio
+                // buffer starves every ~1-2 s (the reported dropouts) and the modem
+                // sample stream is broken so the far end can't decode. Anchoring each
+                // send to an absolute deadline keeps the long-term rate at exactly
+                // 50 fps regardless of per-loop overhead.
+                val periodNs = 20_000_000L  // 20 ms
+                var nextDeadline = System.nanoTime() + periodNs
+                // Keep pumping after TX stops until the ring is empty — the tail
+                // is the EOO (callsign) frame queued by stopTx().
+                while (isActive && (bridge.isTxRunning || bridge.nativeTxRingAvailable() > 0)) {
+                    val got = bridge.fillNetTxFrame(frame, n)
+                    if (got > 0) net.sendAudioFrame(frame)
+                    val sleepNs = nextDeadline - System.nanoTime()
+                    if (sleepNs > 0) {
+                        delay(sleepNs / 1_000_000L)
+                    } else {
+                        // Fell behind (GC/scheduler hiccup) — resync so we don't fire
+                        // a burst of catch-up frames that would overrun the radio.
+                        nextDeadline = System.nanoTime()
+                    }
+                    nextDeadline += periodNs
                 }
-                nextDeadline += periodNs
+            } finally {
+                done.countDown()
             }
         }
     }
@@ -446,13 +456,25 @@ class AudioService : LifecycleService() {
     }
 
     fun stopTransmitting() {
-        stopTxAudioTrackPump()
-        stopNetTxPump()
         stopTxPolling()
         stopNotificationUpdates()
+
+        // Stop the mic/encoder and queue the EOO (callsign) frame into the TX
+        // ring. On the Oboe output path this blocks until the ring has played
+        // out; on the AudioTrack/network paths the pumps below drain it.
+        audioBridge?.stopTx()
+
+        // Wait for the pump to finish playing the EOO before tearing anything
+        // down, so the callsign makes it over the air before PTT drops.
+        awaitTxPumpDrained(txPumpDone)
+        awaitTxPumpDrained(netTxPumpDone)
+        txPumpDone = null
+        netTxPumpDone = null
+
+        stopTxAudioTrackPump()
+        stopNetTxPump()
         networkAudioMode = false
 
-        audioBridge?.stopTx()
         audioBridge?.release()
         audioBridge = null
 
@@ -460,10 +482,21 @@ class AudioService : LifecycleService() {
         stopForeground(STOP_FOREGROUND_REMOVE)
     }
 
+    /** Block (bounded) until a TX pump has drained the ring and played it out. */
+    private fun awaitTxPumpDrained(latch: java.util.concurrent.CountDownLatch?) {
+        if (latch == null) return
+        try {
+            latch.await(3, java.util.concurrent.TimeUnit.SECONDS)
+        } catch (_: InterruptedException) {
+        }
+    }
+
     /* ── TX AudioTrack pump for USB audio output ────────────── */
 
     private var txAudioTrack: AudioTrack? = null
     private var txPumpJob: Job? = null
+    /** Counted down when the TX pump has drained + played out the EOO. */
+    private var txPumpDone: java.util.concurrent.CountDownLatch? = null
 
     private fun startTxAudioTrackPump(bridge: yakumo2683.RADEdecode.AudioBridge, outputDeviceId: Int) {
         val sampleRate = 8000  // modem rate
@@ -508,25 +541,42 @@ class AudioService : LifecycleService() {
         txAudioTrack = track
 
         // Pump: read from native ring buffer → write to AudioTrack
+        val done = java.util.concurrent.CountDownLatch(1)
+        txPumpDone = done
         txPumpJob = lifecycleScope.launch(Dispatchers.IO) {
             val buf = ShortArray(800)  // 100ms at 8kHz
+            var framesWritten = 0L
             try {
                 while (isActive && bridge.isTxRunning) {
                     val got = bridge.nativeReadTxRing(buf, buf.size)
                     if (got > 0) {
                         track.write(buf, 0, got)
+                        framesWritten += got
                     } else {
                         delay(10)
                     }
                 }
-                // Drain remaining samples
+                // TX stopped: what's left in the ring is the EOO (callsign)
+                // frame queued by stopTx(). Drain it, then wait until the
+                // track has actually played it out before signalling done —
+                // stopTransmitting() unkeys nothing until then.
                 var remaining = bridge.nativeReadTxRing(buf, buf.size)
-                while (remaining > 0) {
+                while (isActive && remaining > 0) {
                     track.write(buf, 0, remaining)
+                    framesWritten += remaining
                     remaining = bridge.nativeReadTxRing(buf, buf.size)
+                }
+                var waitedMs = 0
+                while (isActive && waitedMs < 1500 &&
+                    track.playbackHeadPosition.toLong() < framesWritten
+                ) {
+                    delay(20)
+                    waitedMs += 20
                 }
             } catch (_: IllegalStateException) {
                 // AudioTrack was released — normal during stop
+            } finally {
+                done.countDown()
             }
         }
     }

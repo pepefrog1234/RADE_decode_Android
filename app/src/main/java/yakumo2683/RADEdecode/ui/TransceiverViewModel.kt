@@ -24,6 +24,11 @@ import yakumo2683.RADEdecode.network.RigctldProcess
 import yakumo2683.RADEdecode.service.AudioService
 import yakumo2683.RADEdecode.usb.UsbSerialManager
 
+/** RF tail between EOO playout and PTT release (ms): lets the rig flush its own
+ *  USB-audio/TX chain so the end of the callsign isn't clipped. Other SDR apps
+ *  insert a similar ~200ms TX delay. */
+private const val TX_PTT_TAIL_MS = 200L
+
 class TransceiverViewModel(application: Application) : AndroidViewModel(application) {
 
     /* ── FreeDV Reporter ────────────────────────────────────── */
@@ -80,6 +85,9 @@ class TransceiverViewModel(application: Application) : AndroidViewModel(applicat
 
     private var audioService: AudioService? = null
     private var serviceCollectJob: Job? = null
+
+    /** In-flight TX→RX transition (EOO drain → PTT tail → unkey → resume RX). */
+    private var txStopJob: Job? = null
 
     private val serviceConnection = object : ServiceConnection {
         override fun onServiceConnected(name: ComponentName?, binder: IBinder?) {
@@ -347,15 +355,29 @@ class TransceiverViewModel(application: Application) : AndroidViewModel(applicat
         }
     }
 
-    private fun stopTransmitting() {
-        audioService?.stopTransmitting()
-    }
-
     /* ── Mode switching (while engine is active) ────────────── */
 
     /** Switch from RX → TX (stops RX, starts TX, keys PTT) */
     fun switchToTx() {
-        if (!_uiState.value.isRunning) return
+        if (txStopJob?.isActive == true) {
+            // The previous over is still draining its EOO — queue this key-press
+            // behind it instead of dropping it (quick re-key in hold-to-talk).
+            viewModelScope.launch {
+                txStopJob?.join()
+                var waitedMs = 0
+                while (!_uiState.value.isRunning && waitedMs < 1000) {
+                    delay(50)
+                    waitedMs += 50
+                }
+                doSwitchToTx()
+            }
+            return
+        }
+        doSwitchToTx()
+    }
+
+    private fun doSwitchToTx() {
+        if (!_uiState.value.isRunning || _uiState.value.isTx) return
         // Auto-PTT via rigctld (both paths)
         if (rigController.isConnected) {
             viewModelScope.launch { rigController.setPtt(true) }
@@ -383,17 +405,15 @@ class TransceiverViewModel(application: Application) : AndroidViewModel(applicat
         )
     }
 
-    /** Switch from TX → RX (unkeys PTT, stops TX, resumes RX) */
+    /** Switch from TX → RX: stop TX (drains the EOO callsign frame), hold the
+     *  rig keyed for a short RF tail, then unkey PTT and resume RX. */
     fun switchToRx() {
         Log.i("TransceiverVM", "switchToRx: isTx=${_uiState.value.isTx}, rigConnected=${rigController.isConnected}")
         if (!_uiState.value.isTx) return
-        // Auto-PTT off
-        if (rigController.isConnected) {
-            viewModelScope.launch { rigController.setPtt(false) }
-        }
-        stopTransmitting()
-        // Resume RX
-        viewModelScope.launch {
+        if (txStopJob?.isActive == true) return
+        txStopJob = viewModelScope.launch {
+            stopTxAndUnkeyPtt()
+            // Resume RX
             delay(100) // brief pause for clean transition
             if (useNetworkAudio()) {
                 audioService?.startNetworkDecoding()
@@ -406,13 +426,33 @@ class TransceiverViewModel(application: Application) : AndroidViewModel(applicat
         }
     }
 
+    /**
+     * Stop TX and unkey the rig in the order the air interface needs:
+     * stopTransmitting() blocks until the EOO (callsign) frame has fully
+     * played out of the audio path, a short tail lets the rig flush its own
+     * TX audio chain, and only then is PTT dropped. Unkeying first (the old
+     * behaviour) cut the callsign off mid-air.
+     */
+    private suspend fun stopTxAndUnkeyPtt() {
+        withContext(Dispatchers.IO) { audioService?.stopTransmitting() }
+        delay(TX_PTT_TAIL_MS)
+        if (rigController.isConnected) rigController.setPtt(false)
+    }
+
     /** Stop everything and tear down the service */
     fun stopAll() {
-        if (_uiState.value.isTx) stopTransmitting()
-        else stopReceiving()
-
         val app = getApplication<Application>()
-        app.stopService(Intent(app, AudioService::class.java))
+        if (_uiState.value.isTx || txStopJob?.isActive == true) {
+            // Let the EOO finish over the air and unkey before the service dies.
+            viewModelScope.launch {
+                txStopJob?.join()
+                if (audioService?.state?.value?.isTx == true) stopTxAndUnkeyPtt()
+                app.stopService(Intent(app, AudioService::class.java))
+            }
+        } else {
+            stopReceiving()
+            app.stopService(Intent(app, AudioService::class.java))
+        }
         _uiState.value = _uiState.value.copy(
             isRunning = false,
             isTx = false,

@@ -335,6 +335,7 @@ class AudioBridge(private val context: Context) {
     private external fun nativeGetTxLevel(): Float
     private external fun nativeSetTxOutputDevice(deviceId: Int)
     external fun nativeReadTxRing(outBuf: ShortArray, maxSamples: Int): Int
+    external fun nativeTxRingAvailable(): Int
     external fun nativeIsTxUsingJavaOutput(): Boolean
 
     /* Network audio (Icom RS-BA1 / IC-705 Wi-Fi) */

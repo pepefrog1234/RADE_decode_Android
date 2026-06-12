@@ -538,6 +538,16 @@ JNI_AUDIO(nativeIsTxUsingJavaOutput)(JNIEnv *env, jobject /* this */) {
     return g_audioEngine->isTxUsingJavaOutput() ? JNI_TRUE : JNI_FALSE;
 }
 
+/**
+ * Samples still queued in the TX ring buffer (8kHz int16).
+ * After stopTx() this is the EOO (callsign) frame waiting to be drained.
+ */
+JNIEXPORT jint JNICALL
+JNI_AUDIO(nativeTxRingAvailable)(JNIEnv *env, jobject /* this */) {
+    if (!g_audioEngine) return 0;
+    return g_audioEngine->txRingAvailable();
+}
+
 JNIEXPORT void JNICALL
 JNI_AUDIO(nativeSetTxOutputDevice)(JNIEnv *env, jobject /* this */, jint deviceId) {
     if (g_audioEngine) g_audioEngine->setTxOutputDevice(deviceId);

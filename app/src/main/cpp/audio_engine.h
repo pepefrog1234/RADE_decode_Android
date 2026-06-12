@@ -87,6 +87,8 @@ public:
     void setTxOutputDevice(int deviceId);
     float getTxLevel() const { return txInputLevelDb_.load(); }
     int readTxRing(int16_t *buf, int maxSamples) { return txPlaybackRing_.read(buf, maxSamples); }
+    /** Samples still queued for TX playback (used to drain the EOO after stopTx). */
+    int txRingAvailable() { return txPlaybackRing_.availableToRead(); }
     bool isTxUsingJavaOutput() const { return txUseJavaOutput_; }
 
     /* ── Network audio (Icom RS-BA1 / IC-705 Wi-Fi) ──────────────
