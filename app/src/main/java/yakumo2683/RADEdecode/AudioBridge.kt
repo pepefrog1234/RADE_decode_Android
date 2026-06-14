@@ -68,6 +68,10 @@ class AudioBridge(private val context: Context) {
     /** Switch decoded RX playback to a different output device. */
     fun setOutputDevice(deviceId: Int) = nativeSetOutputDevice(deviceId)
 
+    /** Switch RX input and decoded-speech output together. */
+    fun setDevices(inputDeviceId: Int, outputDeviceId: Int) =
+        nativeSetDevices(inputDeviceId, outputDeviceId)
+
     /** Set output volume (0.0 to 1.0). */
     fun setOutputVolume(volume: Float) = nativeSetOutputVolume(volume)
 
@@ -305,6 +309,7 @@ class AudioBridge(private val context: Context) {
     private external fun nativeIsRunning(): Boolean
     private external fun nativeSetInputDevice(deviceId: Int)
     private external fun nativeSetOutputDevice(deviceId: Int)
+    private external fun nativeSetDevices(inputDeviceId: Int, outputDeviceId: Int)
     private external fun nativeSetOutputVolume(volume: Float)
     private external fun nativeGetSyncState(): Int
     private external fun nativeGetSnrEstimate(): Int

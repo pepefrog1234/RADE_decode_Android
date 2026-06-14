@@ -11,8 +11,8 @@ android {
         applicationId = "yakumo2683.RADEdecode"
         minSdk = 26
         targetSdk = 35
-        versionCode = 10522
-        versionName = "1.5.22-audio-routing"
+        versionCode = 10523
+        versionName = "1.5.23-audio-input-follow"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 

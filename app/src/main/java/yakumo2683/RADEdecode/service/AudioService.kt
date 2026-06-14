@@ -223,6 +223,30 @@ class AudioService : LifecycleService() {
         bridge.setOutputDevice(resolved)
     }
 
+    fun setRxAudioDevices(inputDeviceId: Int?, outputDeviceId: Int) {
+        val bridge = audioBridge ?: return
+        if (!_state.value.isRunning || _state.value.isTx) return
+
+        val resolvedOutput = resolveRxOutputDeviceId(bridge, outputDeviceId)
+        if (networkAudioMode || inputDeviceId == null) {
+            Log.i(
+                "AudioService",
+                "setRxAudioDevices: outputOnly selection=$outputDeviceId resolved=$resolvedOutput"
+            )
+            bridge.setOutputDevice(resolvedOutput)
+            return
+        }
+
+        val resolvedInput = if (inputDeviceId > 0) inputDeviceId else -1
+        Log.i(
+            "AudioService",
+            "setRxAudioDevices: input=$resolvedInput outputSelection=$outputDeviceId resolvedOutput=$resolvedOutput"
+        )
+        bridge.setDevices(resolvedInput, resolvedOutput)
+        bridge.disableInputEffects()
+        currentInputDeviceId = resolvedInput
+    }
+
     /**
      * TX USB audio output level (0..1). Lowered from the previous hard-coded 5%
      * because that was too quiet for some rigs (e.g. IC-7300) — ALC barely moved

@@ -191,6 +191,12 @@ void AudioEngine::setOutputDevice(int deviceId) {
     if (running_.load()) restartOutputStream();
 }
 
+void AudioEngine::setDevices(int inputDeviceId, int outputDeviceId) {
+    inputDeviceId_ = (inputDeviceId > 0) ? inputDeviceId : 0;
+    outputDeviceId_ = (outputDeviceId > 0) ? outputDeviceId : 0;
+    if (running_.load()) { stop(); start(inputDeviceId_, outputDeviceId_); }
+}
+
 void AudioEngine::setOutputVolume(float volume) {
     outputVolume_.store(std::clamp(volume, 0.0f, 1.0f));
 }

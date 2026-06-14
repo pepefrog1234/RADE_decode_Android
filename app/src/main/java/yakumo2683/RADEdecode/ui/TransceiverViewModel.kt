@@ -113,6 +113,8 @@ class TransceiverViewModel(application: Application) : AndroidViewModel(applicat
     }
 
     private val prefs = application.getSharedPreferences("rade_prefs", Context.MODE_PRIVATE)
+    private val savedRxInputDeviceId: Int
+        get() = prefs.getInt("rx_input_device", -1)
 
     /** User's Reporter toggle preference, independent of whether reporter is actually connected. */
     private val _reporterEnabledPref = MutableStateFlow(false)
@@ -133,6 +135,7 @@ class TransceiverViewModel(application: Application) : AndroidViewModel(applicat
         _uiState.value = _uiState.value.copy(
             powerSaveMode = prefs.getBoolean("power_save_mode", false),
             pttHoldMode = prefs.getBoolean("ptt_hold_mode", false),
+            selectedDeviceId = savedRxInputDeviceId,
             selectedRxOutputDeviceId = prefs.getInt(
                 "rx_output_device",
                 AudioService.RX_OUTPUT_AUTO
@@ -479,13 +482,22 @@ class TransceiverViewModel(application: Application) : AndroidViewModel(applicat
     /* ── Device / settings ─────────────────────────────────── */
 
     fun selectDevice(deviceId: Int) {
+        prefs.edit().putInt("rx_input_device", deviceId).apply()
         _uiState.value = _uiState.value.copy(selectedDeviceId = deviceId)
     }
 
     fun selectRxOutputDevice(deviceId: Int) {
+        val current = _uiState.value
+        val pairedInput = findInputForRxOutput(deviceId, current.devices, current.outputDevices)
+        pairedInput?.let {
+            prefs.edit().putInt("rx_input_device", it.id).apply()
+        }
         prefs.edit().putInt("rx_output_device", deviceId).apply()
-        _uiState.value = _uiState.value.copy(selectedRxOutputDeviceId = deviceId)
-        audioService?.setRxOutputDevice(deviceId)
+        _uiState.value = _uiState.value.copy(
+            selectedDeviceId = pairedInput?.id ?: current.selectedDeviceId,
+            selectedRxOutputDeviceId = deviceId
+        )
+        audioService?.setRxAudioDevices(pairedInput?.id, deviceId)
     }
 
     fun selectOutputDevice(deviceId: Int) {
@@ -524,10 +536,6 @@ class TransceiverViewModel(application: Application) : AndroidViewModel(applicat
         val current = _uiState.value
         val inputIds = devices.map { it.id }.toSet()
         val outputIds = outputDevices.map { it.id }.toSet()
-        val selectedInputId = when {
-            current.selectedDeviceId > 0 && current.selectedDeviceId in inputIds -> current.selectedDeviceId
-            else -> usbInput?.id ?: current.selectedDeviceId
-        }
         val selectedTxOutputId = when {
             current.selectedOutputDeviceId > 0 && current.selectedOutputDeviceId in outputIds -> current.selectedOutputDeviceId
             else -> usbOutput?.id ?: current.selectedOutputDeviceId
@@ -536,6 +544,13 @@ class TransceiverViewModel(application: Application) : AndroidViewModel(applicat
             current.selectedRxOutputDeviceId > 0 && current.selectedRxOutputDeviceId !in outputIds ->
                 AudioService.RX_OUTPUT_AUTO
             else -> current.selectedRxOutputDeviceId
+        }
+        val pairedInput = findInputForRxOutput(selectedRxOutputId, devices, outputDevices)
+        val selectedInputId = when {
+            current.selectedDeviceId > 0 && current.selectedDeviceId in inputIds -> current.selectedDeviceId
+            savedRxInputDeviceId > 0 && savedRxInputDeviceId in inputIds -> savedRxInputDeviceId
+            pairedInput != null -> pairedInput.id
+            else -> usbInput?.id ?: current.selectedDeviceId
         }
 
         _uiState.value = _uiState.value.copy(
@@ -546,6 +561,41 @@ class TransceiverViewModel(application: Application) : AndroidViewModel(applicat
             selectedRxOutputDeviceId = selectedRxOutputId,
             selectedOutputDeviceId = selectedTxOutputId
         )
+    }
+
+    private fun findInputForRxOutput(
+        outputSelection: Int,
+        inputDevices: List<AudioBridge.AudioDevice>,
+        outputDevices: List<AudioBridge.AudioDevice>
+    ): AudioBridge.AudioDevice? {
+        val output = resolveRxOutputForPairing(outputSelection, outputDevices) ?: return null
+        if (!output.isUsb && !output.isBluetooth && !output.isWired) return null
+
+        fun sameFamily(input: AudioBridge.AudioDevice): Boolean = when {
+            output.isBluetooth -> input.isBluetooth
+            output.isUsb -> input.isUsb
+            output.isWired -> input.isWired
+            else -> false
+        }
+
+        return inputDevices.firstOrNull { sameFamily(it) && it.name == output.name }
+            ?: inputDevices.firstOrNull { sameFamily(it) }
+    }
+
+    private fun resolveRxOutputForPairing(
+        outputSelection: Int,
+        outputDevices: List<AudioBridge.AudioDevice>
+    ): AudioBridge.AudioDevice? {
+        if (outputSelection > 0) return outputDevices.firstOrNull { it.id == outputSelection }
+
+        return if (outputSelection == AudioService.RX_OUTPUT_SYSTEM_DEFAULT) {
+            outputDevices.firstOrNull { it.isBluetooth }
+                ?: outputDevices.firstOrNull { it.isWired }
+                ?: outputDevices.firstOrNull { it.isUsb }
+        } else {
+            outputDevices.firstOrNull { it.isBluetooth }
+                ?: outputDevices.firstOrNull { it.isWired }
+        }
     }
 
     /* ── Rig control (rigctld) ─────────────────────────────── */

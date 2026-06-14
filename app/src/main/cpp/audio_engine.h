@@ -107,6 +107,7 @@ public:
 
     void setInputDevice(int deviceId);
     void setOutputDevice(int deviceId);
+    void setDevices(int inputDeviceId, int outputDeviceId);
     void setOutputVolume(float volume);
     void setInputGain(float gain);
     float getInputGain() const { return inputGain_.load(); }

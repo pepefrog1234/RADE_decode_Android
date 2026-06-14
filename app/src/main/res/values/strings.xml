@@ -105,9 +105,9 @@
     <string name="settings_volume_help">Decoded speech playback level.</string>
     <string name="settings_rx_output_device">RX output device</string>
     <string name="settings_rx_output_auto">Auto</string>
-    <string name="settings_rx_output_auto_help">Use Bluetooth or wired audio when connected; otherwise use the phone speaker.</string>
+    <string name="settings_rx_output_auto_help">Use Bluetooth or wired audio when connected; otherwise use the phone speaker. Matching input switches too when available.</string>
     <string name="settings_rx_output_system">System default</string>
-    <string name="settings_rx_output_system_help">Let Android route playback, useful for USB DACs and external speakers.</string>
+    <string name="settings_rx_output_system_help">Let Android route playback, useful for USB DACs and external speakers. Matching input switches too when available.</string>
     <string name="header_tx_output">TX OUTPUT</string>
     <string name="settings_tx_level">USB TX level</string>
     <string name="settings_tx_level_help">Drive level of the RADE waveform into the rig\'s USB audio input. Too low → ALC barely moves, reduced TX power. Too high → ALC slams, distorted signal. Also check your rig\'s USB MOD Level (IC-7300: Menu → SET → Connectors → USB MOD Level).</string>
