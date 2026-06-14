@@ -101,7 +101,12 @@
     <string name="settings_gain_help">USB音声入力の微弱信号を増幅します。ピークレベルが -15〜-5 dBFS になるよう調整してください。</string>
     <string name="header_rx_output">受信出力</string>
     <string name="settings_volume">音量</string>
-    <string name="settings_volume_help">送信出力レベルも同時に制御します。リグのALCメーターが振れないよう調整してください——ALCをリニア領域に保ち（読み取りなし/バー表示なし）、信号の歪みやスプラッタを防ぎます。</string>
+    <string name="settings_volume_help">デコード音声の再生音量です。</string>
+    <string name="settings_rx_output_device">受信出力デバイス</string>
+    <string name="settings_rx_output_auto">自動</string>
+    <string name="settings_rx_output_auto_help">Bluetooth または有線オーディオが接続されていれば使用し、それ以外はスマホのスピーカーを使います。</string>
+    <string name="settings_rx_output_system">システム既定</string>
+    <string name="settings_rx_output_system_help">Android に再生経路を任せます。USB DAC や外部スピーカーに有効です。</string>
     <string name="header_tx_output">送信出力</string>
     <string name="settings_tx_level">USB 送信レベル</string>
     <string name="settings_tx_level_help">リグの USB 音声入力へ送る RADE 波形の強さ。低すぎると ALC がほとんど動かず送信出力が下がり、高すぎると ALC が振り切れて信号が歪みます。リグ側の USB MOD Level も確認してください（IC-7300：メニュー → SET → Connectors → USB MOD Level）。</string>

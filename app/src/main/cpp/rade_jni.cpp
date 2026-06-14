@@ -402,6 +402,11 @@ JNI_AUDIO(nativeSetInputDevice)(JNIEnv *env, jobject /* this */, jint deviceId) 
 }
 
 JNIEXPORT void JNICALL
+JNI_AUDIO(nativeSetOutputDevice)(JNIEnv *env, jobject /* this */, jint deviceId) {
+    if (g_audioEngine) g_audioEngine->setOutputDevice(deviceId);
+}
+
+JNIEXPORT void JNICALL
 JNI_AUDIO(nativeSetOutputVolume)(JNIEnv *env, jobject /* this */, jfloat volume) {
     if (g_audioEngine) g_audioEngine->setOutputVolume(volume);
 }

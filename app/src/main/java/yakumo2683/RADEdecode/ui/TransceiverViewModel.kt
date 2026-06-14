@@ -64,6 +64,7 @@ class TransceiverViewModel(application: Application) : AndroidViewModel(applicat
         val devices: List<AudioBridge.AudioDevice> = emptyList(),
         val outputDevices: List<AudioBridge.AudioDevice> = emptyList(),
         val selectedDeviceId: Int = -1,
+        val selectedRxOutputDeviceId: Int = AudioService.RX_OUTPUT_AUTO,
         val selectedOutputDeviceId: Int = -1,
         val builtInMicId: Int = -1,
         val serviceBound: Boolean = false,
@@ -131,7 +132,11 @@ class TransceiverViewModel(application: Application) : AndroidViewModel(applicat
         // Power-save mode (效能節約模式) — off by default; restored across launches.
         _uiState.value = _uiState.value.copy(
             powerSaveMode = prefs.getBoolean("power_save_mode", false),
-            pttHoldMode = prefs.getBoolean("ptt_hold_mode", false)
+            pttHoldMode = prefs.getBoolean("ptt_hold_mode", false),
+            selectedRxOutputDeviceId = prefs.getInt(
+                "rx_output_device",
+                AudioService.RX_OUTPUT_AUTO
+            )
         )
         // Load the persistent status message; reporter holds it and re-emits
         // on every (re)connect, so we just need to give it the saved value.
@@ -256,10 +261,13 @@ class TransceiverViewModel(application: Application) : AndroidViewModel(applicat
                 attempts++
             }
             if (useNetworkAudio()) {
-                audioService?.startNetworkDecoding()
+                audioService?.startNetworkDecoding(
+                    outputDeviceId = _uiState.value.selectedRxOutputDeviceId
+                )
             } else {
                 audioService?.startDecoding(
                     inputDeviceId = _uiState.value.selectedDeviceId,
+                    outputDeviceId = _uiState.value.selectedRxOutputDeviceId,
                     recordWav = false
                 )
             }
@@ -416,10 +424,13 @@ class TransceiverViewModel(application: Application) : AndroidViewModel(applicat
             // Resume RX
             delay(100) // brief pause for clean transition
             if (useNetworkAudio()) {
-                audioService?.startNetworkDecoding()
+                audioService?.startNetworkDecoding(
+                    outputDeviceId = _uiState.value.selectedRxOutputDeviceId
+                )
             } else {
                 audioService?.startDecoding(
                     inputDeviceId = _uiState.value.selectedDeviceId,
+                    outputDeviceId = _uiState.value.selectedRxOutputDeviceId,
                     recordWav = false
                 )
             }
@@ -471,6 +482,12 @@ class TransceiverViewModel(application: Application) : AndroidViewModel(applicat
         _uiState.value = _uiState.value.copy(selectedDeviceId = deviceId)
     }
 
+    fun selectRxOutputDevice(deviceId: Int) {
+        prefs.edit().putInt("rx_output_device", deviceId).apply()
+        _uiState.value = _uiState.value.copy(selectedRxOutputDeviceId = deviceId)
+        audioService?.setRxOutputDevice(deviceId)
+    }
+
     fun selectOutputDevice(deviceId: Int) {
         _uiState.value = _uiState.value.copy(selectedOutputDeviceId = deviceId)
     }
@@ -504,13 +521,30 @@ class TransceiverViewModel(application: Application) : AndroidViewModel(applicat
         val usbOutput = outputDevices.firstOrNull { it.isUsb }
         val builtInMic = bridge.findBuiltInMic()
         bridge.release()
+        val current = _uiState.value
+        val inputIds = devices.map { it.id }.toSet()
+        val outputIds = outputDevices.map { it.id }.toSet()
+        val selectedInputId = when {
+            current.selectedDeviceId > 0 && current.selectedDeviceId in inputIds -> current.selectedDeviceId
+            else -> usbInput?.id ?: current.selectedDeviceId
+        }
+        val selectedTxOutputId = when {
+            current.selectedOutputDeviceId > 0 && current.selectedOutputDeviceId in outputIds -> current.selectedOutputDeviceId
+            else -> usbOutput?.id ?: current.selectedOutputDeviceId
+        }
+        val selectedRxOutputId = when {
+            current.selectedRxOutputDeviceId > 0 && current.selectedRxOutputDeviceId !in outputIds ->
+                AudioService.RX_OUTPUT_AUTO
+            else -> current.selectedRxOutputDeviceId
+        }
 
         _uiState.value = _uiState.value.copy(
             devices = devices,
             outputDevices = outputDevices,
-            builtInMicId = builtInMic?.id ?: _uiState.value.builtInMicId,
-            selectedDeviceId = usbInput?.id ?: _uiState.value.selectedDeviceId,
-            selectedOutputDeviceId = usbOutput?.id ?: _uiState.value.selectedOutputDeviceId
+            builtInMicId = builtInMic?.id ?: current.builtInMicId,
+            selectedDeviceId = selectedInputId,
+            selectedRxOutputDeviceId = selectedRxOutputId,
+            selectedOutputDeviceId = selectedTxOutputId
         )
     }
 

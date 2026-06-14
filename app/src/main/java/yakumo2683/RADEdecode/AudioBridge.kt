@@ -49,11 +49,6 @@ class AudioBridge(private val context: Context) {
      * Start the audio engine with the specified devices.
      * @param inputDeviceId  Android AudioDeviceInfo ID for capture, or -1 for default.
      * @param outputDeviceId Android AudioDeviceInfo ID for playback, or -1 for default.
-     *   Setting this is important when a USB audio device is connected — by default
-     *   Android routes Media output to USB, which sends decoded speech back into the
-     *   rig instead of the phone's speaker. Callers should typically pass the
-     *   built-in speaker here (see [findBuiltInSpeaker]); wired headsets and BT
-     *   still override via Android's routing policy.
      */
     fun start(inputDeviceId: Int = -1, outputDeviceId: Int = -1): Boolean =
         nativeStart(inputDeviceId, outputDeviceId)
@@ -69,6 +64,9 @@ class AudioBridge(private val context: Context) {
 
     /** Switch to a different input device. */
     fun setInputDevice(deviceId: Int) = nativeSetInputDevice(deviceId)
+
+    /** Switch decoded RX playback to a different output device. */
+    fun setOutputDevice(deviceId: Int) = nativeSetOutputDevice(deviceId)
 
     /** Set output volume (0.0 to 1.0). */
     fun setOutputVolume(volume: Float) = nativeSetOutputVolume(volume)
@@ -237,27 +235,18 @@ class AudioBridge(private val context: Context) {
         val name: String,
         val type: Int,
         val typeName: String,
-        val isUsb: Boolean
+        val isUsb: Boolean,
+        val isBluetooth: Boolean = false,
+        val isWired: Boolean = false
     )
 
-    /** List available audio input devices, deduplicated by type. */
+    /** List available audio input devices. */
     fun getInputDevices(): List<AudioDevice> {
         val am = context.getSystemService(Context.AUDIO_SERVICE) as AudioManager
         return am.getDevices(AudioManager.GET_DEVICES_INPUTS)
-            .groupBy { it.type }
-            .map { (_, devices) -> devices.first() }  // one per type
-            .map { info ->
-                AudioDevice(
-                    id = info.id,
-                    name = info.productName?.toString() ?: "Unknown",
-                    type = info.type,
-                    typeName = deviceTypeName(info.type),
-                    isUsb = info.type == AudioDeviceInfo.TYPE_USB_DEVICE ||
-                            info.type == AudioDeviceInfo.TYPE_USB_ACCESSORY ||
-                            info.type == AudioDeviceInfo.TYPE_USB_HEADSET
-                )
-            }
-            .sortedByDescending { it.isUsb }  // USB devices first
+            .distinctBy { it.id }
+            .map { toAudioDevice(it) }
+            .sortedWith(audioDeviceComparator)
     }
 
     /** Find the first USB audio input device, or null. */
@@ -272,35 +261,34 @@ class AudioBridge(private val context: Context) {
         }
     }
 
-    /**
-     * Find the built-in loudspeaker, or null.
-     * Passed to [start] as the RX output device to keep decoded speech out of
-     * any connected USB audio device (the rig's audio input).
-     */
+    /** Find the built-in loudspeaker, or null. */
     fun findBuiltInSpeaker(): AudioDevice? {
         return getOutputDevices().firstOrNull {
             it.type == AudioDeviceInfo.TYPE_BUILTIN_SPEAKER
         }
     }
 
-    /** List available audio output devices, deduplicated by type. */
+    /**
+     * Best automatic RX playback target: Bluetooth / wired headset first, then
+     * phone speaker. USB is intentionally not auto-picked because in the normal
+     * radio setup it may be the rig's transmit audio input; users can still
+     * select a USB DAC explicitly from settings.
+     */
+    fun findPreferredRxOutputDevice(): AudioDevice? {
+        val outputs = getOutputDevices()
+        return outputs.firstOrNull { it.isBluetooth }
+            ?: outputs.firstOrNull { it.isWired }
+            ?: outputs.firstOrNull { it.type == AudioDeviceInfo.TYPE_BUILTIN_SPEAKER }
+            ?: outputs.firstOrNull()
+    }
+
+    /** List available audio output devices. */
     fun getOutputDevices(): List<AudioDevice> {
         val am = context.getSystemService(Context.AUDIO_SERVICE) as AudioManager
         return am.getDevices(AudioManager.GET_DEVICES_OUTPUTS)
-            .groupBy { it.type }
-            .map { (_, devices) -> devices.first() }
-            .map { info ->
-                AudioDevice(
-                    id = info.id,
-                    name = info.productName?.toString() ?: "Unknown",
-                    type = info.type,
-                    typeName = deviceTypeName(info.type),
-                    isUsb = info.type == AudioDeviceInfo.TYPE_USB_DEVICE ||
-                            info.type == AudioDeviceInfo.TYPE_USB_ACCESSORY ||
-                            info.type == AudioDeviceInfo.TYPE_USB_HEADSET
-                )
-            }
-            .sortedByDescending { it.isUsb }
+            .distinctBy { it.id }
+            .map { toAudioDevice(it) }
+            .sortedWith(audioDeviceComparator)
     }
 
     /* ── Native methods ──────────────────────────────────────── */
@@ -316,6 +304,7 @@ class AudioBridge(private val context: Context) {
     private external fun nativeStop()
     private external fun nativeIsRunning(): Boolean
     private external fun nativeSetInputDevice(deviceId: Int)
+    private external fun nativeSetOutputDevice(deviceId: Int)
     private external fun nativeSetOutputVolume(volume: Float)
     private external fun nativeGetSyncState(): Int
     private external fun nativeGetSnrEstimate(): Int
@@ -343,6 +332,38 @@ class AudioBridge(private val context: Context) {
     external fun nativeFeedNetRx(pcm: ShortArray, count: Int)
     external fun nativeStartNetTx(inputDeviceId: Int, netRate: Int): Boolean
     external fun nativeFillNetTxFrame(outBuf: ShortArray, numSamples: Int): Int
+
+    private val audioDeviceComparator = compareByDescending<AudioDevice> { it.isUsb }
+        .thenByDescending { it.isBluetooth }
+        .thenByDescending { it.isWired }
+        .thenBy { it.typeName }
+        .thenBy { it.name }
+        .thenBy { it.id }
+
+    private fun toAudioDevice(info: AudioDeviceInfo): AudioDevice {
+        return AudioDevice(
+            id = info.id,
+            name = info.productName?.toString() ?: "Unknown",
+            type = info.type,
+            typeName = deviceTypeName(info.type),
+            isUsb = isUsbType(info.type),
+            isBluetooth = isBluetoothType(info.type),
+            isWired = isWiredType(info.type)
+        )
+    }
+
+    private fun isUsbType(type: Int): Boolean =
+        type == AudioDeviceInfo.TYPE_USB_DEVICE ||
+            type == AudioDeviceInfo.TYPE_USB_ACCESSORY ||
+            type == AudioDeviceInfo.TYPE_USB_HEADSET
+
+    private fun isBluetoothType(type: Int): Boolean =
+        type == AudioDeviceInfo.TYPE_BLUETOOTH_A2DP ||
+            type == AudioDeviceInfo.TYPE_BLUETOOTH_SCO
+
+    private fun isWiredType(type: Int): Boolean =
+        type == AudioDeviceInfo.TYPE_WIRED_HEADSET ||
+            type == AudioDeviceInfo.TYPE_WIRED_HEADPHONES
 
     private fun deviceTypeName(type: Int): String = when (type) {
         AudioDeviceInfo.TYPE_BUILTIN_MIC -> "Built-in Mic"

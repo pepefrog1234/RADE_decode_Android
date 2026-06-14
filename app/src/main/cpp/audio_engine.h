@@ -11,6 +11,7 @@
 
 #include <oboe/Oboe.h>
 #include <atomic>
+#include <memory>
 #include <mutex>
 #include <vector>
 #include <cstdio>
@@ -105,6 +106,7 @@ public:
     bool isNetRx() const { return netRxRunning_.load(); }
 
     void setInputDevice(int deviceId);
+    void setOutputDevice(int deviceId);
     void setOutputVolume(float volume);
     void setInputGain(float gain);
     float getInputGain() const { return inputGain_.load(); }
@@ -136,8 +138,9 @@ public:
 private:
     std::shared_ptr<oboe::AudioStream> inputStream_;
     std::shared_ptr<oboe::AudioStream> outputStream_;
-    std::unique_ptr<InputCallback> inputCb_;
-    std::unique_ptr<OutputCallback> outputCb_;
+    std::shared_ptr<InputCallback> inputCb_;
+    std::shared_ptr<OutputCallback> outputCb_;
+    std::mutex streamMutex_;
 
     int inputDeviceId_ = 0;
     int outputDeviceId_ = 0;
@@ -200,14 +203,14 @@ private:
 
     bool openInputStream();
     bool openOutputStream();
-    void restartInputStream();
-    void restartOutputStream();
+    void restartInputStream(oboe::AudioStream *closedStream = nullptr);
+    void restartOutputStream(oboe::AudioStream *closedStream = nullptr);
 
     /* ── TX pipeline ─────────────────────────────────────── */
     std::shared_ptr<oboe::AudioStream> txInputStream_;
     std::shared_ptr<oboe::AudioStream> txOutputStream_;
-    std::unique_ptr<TxInputCallback> txInputCb_;
-    std::unique_ptr<TxOutputCallback> txOutputCb_;
+    std::shared_ptr<TxInputCallback> txInputCb_;
+    std::shared_ptr<TxOutputCallback> txOutputCb_;
 
     std::atomic<bool> txRunning_{false};
     int txInputDeviceId_ = 0;

@@ -21,7 +21,9 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.viewmodel.compose.viewModel
+import yakumo2683.RADEdecode.AudioBridge
 import yakumo2683.RADEdecode.R
+import yakumo2683.RADEdecode.service.AudioService
 import yakumo2683.RADEdecode.ui.theme.Cyan400
 import yakumo2683.RADEdecode.ui.theme.Cyan600
 import yakumo2683.RADEdecode.ui.theme.OnSurfaceDim
@@ -113,7 +115,7 @@ fun SettingsScreen(viewModel: TransceiverViewModel = viewModel()) {
                     modifier = Modifier.padding(vertical = 8.dp)
                 )
 
-                Text(stringResource(R.string.settings_output_devices), fontWeight = FontWeight.Medium, color = MaterialTheme.colorScheme.onSurface)
+                Text(stringResource(R.string.header_tx_output_device), fontWeight = FontWeight.Medium, color = MaterialTheme.colorScheme.onSurface)
 
                 Text(
                     stringResource(R.string.settings_tx_output_help),
@@ -247,6 +249,38 @@ fun SettingsScreen(viewModel: TransceiverViewModel = viewModel()) {
                     stringResource(R.string.settings_volume_help),
                     fontSize = 11.sp, color = OnSurfaceDim, lineHeight = 16.sp
                 )
+
+                HorizontalDivider(
+                    color = MaterialTheme.colorScheme.outline,
+                    modifier = Modifier.padding(vertical = 8.dp)
+                )
+
+                Text(
+                    stringResource(R.string.settings_rx_output_device),
+                    fontWeight = FontWeight.Medium,
+                    color = MaterialTheme.colorScheme.onSurface
+                )
+
+                RxOutputOptionRow(
+                    selected = state.selectedRxOutputDeviceId == AudioService.RX_OUTPUT_AUTO,
+                    onClick = { viewModel.selectRxOutputDevice(AudioService.RX_OUTPUT_AUTO) },
+                    title = stringResource(R.string.settings_rx_output_auto),
+                    subtitle = stringResource(R.string.settings_rx_output_auto_help)
+                )
+                RxOutputOptionRow(
+                    selected = state.selectedRxOutputDeviceId == AudioService.RX_OUTPUT_SYSTEM_DEFAULT,
+                    onClick = { viewModel.selectRxOutputDevice(AudioService.RX_OUTPUT_SYSTEM_DEFAULT) },
+                    title = stringResource(R.string.settings_rx_output_system),
+                    subtitle = stringResource(R.string.settings_rx_output_system_help)
+                )
+
+                state.outputDevices.forEach { device ->
+                    AudioDeviceOptionRow(
+                        device = device,
+                        selected = device.id == state.selectedRxOutputDeviceId,
+                        onClick = { viewModel.selectRxOutputDevice(device.id) }
+                    )
+                }
             }
         }
 
@@ -622,6 +656,82 @@ private fun InfoRow(label: String, value: String) {
     Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
         Text(label, fontSize = 13.sp, color = OnSurfaceDim)
         Text(value, fontSize = 13.sp, fontFamily = FontFamily.Monospace, color = MaterialTheme.colorScheme.onSurface)
+    }
+}
+
+@Composable
+private fun RxOutputOptionRow(
+    selected: Boolean,
+    onClick: () -> Unit,
+    title: String,
+    subtitle: String
+) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(vertical = 6.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        RadioButton(
+            selected = selected,
+            onClick = onClick,
+            colors = RadioButtonDefaults.colors(selectedColor = Cyan400)
+        )
+        Column {
+            Text(
+                title,
+                fontWeight = FontWeight.Medium,
+                fontSize = 14.sp,
+                color = MaterialTheme.colorScheme.onSurface
+            )
+            Text(
+                subtitle,
+                fontSize = 11.sp,
+                color = OnSurfaceDim
+            )
+        }
+    }
+}
+
+@Composable
+private fun AudioDeviceOptionRow(
+    device: AudioBridge.AudioDevice,
+    selected: Boolean,
+    onClick: () -> Unit
+) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(vertical = 6.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        RadioButton(
+            selected = selected,
+            onClick = onClick,
+            colors = RadioButtonDefaults.colors(selectedColor = Cyan400)
+        )
+        if (device.isUsb) {
+            Icon(
+                Icons.Default.Usb, null,
+                modifier = Modifier.size(16.dp),
+                tint = Cyan400
+            )
+            Spacer(Modifier.width(6.dp))
+        }
+        Column {
+            Text(
+                device.typeName,
+                fontWeight = FontWeight.Medium,
+                fontSize = 14.sp,
+                color = MaterialTheme.colorScheme.onSurface
+            )
+            Text(
+                device.name,
+                fontSize = 11.sp,
+                fontFamily = FontFamily.Monospace,
+                color = OnSurfaceDim
+            )
+        }
     }
 }
 

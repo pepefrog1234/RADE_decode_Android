@@ -76,6 +76,8 @@ class AudioService : LifecycleService() {
         const val CHANNEL_ID = "rade_decode_channel"
         const val NOTIFICATION_ID = 1
         const val ACTION_STOP = "yakumo2683.RADEdecode.STOP"
+        const val RX_OUTPUT_AUTO = -1
+        const val RX_OUTPUT_SYSTEM_DEFAULT = 0
         private const val SYNC_LOST_TIMEOUT_MS = 2000L
         /** Shared flat spectrum published while in power-save mode (never mutated). */
         private val FLAT_SPECTRUM = FloatArray(AudioBridge.SPECTRUM_BINS) { -100f }
@@ -128,7 +130,11 @@ class AudioService : LifecycleService() {
         return START_STICKY
     }
 
-    fun startDecoding(inputDeviceId: Int = -1, recordWav: Boolean = false) {
+    fun startDecoding(
+        inputDeviceId: Int = -1,
+        outputDeviceId: Int = RX_OUTPUT_AUTO,
+        recordWav: Boolean = false
+    ) {
         if (_state.value.isRunning) return
 
         val bridge = AudioBridge(applicationContext)
@@ -156,12 +162,11 @@ class AudioService : LifecycleService() {
             startForeground(NOTIFICATION_ID, notification)
         }
 
-        // Pin RX playback to the built-in speaker by default — otherwise
-        // Android routes Media output to the rig's USB audio input whenever
-        // a USB audio device is connected, and the user hears nothing in
-        // their phone speaker. Wired headsets / BT still override at the
-        // Android audio-policy layer, so plugging in a headset still works.
-        val rxOutputDeviceId = bridge.findBuiltInSpeaker()?.id ?: -1
+        val rxOutputDeviceId = resolveRxOutputDeviceId(bridge, outputDeviceId)
+        Log.i(
+            "AudioService",
+            "startDecoding: input=$inputDeviceId rxOutputSelection=$outputDeviceId resolved=$rxOutputDeviceId"
+        )
         if (!bridge.start(inputDeviceId, rxOutputDeviceId)) {
             stopSelf()
             return
@@ -210,6 +215,14 @@ class AudioService : LifecycleService() {
         audioBridge?.setOutputVolume(volume)
     }
 
+    fun setRxOutputDevice(deviceId: Int) {
+        val bridge = audioBridge ?: return
+        if (!_state.value.isRunning || _state.value.isTx) return
+        val resolved = resolveRxOutputDeviceId(bridge, deviceId)
+        Log.i("AudioService", "setRxOutputDevice: selection=$deviceId resolved=$resolved")
+        bridge.setOutputDevice(resolved)
+    }
+
     /**
      * TX USB audio output level (0..1). Lowered from the previous hard-coded 5%
      * because that was too quiet for some rigs (e.g. IC-7300) — ALC barely moved
@@ -232,6 +245,14 @@ class AudioService : LifecycleService() {
         return audioBridge?.getOutputDevices() ?: emptyList()
     }
 
+    private fun resolveRxOutputDeviceId(bridge: AudioBridge, selection: Int): Int {
+        return when {
+            selection > 0 -> selection
+            selection == RX_OUTPUT_SYSTEM_DEFAULT -> -1
+            else -> bridge.findPreferredRxOutputDevice()?.id ?: -1
+        }
+    }
+
     /* ── Network audio (IC-705 Wi-Fi, full wireless) ─────────── */
 
     private var networkAudioMode = false
@@ -241,9 +262,9 @@ class AudioService : LifecycleService() {
 
     /**
      * RX over Wi-Fi: decode audio arriving on UDP 50003 (via [icomNetwork]) and
-     * play the recovered speech on the phone speaker. No USB sound card involved.
+     * play the recovered speech on the selected RX output. No USB sound card involved.
      */
-    fun startNetworkDecoding() {
+    fun startNetworkDecoding(outputDeviceId: Int = RX_OUTPUT_AUTO) {
         if (_state.value.isRunning || _state.value.isTx) return
         val net = icomNetwork ?: run {
             Log.e("AudioService", "startNetworkDecoding: icomNetwork not set")
@@ -272,8 +293,11 @@ class AudioService : LifecycleService() {
         Log.i("AudioService", "startNetworkDecoding: audioStreamConnected=$audioUp " +
             "(if false, no RX audio will arrive over Wi-Fi — check radio audio settings)")
 
-        // Decoded speech to the phone speaker (no USB rig audio to avoid feedback).
-        val rxOutputDeviceId = bridge.findBuiltInSpeaker()?.id ?: -1
+        val rxOutputDeviceId = resolveRxOutputDeviceId(bridge, outputDeviceId)
+        Log.i(
+            "AudioService",
+            "startNetworkDecoding: rxOutputSelection=$outputDeviceId resolved=$rxOutputDeviceId"
+        )
         if (!bridge.startNetRx(rxOutputDeviceId, yakumo2683.RADEdecode.network.IcomNetworkManager.NET_AUDIO_RATE)) {
             Log.e("AudioService", "startNetRx failed")
             stopSelf()

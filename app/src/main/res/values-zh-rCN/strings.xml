@@ -101,7 +101,12 @@
     <string name="settings_gain_help">增强 USB 音频输入的微弱信号。请调整至峰值电平约为 -15 至 -5 dBFS。</string>
     <string name="header_rx_output">接收输出</string>
     <string name="settings_volume">音量</string>
-    <string name="settings_volume_help">此处同时控制发射输出电平。请调整至电台的 ALC 表不偏转——将 ALC 保持在线性区间（无读数/无条显示），以避免信号失真与溅射。</string>
+    <string name="settings_volume_help">解码语音的播放音量。</string>
+    <string name="settings_rx_output_device">接收输出设备</string>
+    <string name="settings_rx_output_auto">自动</string>
+    <string name="settings_rx_output_auto_help">连接 Bluetooth 或有线音频时优先使用，否则使用手机扬声器。</string>
+    <string name="settings_rx_output_system">系统默认</string>
+    <string name="settings_rx_output_system_help">交由 Android 选择播放路径，适用于 USB DAC 与外接扬声器。</string>
     <string name="header_tx_output">发射音量</string>
     <string name="settings_tx_level">USB 发射音量</string>
     <string name="settings_tx_level_help">送入电台 USB 音频输入的 RADE 波形强度。太低 → ALC 不动、发射功率低；太高 → ALC 撞顶、信号失真。同时请检查电台的 USB MOD Level（IC-7300：菜单 → SET → Connectors → USB MOD Level）。</string>

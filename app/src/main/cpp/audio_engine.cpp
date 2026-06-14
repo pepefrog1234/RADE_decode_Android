@@ -36,14 +36,14 @@ oboe::DataCallbackResult OutputCallback::onAudioReady(
 void InputCallback::onErrorAfterClose(oboe::AudioStream *s, oboe::Result error) {
     LOGE("Input stream error: %s — restarting", oboe::convertToText(error));
     if (engine_->running_.load()) {
-        engine_->restartInputStream();
+        engine_->restartInputStream(s);
     }
 }
 
 void OutputCallback::onErrorAfterClose(oboe::AudioStream *s, oboe::Result error) {
     LOGE("Output stream error: %s — restarting", oboe::convertToText(error));
     if (engine_->running_.load()) {
-        engine_->restartOutputStream();
+        engine_->restartOutputStream(s);
     }
 }
 
@@ -76,10 +76,10 @@ void TxOutputCallback::onErrorAfterClose(oboe::AudioStream *s, oboe::Result erro
 AudioEngine::AudioEngine() {
     fftInput_.resize(FFT_SIZE, 0.0f);
     std::fill(spectrumDb_, spectrumDb_ + FFT_BINS, -100.0f);
-    inputCb_ = std::make_unique<InputCallback>(this);
-    outputCb_ = std::make_unique<OutputCallback>(this);
-    txInputCb_ = std::make_unique<TxInputCallback>(this);
-    txOutputCb_ = std::make_unique<TxOutputCallback>(this);
+    inputCb_ = std::make_shared<InputCallback>(this);
+    outputCb_ = std::make_shared<OutputCallback>(this);
+    txInputCb_ = std::make_shared<TxInputCallback>(this);
+    txOutputCb_ = std::make_shared<TxOutputCallback>(this);
 }
 
 AudioEngine::~AudioEngine() { stop(); stopTx(); }
@@ -164,15 +164,31 @@ bool AudioEngine::start(int inputDeviceId, int outputDeviceId) {
 void AudioEngine::stop() {
     running_.store(false);
     netRxRunning_.store(false);
-    if (inputStream_)  { inputStream_->stop();  inputStream_->close();  inputStream_.reset(); }
-    if (outputStream_) { outputStream_->stop(); outputStream_->close(); outputStream_.reset(); }
+
+    std::shared_ptr<oboe::AudioStream> inputToClose;
+    std::shared_ptr<oboe::AudioStream> outputToClose;
+    {
+        std::lock_guard<std::mutex> lk(streamMutex_);
+        inputToClose = inputStream_;
+        outputToClose = outputStream_;
+        inputStream_.reset();
+        outputStream_.reset();
+    }
+
+    if (inputToClose)  { inputToClose->stop();  inputToClose->close(); }
+    if (outputToClose) { outputToClose->stop(); outputToClose->close(); }
     inputSessionId_ = -1;
     releaseModem();
 }
 
 void AudioEngine::setInputDevice(int deviceId) {
     inputDeviceId_ = (deviceId > 0) ? deviceId : 0;
-    if (running_.load()) { stop(); start(inputDeviceId_); }
+    if (running_.load()) { stop(); start(inputDeviceId_, outputDeviceId_); }
+}
+
+void AudioEngine::setOutputDevice(int deviceId) {
+    outputDeviceId_ = (deviceId > 0) ? deviceId : 0;
+    if (running_.load()) restartOutputStream();
 }
 
 void AudioEngine::setOutputVolume(float volume) {
@@ -204,15 +220,57 @@ bool AudioEngine::openInputStream() {
            // from Kotlin after open — that's the canonical, always-works path.
            ->setInputPreset(oboe::InputPreset::Unprocessed)
            ->setSessionId(oboe::SessionId::Allocate)
-           ->setDataCallback(inputCb_.get())
-           ->setErrorCallback(inputCb_.get());
+           ->setDataCallback(std::static_pointer_cast<oboe::AudioStreamDataCallback>(inputCb_))
+           ->setErrorCallback(std::static_pointer_cast<oboe::AudioStreamErrorCallback>(inputCb_));
 
     if (inputDeviceId_ > 0) builder.setDeviceId(inputDeviceId_);
 
     auto result = builder.openStream(inputStream_);
     if (result != oboe::Result::OK) {
-        LOGE("Failed to open input: %s", oboe::convertToText(result));
-        return false;
+        LOGE("Failed to open input: %s — retrying Generic/normal path",
+             oboe::convertToText(result));
+        inputStream_.reset();
+
+        oboe::AudioStreamBuilder retry;
+        retry.setDirection(oboe::Direction::Input)
+             ->setPerformanceMode(oboe::PerformanceMode::None)
+             ->setSharingMode(oboe::SharingMode::Shared)
+             ->setFormat(oboe::AudioFormat::Float)
+             ->setSampleRate(INPUT_SAMPLE_RATE)
+             ->setSampleRateConversionQuality(oboe::SampleRateConversionQuality::High)
+             ->setChannelCount(oboe::ChannelCount::Mono)
+             ->setInputPreset(oboe::InputPreset::Generic)
+             ->setSessionId(oboe::SessionId::Allocate)
+             ->setDataCallback(std::static_pointer_cast<oboe::AudioStreamDataCallback>(inputCb_))
+             ->setErrorCallback(std::static_pointer_cast<oboe::AudioStreamErrorCallback>(inputCb_));
+        if (inputDeviceId_ > 0) retry.setDeviceId(inputDeviceId_);
+
+        result = retry.openStream(inputStream_);
+        if (result != oboe::Result::OK && inputDeviceId_ > 0) {
+            LOGE("Failed to open requested input device %d: %s — falling back to default input",
+                 inputDeviceId_, oboe::convertToText(result));
+            inputStream_.reset();
+            inputDeviceId_ = 0;
+
+            oboe::AudioStreamBuilder defaultRetry;
+            defaultRetry.setDirection(oboe::Direction::Input)
+                        ->setPerformanceMode(oboe::PerformanceMode::None)
+                        ->setSharingMode(oboe::SharingMode::Shared)
+                        ->setFormat(oboe::AudioFormat::Float)
+                        ->setSampleRate(INPUT_SAMPLE_RATE)
+                        ->setSampleRateConversionQuality(oboe::SampleRateConversionQuality::High)
+                        ->setChannelCount(oboe::ChannelCount::Mono)
+                        ->setInputPreset(oboe::InputPreset::Generic)
+                        ->setSessionId(oboe::SessionId::Allocate)
+                        ->setDataCallback(std::static_pointer_cast<oboe::AudioStreamDataCallback>(inputCb_))
+                        ->setErrorCallback(std::static_pointer_cast<oboe::AudioStreamErrorCallback>(inputCb_));
+            result = defaultRetry.openStream(inputStream_);
+        }
+
+        if (result != oboe::Result::OK) {
+            LOGE("Failed to open fallback input: %s", oboe::convertToText(result));
+            return false;
+        }
     }
 
     actualInputRate_ = inputStream_->getSampleRate();
@@ -264,27 +322,45 @@ bool AudioEngine::openInputStream() {
 bool AudioEngine::openOutputStream() {
     oboe::AudioStreamBuilder builder;
     builder.setDirection(oboe::Direction::Output)
-           ->setPerformanceMode(oboe::PerformanceMode::LowLatency)
+           ->setPerformanceMode(oboe::PerformanceMode::None)
            ->setSharingMode(oboe::SharingMode::Shared)
            ->setFormat(oboe::AudioFormat::Float)
            ->setSampleRate(SPEECH_SAMPLE_RATE)
            ->setSampleRateConversionQuality(oboe::SampleRateConversionQuality::High)
            ->setChannelCount(oboe::ChannelCount::Mono)
            ->setUsage(oboe::Usage::Media)
-           ->setDataCallback(outputCb_.get())
-           ->setErrorCallback(outputCb_.get());
+           ->setDataCallback(std::static_pointer_cast<oboe::AudioStreamDataCallback>(outputCb_))
+           ->setErrorCallback(std::static_pointer_cast<oboe::AudioStreamErrorCallback>(outputCb_));
 
-    // Route decoded speech away from USB audio (the rig's own audio back-feed).
-    // Without this, Android picks USB as the preferred Media destination
-    // whenever a USB audio device is connected, so the user hears nothing in
-    // the phone's speaker. Wired headsets / BT still override this preference
-    // at the Android audio policy level.
     if (outputDeviceId_ > 0) builder.setDeviceId(outputDeviceId_);
 
     auto result = builder.openStream(outputStream_);
     if (result != oboe::Result::OK) {
         LOGE("Failed to open output: %s", oboe::convertToText(result));
-        return false;
+        outputStream_.reset();
+
+        if (outputDeviceId_ > 0) {
+            LOGE("Requested output device %d failed — falling back to system default",
+                 outputDeviceId_);
+            outputDeviceId_ = 0;
+            oboe::AudioStreamBuilder retry;
+            retry.setDirection(oboe::Direction::Output)
+                 ->setPerformanceMode(oboe::PerformanceMode::None)
+                 ->setSharingMode(oboe::SharingMode::Shared)
+                 ->setFormat(oboe::AudioFormat::Float)
+                 ->setSampleRate(SPEECH_SAMPLE_RATE)
+                 ->setSampleRateConversionQuality(oboe::SampleRateConversionQuality::High)
+                 ->setChannelCount(oboe::ChannelCount::Mono)
+                 ->setUsage(oboe::Usage::Media)
+                 ->setDataCallback(std::static_pointer_cast<oboe::AudioStreamDataCallback>(outputCb_))
+                 ->setErrorCallback(std::static_pointer_cast<oboe::AudioStreamErrorCallback>(outputCb_));
+            result = retry.openStream(outputStream_);
+        }
+
+        if (result != oboe::Result::OK) {
+            LOGE("Failed to open fallback output: %s", oboe::convertToText(result));
+            return false;
+        }
     }
 
     LOGI("Output opened: rate=%d ch=%d device=%d (requested=%d)",
@@ -584,15 +660,32 @@ void AudioEngine::stopRecording() {
 
 /* ── Stream restart (called from error callbacks) ────────────── */
 
-void AudioEngine::restartInputStream() {
+void AudioEngine::restartInputStream(oboe::AudioStream *closedStream) {
     LOGI("Restarting input stream...");
-    if (inputStream_) {
-        inputStream_->close();
+    std::shared_ptr<oboe::AudioStream> streamToClose;
+    {
+        std::lock_guard<std::mutex> lk(streamMutex_);
+        if (!running_.load() || netRxRunning_.load()) return;
+        if (closedStream != nullptr && inputStream_ && inputStream_.get() != closedStream) {
+            LOGI("Ignoring stale input stream callback");
+            return;
+        }
+        if (closedStream == nullptr) streamToClose = inputStream_;
         inputStream_.reset();
+        inputSessionId_ = -1;
     }
-    // Brief delay to let the system release resources
+
+    if (streamToClose) {
+        streamToClose->stop();
+        streamToClose->close();
+    }
+
+    // Brief delay to let the system publish the new route after plug/unplug.
     usleep(200000); // 200ms
-    if (running_.load()) {
+
+    {
+        std::lock_guard<std::mutex> lk(streamMutex_);
+        if (!running_.load() || netRxRunning_.load() || inputStream_) return;
         if (openInputStream()) {
             designDecimFilter(actualInputRate_, MODEM_SAMPLE_RATE);
             LOGI("Input stream restarted successfully");
@@ -602,14 +695,30 @@ void AudioEngine::restartInputStream() {
     }
 }
 
-void AudioEngine::restartOutputStream() {
+void AudioEngine::restartOutputStream(oboe::AudioStream *closedStream) {
     LOGI("Restarting output stream...");
-    if (outputStream_) {
-        outputStream_->close();
+    std::shared_ptr<oboe::AudioStream> streamToClose;
+    {
+        std::lock_guard<std::mutex> lk(streamMutex_);
+        if (!running_.load()) return;
+        if (closedStream != nullptr && outputStream_ && outputStream_.get() != closedStream) {
+            LOGI("Ignoring stale output stream callback");
+            return;
+        }
+        if (closedStream == nullptr) streamToClose = outputStream_;
         outputStream_.reset();
     }
+
+    if (streamToClose) {
+        streamToClose->stop();
+        streamToClose->close();
+    }
+
     usleep(200000);
-    if (running_.load()) {
+
+    {
+        std::lock_guard<std::mutex> lk(streamMutex_);
+        if (!running_.load() || outputStream_) return;
         if (openOutputStream()) {
             LOGI("Output stream restarted successfully");
         } else {
@@ -825,8 +934,8 @@ bool AudioEngine::openTxInputStream() {
            ->setSharingMode(oboe::SharingMode::Shared)
            ->setFormat(oboe::AudioFormat::Float)
            ->setChannelCount(oboe::ChannelCount::Mono)
-           ->setDataCallback(txInputCb_.get())
-           ->setErrorCallback(txInputCb_.get());
+           ->setDataCallback(std::static_pointer_cast<oboe::AudioStreamDataCallback>(txInputCb_))
+           ->setErrorCallback(std::static_pointer_cast<oboe::AudioStreamErrorCallback>(txInputCb_));
 
     if (txInputDeviceId_ > 0) {
         // Force built-in mic when USB audio is connected.
@@ -858,8 +967,8 @@ bool AudioEngine::openTxInputStream() {
              ->setChannelCount(oboe::ChannelCount::Mono)
              ->setInputPreset(oboe::InputPreset::Unprocessed)
              ->setDeviceId(txInputDeviceId_)
-             ->setDataCallback(txInputCb_.get())
-             ->setErrorCallback(txInputCb_.get());
+             ->setDataCallback(std::static_pointer_cast<oboe::AudioStreamDataCallback>(txInputCb_))
+             ->setErrorCallback(std::static_pointer_cast<oboe::AudioStreamErrorCallback>(txInputCb_));
 
         result = retry.openStream(txInputStream_);
         if (result != oboe::Result::OK) {
@@ -899,8 +1008,8 @@ bool AudioEngine::openTxOutputStream() {
            ->setSampleRateConversionQuality(oboe::SampleRateConversionQuality::High)
            ->setChannelCount(oboe::ChannelCount::Mono)
            ->setUsage(oboe::Usage::Media)
-           ->setDataCallback(txOutputCb_.get())
-           ->setErrorCallback(txOutputCb_.get());
+           ->setDataCallback(std::static_pointer_cast<oboe::AudioStreamDataCallback>(txOutputCb_))
+           ->setErrorCallback(std::static_pointer_cast<oboe::AudioStreamErrorCallback>(txOutputCb_));
 
     auto result = builder.openStream(txOutputStream_);
     if (result != oboe::Result::OK) {
