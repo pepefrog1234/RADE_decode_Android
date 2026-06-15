@@ -407,6 +407,17 @@ JNI_AUDIO(nativeSetOutputDevice)(JNIEnv *env, jobject /* this */, jint deviceId)
 }
 
 JNIEXPORT void JNICALL
+JNI_AUDIO(nativeSetRxJavaOutputEnabled)(JNIEnv *env, jobject /* this */, jboolean enabled) {
+    if (g_audioEngine) g_audioEngine->setRxJavaOutputEnabled(enabled == JNI_TRUE);
+}
+
+JNIEXPORT jboolean JNICALL
+JNI_AUDIO(nativeIsRxUsingJavaOutput)(JNIEnv *env, jobject /* this */) {
+    if (!g_audioEngine) return JNI_FALSE;
+    return g_audioEngine->isRxUsingJavaOutput() ? JNI_TRUE : JNI_FALSE;
+}
+
+JNIEXPORT void JNICALL
 JNI_AUDIO(nativeSetDevices)(JNIEnv *env, jobject /* this */, jint inputDeviceId, jint outputDeviceId) {
     if (g_audioEngine) g_audioEngine->setDevices(inputDeviceId, outputDeviceId);
 }
@@ -538,6 +549,16 @@ JNI_AUDIO(nativeReadTxRing)(JNIEnv *env, jobject /* this */,
     if (!g_audioEngine) return 0;
     jshort *buf = env->GetShortArrayElements(outBuf, nullptr);
     int got = g_audioEngine->readTxRing(reinterpret_cast<int16_t*>(buf), maxSamples);
+    env->ReleaseShortArrayElements(outBuf, buf, 0);
+    return got;
+}
+
+JNIEXPORT jint JNICALL
+JNI_AUDIO(nativeReadRxRing)(JNIEnv *env, jobject /* this */,
+                            jshortArray outBuf, jint maxSamples) {
+    if (!g_audioEngine) return 0;
+    jshort *buf = env->GetShortArrayElements(outBuf, nullptr);
+    int got = g_audioEngine->readRxRing(reinterpret_cast<int16_t*>(buf), maxSamples);
     env->ReleaseShortArrayElements(outBuf, buf, 0);
     return got;
 }

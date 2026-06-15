@@ -144,12 +144,16 @@ bool AudioEngine::start(int inputDeviceId, int outputDeviceId) {
 
     running_.store(true);
 
-    if (!openOutputStream()) {
+    if (!rxUseJavaOutput_ && !openOutputStream()) {
         running_.store(false); releaseModem(); return false;
     }
     if (!openInputStream()) {
         running_.store(false);
-        outputStream_->stop(); outputStream_->close(); outputStream_.reset();
+        if (outputStream_) {
+            outputStream_->stop();
+            outputStream_->close();
+            outputStream_.reset();
+        }
         releaseModem(); return false;
     }
 
@@ -188,13 +192,34 @@ void AudioEngine::setInputDevice(int deviceId) {
 
 void AudioEngine::setOutputDevice(int deviceId) {
     outputDeviceId_ = (deviceId > 0) ? deviceId : 0;
-    if (running_.load()) restartOutputStream();
+    if (running_.load() && !rxUseJavaOutput_) restartOutputStream();
 }
 
 void AudioEngine::setDevices(int inputDeviceId, int outputDeviceId) {
     inputDeviceId_ = (inputDeviceId > 0) ? inputDeviceId : 0;
     outputDeviceId_ = (outputDeviceId > 0) ? outputDeviceId : 0;
     if (running_.load()) { stop(); start(inputDeviceId_, outputDeviceId_); }
+}
+
+void AudioEngine::setRxJavaOutputEnabled(bool enabled) {
+    if (rxUseJavaOutput_ == enabled) return;
+    rxUseJavaOutput_ = enabled;
+    if (!running_.load()) return;
+
+    if (enabled) {
+        std::shared_ptr<oboe::AudioStream> streamToClose;
+        {
+            std::lock_guard<std::mutex> lk(streamMutex_);
+            streamToClose = outputStream_;
+            outputStream_.reset();
+        }
+        if (streamToClose) {
+            streamToClose->stop();
+            streamToClose->close();
+        }
+    } else {
+        restartOutputStream();
+    }
 }
 
 void AudioEngine::setOutputVolume(float volume) {
@@ -707,18 +732,26 @@ void AudioEngine::restartOutputStream(oboe::AudioStream *closedStream) {
     {
         std::lock_guard<std::mutex> lk(streamMutex_);
         if (!running_.load()) return;
-        if (closedStream != nullptr && outputStream_ && outputStream_.get() != closedStream) {
+        if (rxUseJavaOutput_) {
+            if (closedStream == nullptr) streamToClose = outputStream_;
+            outputStream_.reset();
+        } else if (closedStream != nullptr && outputStream_ && outputStream_.get() != closedStream) {
             LOGI("Ignoring stale output stream callback");
             return;
+        } else if (closedStream == nullptr) {
+            streamToClose = outputStream_;
+            outputStream_.reset();
+        } else {
+            outputStream_.reset();
         }
-        if (closedStream == nullptr) streamToClose = outputStream_;
-        outputStream_.reset();
     }
 
     if (streamToClose) {
         streamToClose->stop();
         streamToClose->close();
     }
+
+    if (rxUseJavaOutput_) return;
 
     usleep(200000);
 
@@ -1212,7 +1245,7 @@ bool AudioEngine::startNetRx(int outputDeviceId, int netRate) {
     running_.store(true);
     netRxRunning_.store(true);
 
-    if (!openOutputStream()) {
+    if (!rxUseJavaOutput_ && !openOutputStream()) {
         running_.store(false); netRxRunning_.store(false); releaseModem(); return false;
     }
 

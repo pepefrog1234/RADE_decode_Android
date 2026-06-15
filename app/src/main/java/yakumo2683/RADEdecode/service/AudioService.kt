@@ -57,6 +57,10 @@ class AudioService : LifecycleService() {
     private var wavRecorder: WavRecorder? = null
     private var bluetoothCommunicationRouteActive = false
     private var previousAudioMode = AudioManager.MODE_NORMAL
+    @Volatile private var rxAudioTrack: AudioTrack? = null
+    private var rxPumpJob: Job? = null
+    @Volatile private var rxOutputVolume: Float = 1.0f
+    @Volatile private var rxJavaOutputLevelDb: Float = -100f
 
     // Current session tracking
     private var currentWavPath: String? = null
@@ -171,17 +175,23 @@ class AudioService : LifecycleService() {
         val bluetoothRouteActive = prepareBluetoothCommunicationRoute(inputDeviceId)
         val effectiveInputDeviceId = effectiveBluetoothInputDeviceId(inputDeviceId, bluetoothRouteActive)
         val effectiveOutputDeviceId = effectiveBluetoothOutputDeviceId(rxOutputDeviceId, bluetoothRouteActive)
+        val useJavaRxOutput = shouldUseJavaRxOutput(rxOutputDeviceId)
+        bridge.setRxJavaOutputEnabled(useJavaRxOutput)
+        val nativeOutputDeviceId = if (useJavaRxOutput) -1 else effectiveOutputDeviceId
         Log.i(
             "AudioService",
             "startDecoding: input=$inputDeviceId effectiveInput=$effectiveInputDeviceId " +
                 "rxOutputSelection=$outputDeviceId resolved=$rxOutputDeviceId " +
-                "effectiveOutput=$effectiveOutputDeviceId bluetoothRoute=$bluetoothRouteActive"
+                "effectiveOutput=$effectiveOutputDeviceId nativeOutput=$nativeOutputDeviceId " +
+                "bluetoothRoute=$bluetoothRouteActive javaOutput=$useJavaRxOutput"
         )
-        if (!bridge.start(effectiveInputDeviceId, effectiveOutputDeviceId)) {
+        if (!bridge.start(effectiveInputDeviceId, nativeOutputDeviceId)) {
+            stopRxAudioTrackPump()
             clearBluetoothCommunicationRouteIfNeeded()
             stopSelf()
             return
         }
+        if (useJavaRxOutput) startRxAudioTrackPump(bridge, rxOutputDeviceId)
 
         // Disable platform-applied audio effects (AGC, NS, AEC) that would
         // corrupt the RADE signal on OEMs that ignore the Unprocessed preset
@@ -211,6 +221,7 @@ class AudioService : LifecycleService() {
         // Stop native WAV recording
         audioBridge?.stopRecording()
 
+        stopRxAudioTrackPump()
         audioBridge?.stop()
         audioBridge?.release()
         audioBridge = null
@@ -224,6 +235,8 @@ class AudioService : LifecycleService() {
     }
 
     fun setOutputVolume(volume: Float) {
+        rxOutputVolume = volume.coerceIn(0f, 1f)
+        rxAudioTrack?.setVolume(rxOutputVolume)
         audioBridge?.setOutputVolume(volume)
     }
 
@@ -233,12 +246,17 @@ class AudioService : LifecycleService() {
         val resolved = resolveRxOutputDeviceId(bridge, deviceId)
         val bluetoothRouteActive = prepareBluetoothCommunicationRoute(null)
         val effectiveOutput = effectiveBluetoothOutputDeviceId(resolved, bluetoothRouteActive)
+        val useJavaRxOutput = shouldUseJavaRxOutput(resolved)
         Log.i(
             "AudioService",
             "setRxOutputDevice: selection=$deviceId resolved=$resolved " +
-                "effectiveOutput=$effectiveOutput bluetoothRoute=$bluetoothRouteActive"
+                "effectiveOutput=$effectiveOutput bluetoothRoute=$bluetoothRouteActive " +
+                "javaOutput=$useJavaRxOutput"
         )
-        bridge.setOutputDevice(effectiveOutput)
+        stopRxAudioTrackPump()
+        bridge.setRxJavaOutputEnabled(useJavaRxOutput)
+        bridge.setOutputDevice(if (useJavaRxOutput) -1 else effectiveOutput)
+        if (useJavaRxOutput) startRxAudioTrackPump(bridge, resolved)
     }
 
     fun setRxAudioDevices(inputDeviceId: Int?, outputDeviceId: Int) {
@@ -248,14 +266,20 @@ class AudioService : LifecycleService() {
         val resolvedOutput = resolveRxOutputDeviceId(bridge, outputDeviceId)
         val bluetoothRouteActive = prepareBluetoothCommunicationRoute(inputDeviceId)
         val effectiveOutput = effectiveBluetoothOutputDeviceId(resolvedOutput, bluetoothRouteActive)
+        val useJavaRxOutput = shouldUseJavaRxOutput(resolvedOutput)
+        val nativeOutput = if (useJavaRxOutput) -1 else effectiveOutput
+        stopRxAudioTrackPump()
+        bridge.setRxJavaOutputEnabled(useJavaRxOutput)
 
         if (networkAudioMode || (inputDeviceId == null && !bluetoothRouteActive)) {
             Log.i(
                 "AudioService",
                 "setRxAudioDevices: outputOnly selection=$outputDeviceId resolved=$resolvedOutput " +
-                    "effectiveOutput=$effectiveOutput bluetoothRoute=$bluetoothRouteActive"
+                    "effectiveOutput=$effectiveOutput nativeOutput=$nativeOutput " +
+                    "bluetoothRoute=$bluetoothRouteActive javaOutput=$useJavaRxOutput"
             )
-            bridge.setOutputDevice(effectiveOutput)
+            bridge.setOutputDevice(nativeOutput)
+            if (useJavaRxOutput) startRxAudioTrackPump(bridge, resolvedOutput)
             return
         }
 
@@ -265,11 +289,13 @@ class AudioService : LifecycleService() {
             "AudioService",
             "setRxAudioDevices: input=$resolvedInput effectiveInput=$effectiveInput " +
                 "outputSelection=$outputDeviceId resolvedOutput=$resolvedOutput " +
-                "effectiveOutput=$effectiveOutput bluetoothRoute=$bluetoothRouteActive"
+                "effectiveOutput=$effectiveOutput nativeOutput=$nativeOutput " +
+                "bluetoothRoute=$bluetoothRouteActive javaOutput=$useJavaRxOutput"
         )
-        bridge.setDevices(effectiveInput, effectiveOutput)
+        bridge.setDevices(effectiveInput, nativeOutput)
         bridge.disableInputEffects()
         currentInputDeviceId = effectiveInput
+        if (useJavaRxOutput) startRxAudioTrackPump(bridge, resolvedOutput)
     }
 
     /**
@@ -301,6 +327,9 @@ class AudioService : LifecycleService() {
             else -> bridge.findPreferredRxOutputDevice()?.id ?: -1
         }
     }
+
+    private fun shouldUseJavaRxOutput(outputDeviceId: Int): Boolean =
+        outputDeviceId > 0 && isBluetoothDevice(outputDeviceId, AudioManager.GET_DEVICES_OUTPUTS)
 
     private fun prepareBluetoothCommunicationRoute(inputDeviceId: Int?): Boolean {
         if (!usesBluetoothRxRoute(inputDeviceId)) {
@@ -484,15 +513,21 @@ class AudioService : LifecycleService() {
             "(if false, no RX audio will arrive over Wi-Fi — check radio audio settings)")
 
         val rxOutputDeviceId = resolveRxOutputDeviceId(bridge, outputDeviceId)
+        val useJavaRxOutput = shouldUseJavaRxOutput(rxOutputDeviceId)
+        bridge.setRxJavaOutputEnabled(useJavaRxOutput)
         Log.i(
             "AudioService",
-            "startNetworkDecoding: rxOutputSelection=$outputDeviceId resolved=$rxOutputDeviceId"
+            "startNetworkDecoding: rxOutputSelection=$outputDeviceId resolved=$rxOutputDeviceId " +
+                "javaOutput=$useJavaRxOutput"
         )
-        if (!bridge.startNetRx(rxOutputDeviceId, yakumo2683.RADEdecode.network.IcomNetworkManager.NET_AUDIO_RATE)) {
+        val nativeOutputDeviceId = if (useJavaRxOutput) -1 else rxOutputDeviceId
+        if (!bridge.startNetRx(nativeOutputDeviceId, yakumo2683.RADEdecode.network.IcomNetworkManager.NET_AUDIO_RATE)) {
             Log.e("AudioService", "startNetRx failed")
+            stopRxAudioTrackPump()
             stopSelf()
             return
         }
+        if (useJavaRxOutput) startRxAudioTrackPump(bridge, rxOutputDeviceId)
 
         // Received UDP PCM → modem. The callback fires on the audio stream's
         // consume coroutine; feedNetRx is a no-op once the engine is stopped.
@@ -522,6 +557,7 @@ class AudioService : LifecycleService() {
             stopNotificationUpdates()
             net.onAudioPcm = null
             audioBridge?.setOutputVolume(0f)
+            stopRxAudioTrackPump()
             audioBridge?.stop()
             audioBridge?.release()
             audioBridge = null
@@ -608,6 +644,85 @@ class AudioService : LifecycleService() {
         netTxPumpJob = null
     }
 
+    /* ── RX AudioTrack pump for explicit Bluetooth playback ─────── */
+
+    private fun startRxAudioTrackPump(bridge: AudioBridge, outputDeviceId: Int) {
+        stopRxAudioTrackPump()
+        val sampleRate = 16000
+        val bufSize = AudioTrack.getMinBufferSize(
+            sampleRate,
+            AudioFormat.CHANNEL_OUT_MONO,
+            AudioFormat.ENCODING_PCM_16BIT
+        ).coerceAtLeast(3200)
+
+        val track = AudioTrack.Builder()
+            .setAudioAttributes(
+                AudioAttributes.Builder()
+                    .setUsage(AudioAttributes.USAGE_MEDIA)
+                    .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
+                    .build()
+            )
+            .setAudioFormat(
+                AudioFormat.Builder()
+                    .setSampleRate(sampleRate)
+                    .setChannelMask(AudioFormat.CHANNEL_OUT_MONO)
+                    .setEncoding(AudioFormat.ENCODING_PCM_16BIT)
+                    .build()
+            )
+            .setBufferSizeInBytes(bufSize * 2)
+            .setTransferMode(AudioTrack.MODE_STREAM)
+            .build()
+
+        val outputDevice = getAudioDevices(AudioManager.GET_DEVICES_OUTPUTS)
+            .firstOrNull { it.id == outputDeviceId }
+        if (outputDevice != null) {
+            val preferred = track.setPreferredDevice(outputDevice)
+            Log.i(
+                "AudioService",
+                "RX AudioTrack: routing to ${outputDevice.productName} " +
+                    "type=${outputDevice.type} id=$outputDeviceId preferred=$preferred"
+            )
+        } else {
+            Log.w("AudioService", "RX AudioTrack: output device $outputDeviceId not found")
+        }
+
+        track.setVolume(rxOutputVolume)
+        track.play()
+        rxAudioTrack = track
+        rxJavaOutputLevelDb = -100f
+
+        rxPumpJob = lifecycleScope.launch(Dispatchers.IO) {
+            val buf = ShortArray(1600)
+            try {
+                while (isActive && bridge.isRunning && rxAudioTrack === track) {
+                    val got = bridge.nativeReadRxRing(buf, buf.size)
+                    if (got > 0) {
+                        var rms = 0.0
+                        for (i in 0 until got) {
+                            val sample = buf[i].toFloat() / 32768.0f * rxOutputVolume
+                            rms += sample * sample
+                        }
+                        rxJavaOutputLevelDb = (10.0 * kotlin.math.log10(rms / got + 1e-10)).toFloat()
+                        track.write(buf, 0, got)
+                    } else {
+                        delay(10)
+                    }
+                }
+            } catch (_: IllegalStateException) {
+                // AudioTrack was released during stop/switch.
+            }
+        }
+    }
+
+    private fun stopRxAudioTrackPump() {
+        rxPumpJob?.cancel()
+        rxPumpJob = null
+        try { rxAudioTrack?.stop() } catch (_: Exception) {}
+        try { rxAudioTrack?.release() } catch (_: Exception) {}
+        rxAudioTrack = null
+        rxJavaOutputLevelDb = -100f
+    }
+
     /* ── TX (Transmit) ──────────────────────────────────────── */
 
     fun startTransmitting(
@@ -625,6 +740,7 @@ class AudioService : LifecycleService() {
 
             audioBridge?.setOutputVolume(0f)  // mute immediately to prevent feedback
             audioBridge?.stopRecording()
+            stopRxAudioTrackPump()
             audioBridge?.stop()
             audioBridge?.release()
             audioBridge = null
@@ -988,7 +1104,7 @@ class AudioService : LifecycleService() {
                 val snr = bridge.snrEstimate
                 val freq = bridge.freqOffset
                 val inLvl = bridge.inputLevel
-                val outLvl = bridge.outputLevel
+                val outLvl = if (rxAudioTrack != null) rxJavaOutputLevelDb else bridge.outputLevel
                 val cs = bridge.lastCallsign
                 val spec = if (saving) FLAT_SPECTRUM else spectrumBuffer.copyOf()
                 val rejected = bridge.isUnprocessedRejected
@@ -1048,7 +1164,7 @@ class AudioService : LifecycleService() {
             freqOffset = bridge.freqOffset,
             syncState = bridge.syncState,
             inputLevelDb = bridge.inputLevel,
-            outputLevelDb = bridge.outputLevel
+            outputLevelDb = if (rxAudioTrack != null) rxJavaOutputLevelDb else bridge.outputLevel
         )
 
         lifecycleScope.launch(Dispatchers.IO) {

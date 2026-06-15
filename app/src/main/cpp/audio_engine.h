@@ -91,6 +91,9 @@ public:
     /** Samples still queued for TX playback (used to drain the EOO after stopTx). */
     int txRingAvailable() { return txPlaybackRing_.availableToRead(); }
     bool isTxUsingJavaOutput() const { return txUseJavaOutput_; }
+    int readRxRing(int16_t *buf, int maxSamples) { return playbackRing_.read(buf, maxSamples); }
+    void setRxJavaOutputEnabled(bool enabled);
+    bool isRxUsingJavaOutput() const { return rxUseJavaOutput_; }
 
     /* ── Network audio (Icom RS-BA1 / IC-705 Wi-Fi) ──────────────
      * Same DSP pipeline as the USB/Oboe path, but the rig-facing audio
@@ -217,6 +220,7 @@ private:
     int txInputDeviceId_ = 0;
     int txOutputDeviceId_ = 0;
     bool txUseJavaOutput_ = false;
+    bool rxUseJavaOutput_ = false;
     bool txNetMode_ = false;            // TX audio goes to UDP, not Oboe/AudioTrack
     std::atomic<bool> netRxRunning_{false};  // RX audio comes from UDP, not Oboe input
 

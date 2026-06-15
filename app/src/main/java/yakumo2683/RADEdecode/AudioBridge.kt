@@ -68,6 +68,9 @@ class AudioBridge(private val context: Context) {
     /** Switch decoded RX playback to a different output device. */
     fun setOutputDevice(deviceId: Int) = nativeSetOutputDevice(deviceId)
 
+    /** Use Kotlin/AudioTrack for RX playback instead of native Oboe output. */
+    fun setRxJavaOutputEnabled(enabled: Boolean) = nativeSetRxJavaOutputEnabled(enabled)
+
     /** Switch RX input and decoded-speech output together. */
     fun setDevices(inputDeviceId: Int, outputDeviceId: Int) =
         nativeSetDevices(inputDeviceId, outputDeviceId)
@@ -308,6 +311,8 @@ class AudioBridge(private val context: Context) {
     private external fun nativeIsRunning(): Boolean
     private external fun nativeSetInputDevice(deviceId: Int)
     private external fun nativeSetOutputDevice(deviceId: Int)
+    private external fun nativeSetRxJavaOutputEnabled(enabled: Boolean)
+    external fun nativeIsRxUsingJavaOutput(): Boolean
     private external fun nativeSetDevices(inputDeviceId: Int, outputDeviceId: Int)
     private external fun nativeSetOutputVolume(volume: Float)
     private external fun nativeGetSyncState(): Int
@@ -327,6 +332,7 @@ class AudioBridge(private val context: Context) {
     private external fun nativeSetTxCallsign(callsign: String)
     private external fun nativeGetTxLevel(): Float
     private external fun nativeSetTxOutputDevice(deviceId: Int)
+    external fun nativeReadRxRing(outBuf: ShortArray, maxSamples: Int): Int
     external fun nativeReadTxRing(outBuf: ShortArray, maxSamples: Int): Int
     external fun nativeTxRingAvailable(): Int
     external fun nativeIsTxUsingJavaOutput(): Boolean
