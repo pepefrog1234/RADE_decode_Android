@@ -168,7 +168,7 @@ class AudioService : LifecycleService() {
         }
 
         val rxOutputDeviceId = resolveRxOutputDeviceId(bridge, outputDeviceId)
-        val bluetoothRouteActive = prepareBluetoothCommunicationRoute(inputDeviceId, rxOutputDeviceId)
+        val bluetoothRouteActive = prepareBluetoothCommunicationRoute(inputDeviceId)
         val effectiveInputDeviceId = effectiveBluetoothInputDeviceId(inputDeviceId, bluetoothRouteActive)
         val effectiveOutputDeviceId = effectiveBluetoothOutputDeviceId(rxOutputDeviceId, bluetoothRouteActive)
         Log.i(
@@ -231,7 +231,7 @@ class AudioService : LifecycleService() {
         val bridge = audioBridge ?: return
         if (!_state.value.isRunning || _state.value.isTx) return
         val resolved = resolveRxOutputDeviceId(bridge, deviceId)
-        val bluetoothRouteActive = prepareBluetoothCommunicationRoute(null, resolved)
+        val bluetoothRouteActive = prepareBluetoothCommunicationRoute(null)
         val effectiveOutput = effectiveBluetoothOutputDeviceId(resolved, bluetoothRouteActive)
         Log.i(
             "AudioService",
@@ -246,7 +246,7 @@ class AudioService : LifecycleService() {
         if (!_state.value.isRunning || _state.value.isTx) return
 
         val resolvedOutput = resolveRxOutputDeviceId(bridge, outputDeviceId)
-        val bluetoothRouteActive = prepareBluetoothCommunicationRoute(inputDeviceId, resolvedOutput)
+        val bluetoothRouteActive = prepareBluetoothCommunicationRoute(inputDeviceId)
         val effectiveOutput = effectiveBluetoothOutputDeviceId(resolvedOutput, bluetoothRouteActive)
 
         if (networkAudioMode || (inputDeviceId == null && !bluetoothRouteActive)) {
@@ -302,8 +302,8 @@ class AudioService : LifecycleService() {
         }
     }
 
-    private fun prepareBluetoothCommunicationRoute(inputDeviceId: Int?, outputDeviceId: Int): Boolean {
-        if (!usesBluetoothRxRoute(inputDeviceId, outputDeviceId)) {
+    private fun prepareBluetoothCommunicationRoute(inputDeviceId: Int?): Boolean {
+        if (!usesBluetoothRxRoute(inputDeviceId)) {
             clearBluetoothCommunicationRouteIfNeeded()
             return false
         }
@@ -388,13 +388,10 @@ class AudioService : LifecycleService() {
         }
     }
 
-    private fun usesBluetoothRxRoute(inputDeviceId: Int?, outputDeviceId: Int): Boolean {
-        val inputUsesBluetooth = inputDeviceId != null &&
+    private fun usesBluetoothRxRoute(inputDeviceId: Int?): Boolean {
+        return inputDeviceId != null &&
             inputDeviceId > 0 &&
             isBluetoothDevice(inputDeviceId, AudioManager.GET_DEVICES_INPUTS)
-        val outputUsesBluetooth = outputDeviceId > 0 &&
-            isBluetoothDevice(outputDeviceId, AudioManager.GET_DEVICES_OUTPUTS)
-        return inputUsesBluetooth || outputUsesBluetooth
     }
 
     private fun effectiveBluetoothInputDeviceId(requestedInputDeviceId: Int, routeActive: Boolean): Int {

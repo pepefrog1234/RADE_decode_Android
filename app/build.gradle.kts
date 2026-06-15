@@ -11,8 +11,8 @@ android {
         applicationId = "yakumo2683.RADEdecode"
         minSdk = 26
         targetSdk = 35
-        versionCode = 10524
-        versionName = "1.5.24-bluetooth-hfp-mic"
+        versionCode = 10525
+        versionName = "1.5.25-bluetooth-auto-hotfix"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 

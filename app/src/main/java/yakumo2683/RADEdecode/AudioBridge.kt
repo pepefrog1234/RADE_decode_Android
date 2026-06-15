@@ -273,17 +273,16 @@ class AudioBridge(private val context: Context) {
     }
 
     /**
-     * Best automatic RX playback target: Bluetooth / wired headset first, then
-     * phone speaker. USB is intentionally not auto-picked because in the normal
-     * radio setup it may be the rig's transmit audio input; users can still
-     * select a USB DAC explicitly from settings.
+     * Best automatic RX playback target: stable local playback. Bluetooth is
+     * intentionally not auto-picked because turning Bluetooth on can expose a
+     * headset mic and steal the RX input route; users can still select Bluetooth
+     * explicitly from settings.
      */
     fun findPreferredRxOutputDevice(): AudioDevice? {
         val outputs = getOutputDevices()
-        return outputs.firstOrNull { it.isBluetooth }
-            ?: outputs.firstOrNull { it.isWired }
+        return outputs.firstOrNull { it.isWired }
             ?: outputs.firstOrNull { it.type == AudioDeviceInfo.TYPE_BUILTIN_SPEAKER }
-            ?: outputs.firstOrNull()
+            ?: outputs.firstOrNull { !it.isBluetooth && !it.isUsb }
     }
 
     /** List available audio output devices. */
