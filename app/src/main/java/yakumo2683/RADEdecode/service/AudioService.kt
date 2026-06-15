@@ -1,10 +1,12 @@
 package yakumo2683.RADEdecode.service
 
+import android.Manifest
 import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.PendingIntent
 import android.content.Intent
+import android.content.pm.PackageManager
 import android.content.pm.ServiceInfo
 import android.media.AudioAttributes
 import android.media.AudioDeviceInfo
@@ -16,6 +18,7 @@ import android.os.Build
 import android.os.IBinder
 import android.util.Log
 import androidx.core.app.NotificationCompat
+import androidx.core.content.ContextCompat
 import androidx.lifecycle.LifecycleService
 import androidx.lifecycle.lifecycleScope
 import kotlinx.coroutines.*
@@ -52,6 +55,8 @@ class AudioService : LifecycleService() {
     private var notificationUpdateJob: Job? = null
     private var db: AppDatabase? = null
     private var wavRecorder: WavRecorder? = null
+    private var bluetoothCommunicationRouteActive = false
+    private var previousAudioMode = AudioManager.MODE_NORMAL
 
     // Current session tracking
     private var currentWavPath: String? = null
@@ -163,11 +168,17 @@ class AudioService : LifecycleService() {
         }
 
         val rxOutputDeviceId = resolveRxOutputDeviceId(bridge, outputDeviceId)
+        val bluetoothRouteActive = prepareBluetoothCommunicationRoute(inputDeviceId, rxOutputDeviceId)
+        val effectiveInputDeviceId = effectiveBluetoothInputDeviceId(inputDeviceId, bluetoothRouteActive)
+        val effectiveOutputDeviceId = effectiveBluetoothOutputDeviceId(rxOutputDeviceId, bluetoothRouteActive)
         Log.i(
             "AudioService",
-            "startDecoding: input=$inputDeviceId rxOutputSelection=$outputDeviceId resolved=$rxOutputDeviceId"
+            "startDecoding: input=$inputDeviceId effectiveInput=$effectiveInputDeviceId " +
+                "rxOutputSelection=$outputDeviceId resolved=$rxOutputDeviceId " +
+                "effectiveOutput=$effectiveOutputDeviceId bluetoothRoute=$bluetoothRouteActive"
         )
-        if (!bridge.start(inputDeviceId, rxOutputDeviceId)) {
+        if (!bridge.start(effectiveInputDeviceId, effectiveOutputDeviceId)) {
+            clearBluetoothCommunicationRouteIfNeeded()
             stopSelf()
             return
         }
@@ -178,7 +189,7 @@ class AudioService : LifecycleService() {
         bridge.disableInputEffects()
 
         // Session will be created on first sync (in polling loop)
-        currentInputDeviceId = inputDeviceId
+        currentInputDeviceId = effectiveInputDeviceId
 
         _state.value = _state.value.copy(isRunning = true)
         startPolling()
@@ -203,6 +214,7 @@ class AudioService : LifecycleService() {
         audioBridge?.stop()
         audioBridge?.release()
         audioBridge = null
+        clearBluetoothCommunicationRouteIfNeeded()
 
         // Finalize current session to DB
         finalizeCurrentSession()
@@ -219,8 +231,14 @@ class AudioService : LifecycleService() {
         val bridge = audioBridge ?: return
         if (!_state.value.isRunning || _state.value.isTx) return
         val resolved = resolveRxOutputDeviceId(bridge, deviceId)
-        Log.i("AudioService", "setRxOutputDevice: selection=$deviceId resolved=$resolved")
-        bridge.setOutputDevice(resolved)
+        val bluetoothRouteActive = prepareBluetoothCommunicationRoute(null, resolved)
+        val effectiveOutput = effectiveBluetoothOutputDeviceId(resolved, bluetoothRouteActive)
+        Log.i(
+            "AudioService",
+            "setRxOutputDevice: selection=$deviceId resolved=$resolved " +
+                "effectiveOutput=$effectiveOutput bluetoothRoute=$bluetoothRouteActive"
+        )
+        bridge.setOutputDevice(effectiveOutput)
     }
 
     fun setRxAudioDevices(inputDeviceId: Int?, outputDeviceId: Int) {
@@ -228,23 +246,30 @@ class AudioService : LifecycleService() {
         if (!_state.value.isRunning || _state.value.isTx) return
 
         val resolvedOutput = resolveRxOutputDeviceId(bridge, outputDeviceId)
-        if (networkAudioMode || inputDeviceId == null) {
+        val bluetoothRouteActive = prepareBluetoothCommunicationRoute(inputDeviceId, resolvedOutput)
+        val effectiveOutput = effectiveBluetoothOutputDeviceId(resolvedOutput, bluetoothRouteActive)
+
+        if (networkAudioMode || (inputDeviceId == null && !bluetoothRouteActive)) {
             Log.i(
                 "AudioService",
-                "setRxAudioDevices: outputOnly selection=$outputDeviceId resolved=$resolvedOutput"
+                "setRxAudioDevices: outputOnly selection=$outputDeviceId resolved=$resolvedOutput " +
+                    "effectiveOutput=$effectiveOutput bluetoothRoute=$bluetoothRouteActive"
             )
-            bridge.setOutputDevice(resolvedOutput)
+            bridge.setOutputDevice(effectiveOutput)
             return
         }
 
-        val resolvedInput = if (inputDeviceId > 0) inputDeviceId else -1
+        val resolvedInput = inputDeviceId?.takeIf { it > 0 } ?: -1
+        val effectiveInput = effectiveBluetoothInputDeviceId(resolvedInput, bluetoothRouteActive)
         Log.i(
             "AudioService",
-            "setRxAudioDevices: input=$resolvedInput outputSelection=$outputDeviceId resolvedOutput=$resolvedOutput"
+            "setRxAudioDevices: input=$resolvedInput effectiveInput=$effectiveInput " +
+                "outputSelection=$outputDeviceId resolvedOutput=$resolvedOutput " +
+                "effectiveOutput=$effectiveOutput bluetoothRoute=$bluetoothRouteActive"
         )
-        bridge.setDevices(resolvedInput, resolvedOutput)
+        bridge.setDevices(effectiveInput, effectiveOutput)
         bridge.disableInputEffects()
-        currentInputDeviceId = resolvedInput
+        currentInputDeviceId = effectiveInput
     }
 
     /**
@@ -276,6 +301,150 @@ class AudioService : LifecycleService() {
             else -> bridge.findPreferredRxOutputDevice()?.id ?: -1
         }
     }
+
+    private fun prepareBluetoothCommunicationRoute(inputDeviceId: Int?, outputDeviceId: Int): Boolean {
+        if (!usesBluetoothRxRoute(inputDeviceId, outputDeviceId)) {
+            clearBluetoothCommunicationRouteIfNeeded()
+            return false
+        }
+
+        if (!hasBluetoothConnectPermission()) {
+            Log.w("AudioService", "Bluetooth route requested without BLUETOOTH_CONNECT permission")
+            return false
+        }
+
+        val am = audioManager()
+        val wasActive = bluetoothCommunicationRouteActive
+        if (!wasActive) previousAudioMode = am.mode
+
+        return try {
+            am.mode = AudioManager.MODE_IN_COMMUNICATION
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                val scoDevice = am.availableCommunicationDevices.firstOrNull {
+                    it.type == AudioDeviceInfo.TYPE_BLUETOOTH_SCO
+                }
+                if (scoDevice == null) {
+                    Log.w("AudioService", "No Bluetooth SCO communication device is available")
+                    if (wasActive) clearBluetoothCommunicationRouteIfNeeded()
+                    else am.mode = previousAudioMode
+                    false
+                } else {
+                    val routed = am.setCommunicationDevice(scoDevice)
+                    bluetoothCommunicationRouteActive = routed
+                    Log.i(
+                        "AudioService",
+                        "Bluetooth communication route: routed=$routed " +
+                            "device=${scoDevice.productName} id=${scoDevice.id}"
+                    )
+                    if (!routed) {
+                        if (wasActive) clearBluetoothCommunicationRouteIfNeeded()
+                        else am.mode = previousAudioMode
+                    }
+                    routed
+                }
+            } else {
+                @Suppress("DEPRECATION")
+                run {
+                    am.startBluetoothSco()
+                    am.isBluetoothScoOn = true
+                }
+                bluetoothCommunicationRouteActive = true
+                Log.i("AudioService", "Bluetooth SCO route requested through legacy API")
+                true
+            }
+        } catch (e: SecurityException) {
+            if (wasActive) clearBluetoothCommunicationRouteIfNeeded()
+            else am.mode = previousAudioMode
+            Log.w("AudioService", "Bluetooth communication route denied", e)
+            false
+        } catch (e: RuntimeException) {
+            if (wasActive) clearBluetoothCommunicationRouteIfNeeded()
+            else am.mode = previousAudioMode
+            Log.w("AudioService", "Bluetooth communication route failed", e)
+            false
+        }
+    }
+
+    private fun clearBluetoothCommunicationRouteIfNeeded() {
+        if (!bluetoothCommunicationRouteActive) return
+
+        val am = audioManager()
+        try {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                am.clearCommunicationDevice()
+            } else {
+                @Suppress("DEPRECATION")
+                run {
+                    am.stopBluetoothSco()
+                    am.isBluetoothScoOn = false
+                }
+            }
+            am.mode = previousAudioMode
+            Log.i("AudioService", "Bluetooth communication route cleared")
+        } catch (e: RuntimeException) {
+            Log.w("AudioService", "Failed to clear Bluetooth communication route", e)
+        } finally {
+            bluetoothCommunicationRouteActive = false
+        }
+    }
+
+    private fun usesBluetoothRxRoute(inputDeviceId: Int?, outputDeviceId: Int): Boolean {
+        val inputUsesBluetooth = inputDeviceId != null &&
+            inputDeviceId > 0 &&
+            isBluetoothDevice(inputDeviceId, AudioManager.GET_DEVICES_INPUTS)
+        val outputUsesBluetooth = outputDeviceId > 0 &&
+            isBluetoothDevice(outputDeviceId, AudioManager.GET_DEVICES_OUTPUTS)
+        return inputUsesBluetooth || outputUsesBluetooth
+    }
+
+    private fun effectiveBluetoothInputDeviceId(requestedInputDeviceId: Int, routeActive: Boolean): Int {
+        if (!routeActive) return requestedInputDeviceId
+        if (requestedInputDeviceId > 0 &&
+            isBluetoothScoDevice(requestedInputDeviceId, AudioManager.GET_DEVICES_INPUTS)
+        ) {
+            return requestedInputDeviceId
+        }
+        return findBluetoothScoDeviceId(AudioManager.GET_DEVICES_INPUTS) ?: -1
+    }
+
+    private fun effectiveBluetoothOutputDeviceId(requestedOutputDeviceId: Int, routeActive: Boolean): Int {
+        if (!routeActive) return requestedOutputDeviceId
+        if (requestedOutputDeviceId > 0 &&
+            isBluetoothScoDevice(requestedOutputDeviceId, AudioManager.GET_DEVICES_OUTPUTS)
+        ) {
+            return requestedOutputDeviceId
+        }
+        return findBluetoothScoDeviceId(AudioManager.GET_DEVICES_OUTPUTS) ?: -1
+    }
+
+    private fun findBluetoothScoDeviceId(flags: Int): Int? =
+        getAudioDevices(flags).firstOrNull { it.type == AudioDeviceInfo.TYPE_BLUETOOTH_SCO }?.id
+
+    private fun isBluetoothDevice(deviceId: Int, flags: Int): Boolean {
+        val type = getAudioDevices(flags).firstOrNull { it.id == deviceId }?.type ?: return false
+        return type == AudioDeviceInfo.TYPE_BLUETOOTH_A2DP ||
+            type == AudioDeviceInfo.TYPE_BLUETOOTH_SCO
+    }
+
+    private fun isBluetoothScoDevice(deviceId: Int, flags: Int): Boolean =
+        getAudioDevices(flags).firstOrNull { it.id == deviceId }?.type == AudioDeviceInfo.TYPE_BLUETOOTH_SCO
+
+    private fun getAudioDevices(flags: Int): Array<AudioDeviceInfo> {
+        return try {
+            audioManager().getDevices(flags)
+        } catch (e: SecurityException) {
+            Log.w("AudioService", "Audio device listing requires Bluetooth permission", e)
+            emptyArray()
+        }
+    }
+
+    private fun hasBluetoothConnectPermission(): Boolean =
+        Build.VERSION.SDK_INT < Build.VERSION_CODES.S ||
+            ContextCompat.checkSelfPermission(this, Manifest.permission.BLUETOOTH_CONNECT) ==
+                PackageManager.PERMISSION_GRANTED
+
+    private fun audioManager(): AudioManager =
+        getSystemService(AUDIO_SERVICE) as AudioManager
 
     /* ── Network audio (IC-705 Wi-Fi, full wireless) ─────────── */
 
@@ -359,6 +528,7 @@ class AudioService : LifecycleService() {
             audioBridge?.stop()
             audioBridge?.release()
             audioBridge = null
+            clearBluetoothCommunicationRouteIfNeeded()
         }
 
         val bridge = AudioBridge(applicationContext)
@@ -461,6 +631,7 @@ class AudioService : LifecycleService() {
             audioBridge?.stop()
             audioBridge?.release()
             audioBridge = null
+            clearBluetoothCommunicationRouteIfNeeded()
 
             finalizeCurrentSession()
         }

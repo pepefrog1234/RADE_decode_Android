@@ -2,6 +2,7 @@ package yakumo2683.RADEdecode.ui
 
 import android.Manifest
 import android.content.pm.PackageManager
+import android.os.Build
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.animateColorAsState
@@ -48,17 +49,14 @@ fun TransceiverScreen(viewModel: TransceiverViewModel = viewModel()) {
     val context = LocalContext.current
 
     var hasAudioPermission by remember {
-        mutableStateOf(
-            ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO) ==
-                PackageManager.PERMISSION_GRANTED
-        )
+        mutableStateOf(hasRecordAudioPermission(context))
     }
 
     val permissionLauncher = rememberLauncherForActivityResult(
-        ActivityResultContracts.RequestPermission()
-    ) { granted ->
-        hasAudioPermission = granted
-        if (granted) viewModel.startReceiving()
+        ActivityResultContracts.RequestMultiplePermissions()
+    ) {
+        hasAudioPermission = hasRecordAudioPermission(context)
+        if (hasAudioPermission) viewModel.startReceiving()
     }
 
     val isActive = state.isRunning || state.isTx  // engine is doing something
@@ -180,13 +178,35 @@ fun TransceiverScreen(viewModel: TransceiverViewModel = viewModel()) {
                 if (isActive) {
                     viewModel.stopAll()
                 } else {
-                    if (hasAudioPermission) viewModel.startReceiving()
-                    else permissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
+                    hasAudioPermission = hasRecordAudioPermission(context)
+                    val missingPermissions = missingAudioRoutePermissions(context)
+                    if (missingPermissions.isNotEmpty()) {
+                        permissionLauncher.launch(missingPermissions)
+                    } else {
+                        viewModel.startReceiving()
+                    }
                 }
             }
         )
     }
 }
+
+private fun requiredAudioRoutePermissions(): Array<String> {
+    val permissions = mutableListOf(Manifest.permission.RECORD_AUDIO)
+    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+        permissions += Manifest.permission.BLUETOOTH_CONNECT
+    }
+    return permissions.toTypedArray()
+}
+
+private fun missingAudioRoutePermissions(context: android.content.Context): Array<String> =
+    requiredAudioRoutePermissions().filter { permission ->
+        ContextCompat.checkSelfPermission(context, permission) != PackageManager.PERMISSION_GRANTED
+    }.toTypedArray()
+
+private fun hasRecordAudioPermission(context: android.content.Context): Boolean =
+    ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO) ==
+        PackageManager.PERMISSION_GRANTED
 
 /* ── Sync Header (RX) ────────────────────────────────────────── */
 

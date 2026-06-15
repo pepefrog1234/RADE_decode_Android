@@ -4,6 +4,11 @@
 
     <!-- Audio recording from USB sound card -->
     <uses-permission android:name="android.permission.RECORD_AUDIO" />
+    <uses-permission android:name="android.permission.MODIFY_AUDIO_SETTINGS" />
+
+    <!-- Bluetooth headset/HFP microphone routing -->
+    <uses-permission android:name="android.permission.BLUETOOTH" android:maxSdkVersion="30" />
+    <uses-permission android:name="android.permission.BLUETOOTH_CONNECT" />
 
     <!-- USB device access -->
     <uses-feature android:name="android.hardware.usb.host" android:required="false" />

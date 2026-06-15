@@ -247,7 +247,7 @@ class AudioBridge(private val context: Context) {
     /** List available audio input devices. */
     fun getInputDevices(): List<AudioDevice> {
         val am = context.getSystemService(Context.AUDIO_SERVICE) as AudioManager
-        return am.getDevices(AudioManager.GET_DEVICES_INPUTS)
+        return getAudioDevices(am, AudioManager.GET_DEVICES_INPUTS)
             .distinctBy { it.id }
             .map { toAudioDevice(it) }
             .sortedWith(audioDeviceComparator)
@@ -289,7 +289,7 @@ class AudioBridge(private val context: Context) {
     /** List available audio output devices. */
     fun getOutputDevices(): List<AudioDevice> {
         val am = context.getSystemService(Context.AUDIO_SERVICE) as AudioManager
-        return am.getDevices(AudioManager.GET_DEVICES_OUTPUTS)
+        return getAudioDevices(am, AudioManager.GET_DEVICES_OUTPUTS)
             .distinctBy { it.id }
             .map { toAudioDevice(it) }
             .sortedWith(audioDeviceComparator)
@@ -369,6 +369,15 @@ class AudioBridge(private val context: Context) {
     private fun isWiredType(type: Int): Boolean =
         type == AudioDeviceInfo.TYPE_WIRED_HEADSET ||
             type == AudioDeviceInfo.TYPE_WIRED_HEADPHONES
+
+    private fun getAudioDevices(am: AudioManager, flags: Int): Array<AudioDeviceInfo> {
+        return try {
+            am.getDevices(flags)
+        } catch (e: SecurityException) {
+            Log.w("AudioBridge", "Audio device listing requires Bluetooth permission", e)
+            emptyArray()
+        }
+    }
 
     private fun deviceTypeName(type: Int): String = when (type) {
         AudioDeviceInfo.TYPE_BUILTIN_MIC -> "Built-in Mic"
