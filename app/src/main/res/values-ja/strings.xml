@@ -31,6 +31,9 @@
     <string name="header_ptt">PTT</string>
     <string name="settings_ptt_hold">押し続けて送信（PTT）</string>
     <string name="settings_ptt_hold_help">オンにすると送信ボタンがトランシーバー式になります：押している間だけ送信し、離すとすぐに受信へ戻ります。オフの場合はタップで送信／受信を切り替えます。</string>
+    <string name="header_bt_mic">Bluetooth マイク（送信）</string>
+    <string name="settings_bt_mic_tx">送信に Bluetooth マイクを使う（実験的）</string>
+    <string name="settings_bt_mic_tx_help">送信時の音声を、スマホのマイクではなく Bluetooth ヘッドセットのマイク（通話／SCO モード）から取り込みます。実験的機能です：SCO は機種によってルーティングを乱すことがあり、ヘッドセットが受信（聞く）と送信（話す）を切り替える際に少し時間がかかります。オフ＝スマホのマイク。受信と Bluetooth 再生には影響しません。</string>
     <string name="btn_stop">停止</string>
     <string name="btn_start">開始</string>
 

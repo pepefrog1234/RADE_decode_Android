@@ -11,8 +11,8 @@ android {
         applicationId = "yakumo2683.RADEdecode"
         minSdk = 26
         targetSdk = 35
-        versionCode = 10527
-        versionName = "1.5.27-bluetooth-oboe-output"
+        versionCode = 10528
+        versionName = "1.5.28-bluetooth-tx-mic"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 

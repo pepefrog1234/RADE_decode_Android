@@ -351,7 +351,16 @@ class AudioService : LifecycleService() {
             clearBluetoothCommunicationRouteIfNeeded()
             return false
         }
+        return activateBluetoothScoRoute()
+    }
 
+    /**
+     * Bring up the Bluetooth HFP/SCO communication route (call-audio mode) so the
+     * headset microphone can be captured. Shared by the RX path (only when a
+     * Bluetooth input is explicitly selected) and the experimental TX
+     * Bluetooth-mic option. Returns whether the route is active.
+     */
+    private fun activateBluetoothScoRoute(): Boolean {
         if (!hasBluetoothConnectPermission()) {
             Log.w("AudioService", "Bluetooth route requested without BLUETOOTH_CONNECT permission")
             return false
@@ -460,6 +469,19 @@ class AudioService : LifecycleService() {
 
     private fun findBluetoothScoDeviceId(flags: Int): Int? =
         getAudioDevices(flags).firstOrNull { it.type == AudioDeviceInfo.TYPE_BLUETOOTH_SCO }?.id
+
+    /**
+     * Resolve the Bluetooth SCO *input* (mic) device id, polling briefly because it
+     * only enumerates once the SCO link is up after [activateBluetoothScoRoute].
+     * Returns -1 if it never appears (caller falls back to the built-in mic).
+     */
+    private fun resolveBluetoothScoInputId(): Int {
+        repeat(8) { attempt ->
+            findBluetoothScoDeviceId(AudioManager.GET_DEVICES_INPUTS)?.let { return it }
+            if (attempt < 7) try { Thread.sleep(100) } catch (_: InterruptedException) {}
+        }
+        return -1
+    }
 
     private fun isBluetoothDevice(deviceId: Int, flags: Int): Boolean {
         val type = getAudioDevices(flags).firstOrNull { it.id == deviceId }?.type ?: return false
@@ -766,7 +788,8 @@ class AudioService : LifecycleService() {
     fun startTransmitting(
         inputDeviceId: Int = -1,
         outputDeviceId: Int = -1,
-        callsign: String = ""
+        callsign: String = "",
+        useBluetoothMic: Boolean = false
     ) {
         if (_state.value.isTx) return
 
@@ -806,10 +829,36 @@ class AudioService : LifecycleService() {
             bridge.setTxCallsign(callsign)
         }
 
-        Log.i("AudioService", "startTx: inputDeviceId=$inputDeviceId outputDeviceId=$outputDeviceId")
-        if (!bridge.startTx(inputDeviceId, outputDeviceId)) {
+        // Experimental: capture TX voice from the Bluetooth headset mic. Bring up
+        // the SCO (call-audio) route and use the SCO input device; fall back to the
+        // requested mic if SCO doesn't come up. TX output still goes to USB/radio.
+        // SCO is torn down again in stopTransmitting(). Only the TX path touches it,
+        // so the RX/A2DP playback path is unaffected.
+        var effectiveInputDeviceId = inputDeviceId
+        if (useBluetoothMic) {
+            val scoActive = activateBluetoothScoRoute()
+            val scoInput = if (scoActive) resolveBluetoothScoInputId() else -1
+            if (scoInput > 0) {
+                effectiveInputDeviceId = scoInput
+                Log.i("AudioService", "TX Bluetooth mic: SCO active, capturing from scoInput=$scoInput")
+            } else {
+                Log.w(
+                    "AudioService",
+                    "TX Bluetooth mic requested but unavailable (scoActive=$scoActive); " +
+                        "falling back to mic id=$inputDeviceId"
+                )
+            }
+        }
+
+        Log.i(
+            "AudioService",
+            "startTx: inputDeviceId=$inputDeviceId effectiveInput=$effectiveInputDeviceId " +
+                "outputDeviceId=$outputDeviceId useBluetoothMic=$useBluetoothMic"
+        )
+        if (!bridge.startTx(effectiveInputDeviceId, outputDeviceId)) {
             bridge.release()
             audioBridge = null
+            clearBluetoothCommunicationRouteIfNeeded()
             stopSelf()
             return
         }
@@ -847,6 +896,9 @@ class AudioService : LifecycleService() {
 
         audioBridge?.release()
         audioBridge = null
+        // Tear down the Bluetooth SCO route if the experimental TX mic brought it up,
+        // so the headset returns to A2DP for RX playback.
+        clearBluetoothCommunicationRouteIfNeeded()
 
         _state.value = ServiceState()
         stopForeground(STOP_FOREGROUND_REMOVE)

@@ -71,7 +71,8 @@ class TransceiverViewModel(application: Application) : AndroidViewModel(applicat
         val builtInMicId: Int = -1,
         val serviceBound: Boolean = false,
         val powerSaveMode: Boolean = false,  // 效能節約模式: hide spectrum/waterfall + skip FFT on weak devices
-        val pttHoldMode: Boolean = false     // hold-to-talk: TX is keyed only while the TX button is held
+        val pttHoldMode: Boolean = false,    // hold-to-talk: TX is keyed only while the TX button is held
+        val bluetoothMicTx: Boolean = false  // experimental: capture TX voice from the Bluetooth headset mic (SCO)
     ) {
         val syncText: String get() = when (syncState) {
             0 -> "SEARCH"
@@ -143,6 +144,7 @@ class TransceiverViewModel(application: Application) : AndroidViewModel(applicat
         _uiState.value = _uiState.value.copy(
             powerSaveMode = prefs.getBoolean("power_save_mode", false),
             pttHoldMode = prefs.getBoolean("ptt_hold_mode", false),
+            bluetoothMicTx = prefs.getBoolean("bluetooth_mic_tx", false),
             selectedDeviceId = savedRxInputDeviceId,
             selectedRxOutputDeviceId = prefs.getInt(
                 "rx_output_device",
@@ -322,6 +324,16 @@ class TransceiverViewModel(application: Application) : AndroidViewModel(applicat
     }
 
     /**
+     * Experimental: capture TX voice from the Bluetooth headset mic (HFP/SCO) instead
+     * of the phone mic. Off by default. Only affects the TX path — RX and Bluetooth
+     * A2DP playback are untouched.
+     */
+    fun setBluetoothMicTx(enabled: Boolean) {
+        prefs.edit().putBoolean("bluetooth_mic_tx", enabled).apply()
+        _uiState.value = _uiState.value.copy(bluetoothMicTx = enabled)
+    }
+
+    /**
      * Release of the held TX button. A very short press can be released
      * before TX has finished engaging (isTx still false), and switchToRx()
      * would no-op then — leaving the rig keyed. Wait briefly for TX to
@@ -369,7 +381,8 @@ class TransceiverViewModel(application: Application) : AndroidViewModel(applicat
             audioService?.startTransmitting(
                 inputDeviceId = _uiState.value.builtInMicId,  // built-in mic, not USB audio
                 outputDeviceId = _uiState.value.selectedOutputDeviceId,
-                callsign = _uiState.value.txCallsign
+                callsign = _uiState.value.txCallsign,
+                useBluetoothMic = _uiState.value.bluetoothMicTx
             )
         }
     }
@@ -420,7 +433,8 @@ class TransceiverViewModel(application: Application) : AndroidViewModel(applicat
         audioService?.startTransmitting(
             inputDeviceId = _uiState.value.builtInMicId,
             outputDeviceId = outId,
-            callsign = _uiState.value.txCallsign
+            callsign = _uiState.value.txCallsign,
+            useBluetoothMic = _uiState.value.bluetoothMicTx
         )
     }
 

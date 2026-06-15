@@ -436,6 +436,40 @@ fun SettingsScreen(viewModel: TransceiverViewModel = viewModel()) {
             }
         }
 
+        SectionHeader(stringResource(R.string.header_bt_mic))
+
+        Surface(
+            shape = RoundedCornerShape(12.dp),
+            color = SurfaceCard,
+            modifier = Modifier
+                .fillMaxWidth()
+                .border(1.dp, MaterialTheme.colorScheme.outline, RoundedCornerShape(12.dp))
+        ) {
+            Column(modifier = Modifier.padding(16.dp)) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text(
+                        stringResource(R.string.settings_bt_mic_tx),
+                        fontWeight = FontWeight.Bold,
+                        color = MaterialTheme.colorScheme.onSurface
+                    )
+                    Switch(
+                        checked = state.bluetoothMicTx,
+                        onCheckedChange = { viewModel.setBluetoothMicTx(it) },
+                        colors = SwitchDefaults.colors(checkedTrackColor = Cyan400)
+                    )
+                }
+                Spacer(Modifier.height(8.dp))
+                Text(
+                    stringResource(R.string.settings_bt_mic_tx_help),
+                    fontSize = 11.sp, color = OnSurfaceDim, lineHeight = 16.sp
+                )
+            }
+        }
+
         // ── FreeDV Reporter ──
         SectionHeader("FREEDV REPORTER")
 
