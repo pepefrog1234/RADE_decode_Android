@@ -367,6 +367,18 @@ class AudioService : LifecycleService() {
         }
 
         val am = audioManager()
+        // Best-effort hint to negotiate WIDEBAND SCO (mSBC / "HD Voice", 16 kHz,
+        // ~7-8 kHz audio) rather than narrowband CVSD (~3.4 kHz — the "muffled"
+        // telephone sound). This is a vendor HAL parameter set before the SCO link
+        // is established; phones that don't recognise it ignore it, and the headset
+        // must support wideband for it to take effect (negotiation still falls back
+        // to narrowband otherwise, so it can't break SCO). The actual negotiated rate
+        // shows in the native "TX: input rate=" log (16000=wideband, 8000=narrowband).
+        try {
+            am.setParameters("bt_wbs=on")
+        } catch (e: Exception) {
+            Log.w("AudioService", "Wideband SCO hint (bt_wbs=on) failed", e)
+        }
         val wasActive = bluetoothCommunicationRouteActive
         if (!wasActive) previousAudioMode = am.mode
 
@@ -835,11 +847,13 @@ class AudioService : LifecycleService() {
         // SCO is torn down again in stopTransmitting(). Only the TX path touches it,
         // so the RX/A2DP playback path is unaffected.
         var effectiveInputDeviceId = inputDeviceId
+        var bluetoothMicEngaged = false
         if (useBluetoothMic) {
             val scoActive = activateBluetoothScoRoute()
             val scoInput = if (scoActive) resolveBluetoothScoInputId() else -1
             if (scoInput > 0) {
                 effectiveInputDeviceId = scoInput
+                bluetoothMicEngaged = true
                 Log.i("AudioService", "TX Bluetooth mic: SCO active, capturing from scoInput=$scoInput")
             } else {
                 Log.w(
@@ -864,6 +878,17 @@ class AudioService : LifecycleService() {
         }
 
         _state.value = _state.value.copy(isTx = true, isRunning = false)
+
+        // Experimental: turn off Android's mic processing (NS/AGC/AEC) on the
+        // Bluetooth SCO TX session — same trick RX uses on the built-in mic. May
+        // ease some processing-induced "muffle", though the SCO codec bandwidth is
+        // the dominant limiter. Scoped to the BT mic so the built-in-mic TX is
+        // unchanged. (May report nothing to disable if the SCO processing lives in
+        // the headset/BT HAL rather than the app session.)
+        if (bluetoothMicEngaged) {
+            val report = bridge.disableInputEffects()
+            Log.i("AudioService", "TX Bluetooth mic effects: $report")
+        }
 
         // If native chose Java output (USB audio), start AudioTrack pump
         if (bridge.nativeIsTxUsingJavaOutput()) {

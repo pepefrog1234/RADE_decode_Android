@@ -973,6 +973,9 @@ bool AudioEngine::openTxInputStream() {
            ->setSharingMode(oboe::SharingMode::Shared)
            ->setFormat(oboe::AudioFormat::Float)
            ->setChannelCount(oboe::ChannelCount::Mono)
+           // Allocate a session id so Kotlin can attach and disable platform effects
+           // (NS/AGC/AEC) on the TX mic — used for the experimental Bluetooth SCO mic.
+           ->setSessionId(oboe::SessionId::Allocate)
            ->setDataCallback(std::static_pointer_cast<oboe::AudioStreamDataCallback>(txInputCb_))
            ->setErrorCallback(std::static_pointer_cast<oboe::AudioStreamErrorCallback>(txInputCb_));
 
@@ -1004,6 +1007,7 @@ bool AudioEngine::openTxInputStream() {
              ->setSharingMode(oboe::SharingMode::Exclusive)
              ->setFormat(oboe::AudioFormat::Float)
              ->setChannelCount(oboe::ChannelCount::Mono)
+             ->setSessionId(oboe::SessionId::Allocate)
              ->setInputPreset(oboe::InputPreset::Unprocessed)
              ->setDeviceId(txInputDeviceId_)
              ->setDataCallback(std::static_pointer_cast<oboe::AudioStreamDataCallback>(txInputCb_))
@@ -1017,8 +1021,12 @@ bool AudioEngine::openTxInputStream() {
     }
 
     txActualInputRate_ = txInputStream_->getSampleRate();
-    LOGI("TX: input rate=%d device=%d (wanted=%d)",
-         txActualInputRate_, txInputStream_->getDeviceId(), txInputDeviceId_);
+    inputSessionId_ = txInputStream_->getSessionId();
+    // For the Bluetooth SCO mic, the negotiated input rate reveals the HFP codec:
+    // 16000 = wideband (mSBC / "HD Voice", ~7-8 kHz); 8000 = narrowband (CVSD,
+    // ~3.4 kHz, the "muffled" telephone bandwidth).
+    LOGI("TX: input rate=%d device=%d (wanted=%d) session=%d (SCO 16k=mSBC/WBS 8k=CVSD/NB)",
+         txActualInputRate_, txInputStream_->getDeviceId(), txInputDeviceId_, inputSessionId_);
 
     result = txInputStream_->requestStart();
     if (result != oboe::Result::OK) {
