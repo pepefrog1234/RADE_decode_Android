@@ -108,6 +108,9 @@
     <string name="settings_rx_output_auto_help">Use wired audio when connected; otherwise use the phone speaker. Select Bluetooth explicitly to route playback there.</string>
     <string name="settings_rx_output_system">System default</string>
     <string name="settings_rx_output_system_help">Let Android route playback, useful for USB DACs and external speakers.</string>
+    <string name="settings_rx_output_test">Test selected RX output</string>
+    <string name="settings_rx_output_testing">Testing… (1 kHz tone)</string>
+    <string name="settings_rx_output_test_help">Plays a 1 kHz tone to the selected output and shows where Android actually routed it — this tells a routing problem apart from \"no decoded speech yet\". Try it with USB audio both connected and disconnected.</string>
     <string name="header_tx_output">TX OUTPUT</string>
     <string name="settings_tx_level">USB TX level</string>
     <string name="settings_tx_level_help">Drive level of the RADE waveform into the rig\'s USB audio input. Too low → ALC barely moves, reduced TX power. Too high → ALC slams, distorted signal. Also check your rig\'s USB MOD Level (IC-7300: Menu → SET → Connectors → USB MOD Level).</string>

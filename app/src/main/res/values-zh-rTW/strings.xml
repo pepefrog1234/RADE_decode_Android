@@ -107,6 +107,9 @@
     <string name="settings_rx_output_auto_help">連接有線音訊時優先使用，否則使用手機喇叭。Bluetooth 請明確選擇裝置。</string>
     <string name="settings_rx_output_system">系統預設</string>
     <string name="settings_rx_output_system_help">交由 Android 選擇播放路徑，適用於 USB DAC 與外接喇叭。</string>
+    <string name="settings_rx_output_test">測試所選接收輸出</string>
+    <string name="settings_rx_output_testing">測試中…（1kHz 測試音）</string>
+    <string name="settings_rx_output_test_help">向所選輸出播放 1kHz 測試音，並顯示 Android 實際路由到的裝置，用於區分是路由問題還是尚無解碼語音。請在連接與拔除 USB 音訊兩種情況下分別測試。</string>
     <string name="header_tx_output">發射音量</string>
     <string name="settings_tx_level">USB 發射音量</string>
     <string name="settings_tx_level_help">送入電台 USB 音訊輸入的 RADE 波形強度。太低 → ALC 不動、發射功率低；太高 → ALC 撞頂、訊號失真。同時請檢查電台的 USB MOD Level（IC-7300：選單 → SET → Connectors → USB MOD Level）。</string>

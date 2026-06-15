@@ -328,8 +328,23 @@ class AudioService : LifecycleService() {
         }
     }
 
-    private fun shouldUseJavaRxOutput(outputDeviceId: Int): Boolean =
-        outputDeviceId > 0 && isBluetoothDevice(outputDeviceId, AudioManager.GET_DEVICES_OUTPUTS)
+    /**
+     * Whether decoded RX speech plays through a Java [AudioTrack] instead of the
+     * native Oboe output stream.
+     *
+     * Always false. ALL RX output — including Bluetooth A2DP — goes through native
+     * Oboe, which opens the stream directly on the chosen device id
+     * (`AAudioStreamBuilder_setDeviceId`, a hard device request). This is the
+     * v1.5.22 path the user confirmed worked for Bluetooth playback.
+     *
+     * The v1.5.26 Java path used [AudioTrack.setPreferredDevice], which is only a
+     * soft hint the platform audio policy can override — e.g. bouncing media back
+     * to the speaker/USB while a USB audio device is attached. That, layered on
+     * the v1.5.24 mic/SCO changes, is the regression the user bisected ("v1.5.22
+     * までは Bluetooth 再生は正常"). The Java pump below is left dormant rather than
+     * deleted so it can be revisited if a device ever needs it.
+     */
+    private fun shouldUseJavaRxOutput(@Suppress("UNUSED_PARAMETER") outputDeviceId: Int): Boolean = false
 
     private fun prepareBluetoothCommunicationRoute(inputDeviceId: Int?): Boolean {
         if (!usesBluetoothRxRoute(inputDeviceId)) {
@@ -691,6 +706,17 @@ class AudioService : LifecycleService() {
         rxAudioTrack = track
         rxJavaOutputLevelDb = -100f
 
+        // Route verification. setPreferredDevice() is a *request*, not a guarantee:
+        // some OEMs refuse to move media to A2DP while a USB audio device is
+        // attached (the user's YouTube symptom). Log what Android actually routed
+        // to so we can tell a denied route from "no decoded speech yet".
+        lifecycleScope.launch(Dispatchers.IO) {
+            delay(300)
+            logRxRoutedDevice(track, outputDeviceId, "300ms")
+            delay(1200)
+            logRxRoutedDevice(track, outputDeviceId, "1500ms")
+        }
+
         rxPumpJob = lifecycleScope.launch(Dispatchers.IO) {
             val buf = ShortArray(1600)
             try {
@@ -721,6 +747,18 @@ class AudioService : LifecycleService() {
         try { rxAudioTrack?.release() } catch (_: Exception) {}
         rxAudioTrack = null
         rxJavaOutputLevelDb = -100f
+    }
+
+    /** Log where Android actually routed the RX AudioTrack vs. what we requested. */
+    private fun logRxRoutedDevice(track: AudioTrack, requestedId: Int, whenTag: String) {
+        if (rxAudioTrack !== track) return
+        val routed = try { track.routedDevice } catch (_: Exception) { null }
+        val matched = routed != null && routed.id == requestedId
+        Log.i(
+            "AudioService",
+            "RX route@$whenTag: requested id=$requestedId routed id=${routed?.id} " +
+                "type=${routed?.type} name=${routed?.productName} matched=$matched"
+        )
     }
 
     /* ── TX (Transmit) ──────────────────────────────────────── */

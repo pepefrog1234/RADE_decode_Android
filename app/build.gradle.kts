@@ -11,8 +11,8 @@ android {
         applicationId = "yakumo2683.RADEdecode"
         minSdk = 26
         targetSdk = 35
-        versionCode = 10526
-        versionName = "1.5.26-bluetooth-audiotrack-output"
+        versionCode = 10527
+        versionName = "1.5.27-bluetooth-oboe-output"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 

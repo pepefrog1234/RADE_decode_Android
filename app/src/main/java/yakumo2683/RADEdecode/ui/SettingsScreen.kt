@@ -274,11 +274,45 @@ fun SettingsScreen(viewModel: TransceiverViewModel = viewModel()) {
                     subtitle = stringResource(R.string.settings_rx_output_system_help)
                 )
 
-                state.outputDevices.forEach { device ->
+                // Bluetooth SCO is the call-audio (mic) profile; USAGE_MEDIA playback
+                // to it is silent without the communication route, so only A2DP is
+                // offered here. The user's headset usually exposes both rows under the
+                // same name, which made selecting the wrong one easy.
+                state.outputDevices.filter { !it.isBluetoothSco }.forEach { device ->
                     AudioDeviceOptionRow(
                         device = device,
                         selected = device.id == state.selectedRxOutputDeviceId,
                         onClick = { viewModel.selectRxOutputDevice(device.id) }
+                    )
+                }
+
+                Spacer(Modifier.height(8.dp))
+
+                val rxRouteTesting by viewModel.rxRouteTesting.collectAsState()
+                val rxRouteTest by viewModel.rxRouteTest.collectAsState()
+                OutlinedButton(
+                    onClick = { viewModel.testRxOutput() },
+                    enabled = !rxRouteTesting,
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Text(
+                        if (rxRouteTesting) stringResource(R.string.settings_rx_output_testing)
+                        else stringResource(R.string.settings_rx_output_test)
+                    )
+                }
+                Text(
+                    stringResource(R.string.settings_rx_output_test_help),
+                    fontSize = 11.sp, color = OnSurfaceDim, lineHeight = 16.sp,
+                    modifier = Modifier.padding(top = 4.dp)
+                )
+                rxRouteTest?.let {
+                    Text(
+                        it,
+                        fontSize = 12.sp,
+                        fontFamily = FontFamily.Monospace,
+                        lineHeight = 17.sp,
+                        color = MaterialTheme.colorScheme.onSurface,
+                        modifier = Modifier.padding(top = 8.dp)
                     )
                 }
             }

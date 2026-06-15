@@ -107,6 +107,9 @@
     <string name="settings_rx_output_auto_help">连接有线音频时优先使用，否则使用手机扬声器。Bluetooth 请明确选择设备。</string>
     <string name="settings_rx_output_system">系统默认</string>
     <string name="settings_rx_output_system_help">交由 Android 选择播放路径，适用于 USB DAC 与外接扬声器。</string>
+    <string name="settings_rx_output_test">测试所选接收输出</string>
+    <string name="settings_rx_output_testing">测试中…（1kHz 测试音）</string>
+    <string name="settings_rx_output_test_help">向所选输出播放 1kHz 测试音，并显示 Android 实际路由到的设备，用于区分是路由问题还是尚无解码语音。请在连接和断开 USB 音频两种情况下分别测试。</string>
     <string name="header_tx_output">发射音量</string>
     <string name="settings_tx_level">USB 发射音量</string>
     <string name="settings_tx_level_help">送入电台 USB 音频输入的 RADE 波形强度。太低 → ALC 不动、发射功率低；太高 → ALC 撞顶、信号失真。同时请检查电台的 USB MOD Level（IC-7300：菜单 → SET → Connectors → USB MOD Level）。</string>

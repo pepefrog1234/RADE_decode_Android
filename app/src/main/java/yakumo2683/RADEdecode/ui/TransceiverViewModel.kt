@@ -17,6 +17,7 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.map
 import yakumo2683.RADEdecode.AudioBridge
+import yakumo2683.RADEdecode.RxOutputTester
 import yakumo2683.RADEdecode.location.LocationTracker
 import yakumo2683.RADEdecode.network.FreeDVReporter
 import yakumo2683.RADEdecode.network.IcomNetworkManager
@@ -120,6 +121,12 @@ class TransceiverViewModel(application: Application) : AndroidViewModel(applicat
     /** User's Reporter toggle preference, independent of whether reporter is actually connected. */
     private val _reporterEnabledPref = MutableStateFlow(false)
     val reporterEnabledPref: StateFlow<Boolean> = _reporterEnabledPref.asStateFlow()
+
+    /** Result of the last RX-output route test (1 kHz tone), shown in Settings. */
+    private val _rxRouteTest = MutableStateFlow<String?>(null)
+    val rxRouteTest: StateFlow<String?> = _rxRouteTest.asStateFlow()
+    private val _rxRouteTesting = MutableStateFlow(false)
+    val rxRouteTesting: StateFlow<Boolean> = _rxRouteTesting.asStateFlow()
 
     init {
         // Restore persisted callsign
@@ -507,6 +514,40 @@ class TransceiverViewModel(application: Application) : AndroidViewModel(applicat
         _uiState.value = _uiState.value.copy(selectedOutputDeviceId = deviceId)
     }
 
+    /**
+     * Play a 1 kHz tone to the currently selected RX output and report where
+     * Android actually routed it — a route check independent of RADE decode.
+     * For Auto, tests the device RX would actually pick; for System default,
+     * leaves routing to Android.
+     */
+    fun testRxOutput() {
+        if (_rxRouteTesting.value) return
+        val selection = _uiState.value.selectedRxOutputDeviceId
+        viewModelScope.launch {
+            _rxRouteTesting.value = true
+            _rxRouteTest.value = "Testing… (1 kHz tone, ~2s)"
+            val result = withContext(Dispatchers.IO) {
+                val deviceId = resolveTestDeviceId(selection)
+                RxOutputTester.run(getApplication(), deviceId)
+            }
+            _rxRouteTest.value = result.summary
+            _rxRouteTesting.value = false
+        }
+    }
+
+    /** Resolve an RX-output selection (Auto / System default / explicit) to a
+     *  concrete AudioDeviceInfo id for the route test, or -1 for system default. */
+    private fun resolveTestDeviceId(selection: Int): Int = when {
+        selection > 0 -> selection
+        selection == AudioService.RX_OUTPUT_SYSTEM_DEFAULT -> -1
+        else -> {
+            val bridge = AudioBridge(getApplication())
+            val id = bridge.findPreferredRxOutputDevice()?.id ?: -1
+            bridge.release()
+            id
+        }
+    }
+
     fun setInputGain(gain: Float) {
         prefs.edit().putFloat("input_gain", gain).apply()
         audioService?.setInputGain(gain)
@@ -542,8 +583,14 @@ class TransceiverViewModel(application: Application) : AndroidViewModel(applicat
             current.selectedOutputDeviceId > 0 && current.selectedOutputDeviceId in outputIds -> current.selectedOutputDeviceId
             else -> usbOutput?.id ?: current.selectedOutputDeviceId
         }
+        // Bluetooth SCO is no longer offered as an RX output (it is the call-audio
+        // profile and plays media silently). Migrate any persisted SCO selection —
+        // e.g. left over from v1.5.26 — back to Auto so it can't sit there unheard.
+        val scoOutputIds = outputDevices.filter { it.isBluetoothSco }.map { it.id }.toSet()
         val selectedRxOutputId = when {
-            current.selectedRxOutputDeviceId > 0 && current.selectedRxOutputDeviceId !in outputIds ->
+            current.selectedRxOutputDeviceId > 0 &&
+                (current.selectedRxOutputDeviceId !in outputIds ||
+                    current.selectedRxOutputDeviceId in scoOutputIds) ->
                 AudioService.RX_OUTPUT_AUTO
             else -> current.selectedRxOutputDeviceId
         }

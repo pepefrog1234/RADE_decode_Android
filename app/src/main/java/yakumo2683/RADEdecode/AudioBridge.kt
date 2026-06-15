@@ -244,6 +244,11 @@ class AudioBridge(private val context: Context) {
         val typeName: String,
         val isUsb: Boolean,
         val isBluetooth: Boolean = false,
+        /** A2DP media-playback profile — the correct target for decoded RX speech. */
+        val isBluetoothA2dp: Boolean = false,
+        /** HFP/SCO call-audio profile — microphone-capable, but silent for media
+         *  playback unless the communication route is active. Not a normal RX output. */
+        val isBluetoothSco: Boolean = false,
         val isWired: Boolean = false
     )
 
@@ -358,6 +363,8 @@ class AudioBridge(private val context: Context) {
             typeName = deviceTypeName(info.type),
             isUsb = isUsbType(info.type),
             isBluetooth = isBluetoothType(info.type),
+            isBluetoothA2dp = info.type == AudioDeviceInfo.TYPE_BLUETOOTH_A2DP,
+            isBluetoothSco = info.type == AudioDeviceInfo.TYPE_BLUETOOTH_SCO,
             isWired = isWiredType(info.type)
         )
     }
