@@ -11,8 +11,8 @@ android {
         applicationId = "yakumo2683.RADEdecode"
         minSdk = 26
         targetSdk = 35
-        versionCode = 10530
-        versionName = "1.5.30-le-audio-mic"
+        versionCode = 10531
+        versionName = "1.5.31-bt-sco-reliable"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 

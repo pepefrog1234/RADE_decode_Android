@@ -385,8 +385,20 @@ class AudioService : LifecycleService() {
         return try {
             am.mode = AudioManager.MODE_IN_COMMUNICATION
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-                val scoDevice = am.availableCommunicationDevices.firstOrNull {
+                // The SCO communication device often appears a beat after the mode
+                // switch — especially when the headset is flipping from A2DP — so poll
+                // briefly instead of giving up on the first miss (that miss made an
+                // earlier test fall all the way back to the phone mic).
+                var scoDevice = am.availableCommunicationDevices.firstOrNull {
                     it.type == AudioDeviceInfo.TYPE_BLUETOOTH_SCO
+                }
+                var attempt = 0
+                while (scoDevice == null && attempt < 5) {
+                    try { Thread.sleep(100) } catch (_: InterruptedException) {}
+                    scoDevice = am.availableCommunicationDevices.firstOrNull {
+                        it.type == AudioDeviceInfo.TYPE_BLUETOOTH_SCO
+                    }
+                    attempt++
                 }
                 if (scoDevice == null) {
                     Log.w("AudioService", "No Bluetooth SCO communication device is available")
