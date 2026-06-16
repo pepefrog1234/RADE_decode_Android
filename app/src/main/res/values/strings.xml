@@ -34,7 +34,7 @@
     <string name="settings_ptt_hold_help">When on, the TX button works like a walkie-talkie: transmit only while the button is held, and return to RX the moment it is released. When off, tapping TX toggles between transmit and receive.</string>
     <string name="header_bt_mic">BLUETOOTH MIC (TX)</string>
     <string name="settings_bt_mic_tx">Use Bluetooth mic for TX (experimental)</string>
-    <string name="settings_bt_mic_tx_help">Captures your transmit voice from the Bluetooth headset mic (call-audio / SCO mode) instead of the phone mic. Experimental: SCO can disrupt audio routing on some devices, and the headset takes a moment to switch between listening (RX) and talking (TX). Off = phone mic. RX and Bluetooth playback are unaffected.</string>
+    <string name="settings_bt_mic_tx_help">Captures your transmit voice from the Bluetooth headset mic instead of the phone mic. Prefers LE Audio (LC3, high quality — needs Android 13+ and a compatible headset); otherwise uses classic call-audio (SCO, telephony quality). Experimental. Off = phone mic. RX and Bluetooth playback are unaffected.</string>
     <string name="btn_stop">STOP</string>
     <string name="btn_start">START</string>
 

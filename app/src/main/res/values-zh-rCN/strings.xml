@@ -33,7 +33,7 @@
     <string name="settings_ptt_hold_help">开启后，发射键变成对讲机式操作：按住才发射，松开立即返回接收。关闭时，点一下发射键即可切换发射／接收。</string>
     <string name="header_bt_mic">蓝牙麦克风（发射）</string>
     <string name="settings_bt_mic_tx">发射使用蓝牙麦克风（实验性）</string>
-    <string name="settings_bt_mic_tx_help">发射时从蓝牙耳机麦克风（通话／SCO 模式）采集语音，而非手机麦克风。实验性功能：SCO 在部分机型上可能扰乱音频路由，且耳机在接收（听）与发射（说）之间切换需要一点时间。关闭＝手机麦克风。不影响接收与蓝牙播放。</string>
+    <string name="settings_bt_mic_tx_help">发射时从蓝牙耳机麦克风采集语音，而非手机麦克风。支持时优先使用 LE Audio（LC3・高音质／需 Android 13+ 及兼容耳机），否则使用传统通话音频（SCO・电话品质）。实验性功能。关闭＝手机麦克风。不影响接收与蓝牙播放。</string>
     <string name="btn_stop">停止</string>
     <string name="btn_start">启动</string>
 

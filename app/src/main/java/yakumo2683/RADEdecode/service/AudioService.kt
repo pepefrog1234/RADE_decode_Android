@@ -495,6 +495,15 @@ class AudioService : LifecycleService() {
         return -1
     }
 
+    /**
+     * Bluetooth LE Audio (LC3) headset mic input id, or null. Unlike SCO, this is
+     * captured directly (no communication route, no narrowband codec) at up to
+     * 32 kHz, so it is preferred for the TX mic when available.
+     */
+    private fun findBleHeadsetInputId(): Int? =
+        getAudioDevices(AudioManager.GET_DEVICES_INPUTS)
+            .firstOrNull { it.type == AudioDeviceInfo.TYPE_BLE_HEADSET }?.id
+
     private fun isBluetoothDevice(deviceId: Int, flags: Int): Boolean {
         val type = getAudioDevices(flags).firstOrNull { it.id == deviceId }?.type ?: return false
         return type == AudioDeviceInfo.TYPE_BLUETOOTH_A2DP ||
@@ -841,26 +850,38 @@ class AudioService : LifecycleService() {
             bridge.setTxCallsign(callsign)
         }
 
-        // Experimental: capture TX voice from the Bluetooth headset mic. Bring up
-        // the SCO (call-audio) route and use the SCO input device; fall back to the
-        // requested mic if SCO doesn't come up. TX output still goes to USB/radio.
-        // SCO is torn down again in stopTransmitting(). Only the TX path touches it,
-        // so the RX/A2DP playback path is unaffected.
+        // Experimental: capture TX voice from the Bluetooth headset mic. Prefer LE
+        // Audio (LC3, direct, no route) and fall back to classic SCO (call-audio
+        // route); fall back to the requested phone mic if neither is available. TX
+        // output still goes to USB/radio. Any SCO route is torn down in
+        // stopTransmitting(). Only the TX path touches this, so RX/A2DP is unaffected.
         var effectiveInputDeviceId = inputDeviceId
         var bluetoothMicEngaged = false
         if (useBluetoothMic) {
-            val scoActive = activateBluetoothScoRoute()
-            val scoInput = if (scoActive) resolveBluetoothScoInputId() else -1
-            if (scoInput > 0) {
-                effectiveInputDeviceId = scoInput
+            // Prefer LE Audio (LC3): captured directly from the BLE headset mic — no
+            // SCO call-audio route, no narrowband codec, up to 32 kHz. This is the
+            // high-quality path and avoids the A2DP<->SCO switching of classic BT.
+            val bleInput = findBleHeadsetInputId()
+            if (bleInput != null) {
+                effectiveInputDeviceId = bleInput
                 bluetoothMicEngaged = true
-                Log.i("AudioService", "TX Bluetooth mic: SCO active, capturing from scoInput=$scoInput")
+                Log.i("AudioService", "TX Bluetooth mic: using LE Audio (BLE headset) input id=$bleInput")
             } else {
-                Log.w(
-                    "AudioService",
-                    "TX Bluetooth mic requested but unavailable (scoActive=$scoActive); " +
-                        "falling back to mic id=$inputDeviceId"
-                )
+                // No LE Audio headset present — fall back to classic Bluetooth SCO
+                // (call-audio route, telephony-grade quality).
+                val scoActive = activateBluetoothScoRoute()
+                val scoInput = if (scoActive) resolveBluetoothScoInputId() else -1
+                if (scoInput > 0) {
+                    effectiveInputDeviceId = scoInput
+                    bluetoothMicEngaged = true
+                    Log.i("AudioService", "TX Bluetooth mic: no LE Audio; using classic SCO input id=$scoInput")
+                } else {
+                    Log.w(
+                        "AudioService",
+                        "TX Bluetooth mic requested but unavailable (no LE Audio, scoActive=$scoActive); " +
+                            "falling back to mic id=$inputDeviceId"
+                    )
+                }
             }
         }
 

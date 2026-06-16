@@ -249,6 +249,9 @@ class AudioBridge(private val context: Context) {
         /** HFP/SCO call-audio profile — microphone-capable, but silent for media
          *  playback unless the communication route is active. Not a normal RX output. */
         val isBluetoothSco: Boolean = false,
+        /** Bluetooth LE Audio (LC3) — high-quality bidirectional audio. The mic can be
+         *  captured directly (up to 32 kHz) with no SCO call-audio route. */
+        val isBleAudio: Boolean = false,
         val isWired: Boolean = false
     )
 
@@ -365,6 +368,7 @@ class AudioBridge(private val context: Context) {
             isBluetooth = isBluetoothType(info.type),
             isBluetoothA2dp = info.type == AudioDeviceInfo.TYPE_BLUETOOTH_A2DP,
             isBluetoothSco = info.type == AudioDeviceInfo.TYPE_BLUETOOTH_SCO,
+            isBleAudio = isBleAudioType(info.type),
             isWired = isWiredType(info.type)
         )
     }
@@ -377,6 +381,11 @@ class AudioBridge(private val context: Context) {
     private fun isBluetoothType(type: Int): Boolean =
         type == AudioDeviceInfo.TYPE_BLUETOOTH_A2DP ||
             type == AudioDeviceInfo.TYPE_BLUETOOTH_SCO
+
+    private fun isBleAudioType(type: Int): Boolean =
+        type == AudioDeviceInfo.TYPE_BLE_HEADSET ||
+            type == AudioDeviceInfo.TYPE_BLE_SPEAKER ||
+            type == AudioDeviceInfo.TYPE_BLE_BROADCAST
 
     private fun isWiredType(type: Int): Boolean =
         type == AudioDeviceInfo.TYPE_WIRED_HEADSET ||
@@ -402,6 +411,9 @@ class AudioBridge(private val context: Context) {
         AudioDeviceInfo.TYPE_WIRED_HEADPHONES -> "Wired Headphones"
         AudioDeviceInfo.TYPE_BLUETOOTH_SCO -> "Bluetooth SCO"
         AudioDeviceInfo.TYPE_BLUETOOTH_A2DP -> "Bluetooth A2DP"
+        AudioDeviceInfo.TYPE_BLE_HEADSET -> "Bluetooth LE (LC3)"
+        AudioDeviceInfo.TYPE_BLE_SPEAKER -> "Bluetooth LE Speaker"
+        AudioDeviceInfo.TYPE_BLE_BROADCAST -> "Bluetooth LE Broadcast"
         AudioDeviceInfo.TYPE_TELEPHONY -> "Telephony"
         else -> "Type $type"
     }

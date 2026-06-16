@@ -33,7 +33,7 @@
     <string name="settings_ptt_hold_help">開啟後，發射鍵變成對講機式操作：按住才發射，放開立即返回接收。關閉時，點一下發射鍵即可切換發射／接收。</string>
     <string name="header_bt_mic">藍牙麥克風（發射）</string>
     <string name="settings_bt_mic_tx">發射使用藍牙麥克風（實驗性）</string>
-    <string name="settings_bt_mic_tx_help">發射時從藍牙耳機麥克風（通話／SCO 模式）擷取語音，而非手機麥克風。實驗性功能：SCO 在部分機型上可能擾亂音訊路由，且耳機在接收（聽）與發射（說）之間切換需要一點時間。關閉＝手機麥克風。不影響接收與藍牙播放。</string>
+    <string name="settings_bt_mic_tx_help">發射時從藍牙耳機麥克風擷取語音，而非手機麥克風。支援時優先使用 LE Audio（LC3・高音質／需 Android 13+ 及相容耳機），否則使用傳統通話音訊（SCO・電話品質）。實驗性功能。關閉＝手機麥克風。不影響接收與藍牙播放。</string>
     <string name="btn_stop">停止</string>
     <string name="btn_start">啟動</string>
 
