@@ -118,7 +118,11 @@ static void *usb_read_thread(void *arg) {
             while (pos < n && ctx->running) {
                 int chunk = n - pos;
                 if (chunk > pkt) chunk = pkt;
-                int dstart = (sb > 0 && chunk > sb) ? sb : 0;
+                /* Skip the leading status bytes of each packet. Use >= so a
+                 * status-only packet (chunk == sb, no data — FTDI sends these
+                 * when idle) writes nothing instead of injecting the 2 status
+                 * bytes, which was corrupting replies intermittently. */
+                int dstart = (sb > 0 && chunk >= sb) ? sb : 0;
                 int off = dstart;
                 while (off < chunk && ctx->running) {
                     int w = write(ctx->masterFd, bytes + pos + off, chunk - off);
