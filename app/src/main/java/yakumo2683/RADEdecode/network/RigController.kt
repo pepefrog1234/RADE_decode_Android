@@ -62,6 +62,15 @@ class RigController {
      *  reason: rigctld crash vs. USB-serial bridge/socket failure. */
     var diagnosticsProvider: (() -> String?)? = null
 
+    /** When the socket dropped but the local rigctld is still alive, we reconnect to
+     *  it. These bound rapid flapping: count rapid reconnects, reset once a
+     *  connection has been stable for a while. */
+    @Volatile private var lastConnectMs = 0L
+    @Volatile private var autoReconnects = 0
+    @Volatile private var userDisconnected = false
+    private val maxRapidReconnects = 6
+    private val stableConnectionMs = 5000L
+
     /**
      * Number of user-initiated commands (PTT, set freq, etc.) currently waiting
      * for or holding the serial lock. The background status poller yields to
@@ -87,6 +96,7 @@ class RigController {
 
     suspend fun connect(host: String, port: Int = DEFAULT_PORT) {
         disconnect()
+        userDisconnected = false   // a (re)connect intent supersedes a prior disconnect
         withContext(Dispatchers.IO) {
             try {
                 val s = Socket()
@@ -102,6 +112,7 @@ class RigController {
                 _state.value = _state.value.copy(
                     connected = true, host = host, port = port, error = ""
                 )
+                lastConnectMs = System.currentTimeMillis()
                 Log.i(TAG, "Connected to rigctld at $host:$port")
 
                 startPolling()
@@ -118,6 +129,7 @@ class RigController {
     }
 
     fun disconnect() {
+        userDisconnected = true   // stops any pending auto-reconnect
         pollingJob?.cancel()
         pollingJob = null
         synchronized(lock) {
@@ -157,7 +169,7 @@ class RigController {
                 null
             } catch (e: Exception) {
                 Log.e(TAG, "Command '$cmd' failed: ${e.message}")
-                handleDisconnect()
+                handleDisconnect(e)
                 null
             }
         }
@@ -183,25 +195,50 @@ class RigController {
                 emptyList()
             } catch (e: Exception) {
                 Log.e(TAG, "Multi-command '$cmd' failed: ${e.message}")
-                handleDisconnect()
+                handleDisconnect(e)
                 emptyList()
             }
         }
     }
 
-    private fun handleDisconnect() {
+    private fun handleDisconnect(cause: Throwable? = null) {
+        pollingJob?.cancel()
+
         // Enrich the reason so the cause is visible on-screen (no adb needed):
-        // which CAT command was in flight, and whether the local rigctld actually
-        // died (crash) or is still alive (then the break is the USB-serial bridge).
+        // which CAT command was in flight, the actual socket exception, and whether
+        // the local rigctld is still alive (crash vs. socket/bridge drop).
         val rigctld = try { diagnosticsProvider?.invoke() } catch (_: Throwable) { null }
+        val exMsg = cause?.let { "${it.javaClass.simpleName}: ${it.message}" }
         val detail = buildString {
             append("Connection lost")
             if (lastCommand.isNotEmpty()) append(" (last cmd: '$lastCommand')")
+            if (exMsg != null) append(" {$exMsg}")
             if (!rigctld.isNullOrEmpty()) append(" [rigctld: $rigctld]")
         }
         Log.e(TAG, detail)
-        _state.value = _state.value.copy(connected = false, error = detail)
-        pollingJob?.cancel()
+
+        // A connection that was stable for a while and then dropped gets a fresh
+        // batch of retries; rapid re-drops are bounded to avoid flapping.
+        if (System.currentTimeMillis() - lastConnectMs > stableConnectionMs) autoReconnects = 0
+
+        // If the local rigctld is still alive, the TCP client just got dropped —
+        // reconnect to it rather than leaving the user disconnected. (Only the
+        // confirmed-alive local case: "running" comes from RigctldProcess.)
+        if (rigctld == "running" && autoReconnects < maxRapidReconnects) {
+            autoReconnects++
+            val host = _state.value.host
+            val port = _state.value.port
+            _state.value = _state.value.copy(
+                connected = false,
+                error = "$detail — reconnecting ${autoReconnects}/$maxRapidReconnects…"
+            )
+            scope.launch {
+                delay(700)
+                if (!userDisconnected && !_state.value.connected) connect(host, port)
+            }
+        } else {
+            _state.value = _state.value.copy(connected = false, error = detail)
+        }
     }
 
     /* ── Frequency ──────────────────────────────────────────── */
