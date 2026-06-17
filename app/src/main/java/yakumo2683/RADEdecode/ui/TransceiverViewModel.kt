@@ -130,6 +130,10 @@ class TransceiverViewModel(application: Application) : AndroidViewModel(applicat
     val rxRouteTesting: StateFlow<Boolean> = _rxRouteTesting.asStateFlow()
 
     init {
+        // On a rig "connection lost", let RigController report the local rigctld's
+        // liveness/exit cause (crash vs. USB-bridge failure) in the on-screen error.
+        rigController.diagnosticsProvider = { rigctldProcess.exitDiagnostics() }
+
         // Restore persisted callsign
         val savedCallsign = prefs.getString("tx_callsign", "") ?: ""
         if (savedCallsign.isNotEmpty()) {

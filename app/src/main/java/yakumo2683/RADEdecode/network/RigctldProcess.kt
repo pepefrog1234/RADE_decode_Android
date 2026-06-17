@@ -32,6 +32,11 @@ class RigctldProcess(private val context: Context) {
         @JvmStatic
         external fun nativeKill(pid: Int)
 
+        /** Diagnostic: liveness/exit cause of a forked child ("running",
+         *  "DIED: killed by SIGSEGV (11)", "DIED: exited code N", …). */
+        @JvmStatic
+        external fun nativeProcessExit(pid: Int): String
+
         private val FAST_PTY_CAT_MODELS = setOf(
             3076, // Xiegu X108G
             3087, // Xiegu X6100
@@ -46,6 +51,22 @@ class RigctldProcess(private val context: Context) {
     private val scope = CoroutineScope(Dispatchers.IO + SupervisorJob())
 
     val isRunning: Boolean get() = nativePid > 0 || process?.isAlive == true
+
+    /**
+     * Diagnostic for "connection lost": report whether the local rigctld child is
+     * still alive and, if it died, why (e.g. "DIED: killed by SIGSEGV (11)").
+     * Returns null when no local rigctld was launched (e.g. remote-TCP mode), so
+     * the caller can omit it. "running" means rigctld is fine and the break is
+     * elsewhere (USB-serial bridge / socket).
+     */
+    fun exitDiagnostics(): String? {
+        val pid = nativePid
+        return if (pid > 0) {
+            try { nativeProcessExit(pid) } catch (e: Throwable) { "probe failed: ${e.message}" }
+        } else {
+            null
+        }
+    }
 
     /**
      * Start rigctld with specified parameters.

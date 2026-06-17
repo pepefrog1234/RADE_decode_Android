@@ -53,6 +53,15 @@ class RigController {
     private var reader: BufferedReader? = null
     private val lock = Object()
 
+    /** Last CAT command written to the socket — reported in the "connection lost"
+     *  error so we can see which command was in flight when rigctld/the link died. */
+    @Volatile private var lastCommand: String = ""
+
+    /** Optional probe of the local rigctld's liveness/exit cause, supplied by the
+     *  ViewModel ([RigctldProcess.exitDiagnostics]). Used to enrich the disconnect
+     *  reason: rigctld crash vs. USB-serial bridge/socket failure. */
+    var diagnosticsProvider: (() -> String?)? = null
+
     /**
      * Number of user-initiated commands (PTT, set freq, etc.) currently waiting
      * for or holding the serial lock. The background status poller yields to
@@ -135,6 +144,7 @@ class RigController {
             val w = writer ?: return null
             val r = reader ?: return null
             return try {
+                lastCommand = cmd
                 w.println(cmd)
                 val resp = r.readLine()
                 if (cmd.isNotEmpty() && !cmd.startsWith("f") && !cmd.startsWith("t") && !cmd.startsWith("l")) {
@@ -159,6 +169,7 @@ class RigController {
             val w = writer ?: return emptyList()
             val r = reader ?: return emptyList()
             return try {
+                lastCommand = cmd
                 w.println(cmd)
                 val lines = mutableListOf<String>()
                 while (true) {
@@ -179,7 +190,17 @@ class RigController {
     }
 
     private fun handleDisconnect() {
-        _state.value = _state.value.copy(connected = false, error = "Connection lost")
+        // Enrich the reason so the cause is visible on-screen (no adb needed):
+        // which CAT command was in flight, and whether the local rigctld actually
+        // died (crash) or is still alive (then the break is the USB-serial bridge).
+        val rigctld = try { diagnosticsProvider?.invoke() } catch (_: Throwable) { null }
+        val detail = buildString {
+            append("Connection lost")
+            if (lastCommand.isNotEmpty()) append(" (last cmd: '$lastCommand')")
+            if (!rigctld.isNullOrEmpty()) append(" [rigctld: $rigctld]")
+        }
+        Log.e(TAG, detail)
+        _state.value = _state.value.copy(connected = false, error = detail)
         pollingJob?.cancel()
     }
 

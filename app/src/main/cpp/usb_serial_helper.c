@@ -429,3 +429,43 @@ Java_yakumo2683_RADEdecode_network_RigctldProcess_nativeKill(
         LOGD("Killed pid=%d", pid);
     }
 }
+
+/**
+ * Diagnostic: is the forked rigctld child still alive, and if not, why did it die?
+ * Reaps the child if it was an unreaped zombie so the exit cause can be read.
+ * Returns a short human string: "running", "DIED: killed by SIGSEGV (11)",
+ * "DIED: exited code N", or "DIED: gone (reaped elsewhere)".
+ */
+JNIEXPORT jstring JNICALL
+Java_yakumo2683_RADEdecode_network_RigctldProcess_nativeProcessExit(
+        JNIEnv *env, jclass cls, jint pid) {
+    char buf[96];
+    if (pid <= 0) {
+        return (*env)->NewStringUTF(env, "no-pid");
+    }
+    int status = 0;
+    pid_t r = waitpid((pid_t)pid, &status, WNOHANG);
+    if (r == (pid_t)pid) {
+        if (WIFSIGNALED(status)) {
+            int sig = WTERMSIG(status);
+            const char *name =
+                sig == SIGSEGV ? "SIGSEGV" :
+                sig == SIGABRT ? "SIGABRT" :
+                sig == SIGKILL ? "SIGKILL" :
+                sig == SIGBUS  ? "SIGBUS"  :
+                sig == SIGPIPE ? "SIGPIPE" :
+                sig == SIGTERM ? "SIGTERM" : "signal";
+            snprintf(buf, sizeof(buf), "DIED: killed by %s (%d)", name, sig);
+        } else if (WIFEXITED(status)) {
+            snprintf(buf, sizeof(buf), "DIED: exited code %d", WEXITSTATUS(status));
+        } else {
+            snprintf(buf, sizeof(buf), "DIED: unknown status");
+        }
+        return (*env)->NewStringUTF(env, buf);
+    }
+    /* r == 0: still running; r == -1: not reapable here (already reaped). */
+    if (kill((pid_t)pid, 0) == 0) {
+        return (*env)->NewStringUTF(env, "running");
+    }
+    return (*env)->NewStringUTF(env, "DIED: gone (reaped elsewhere)");
+}
