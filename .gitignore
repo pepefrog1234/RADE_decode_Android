@@ -21,3 +21,6 @@ app/src/main/cpp/opus/lib/*.bak*
 
 # Claude Code
 .claude/
+
+# Hamlib cross-compile work dir (see scripts/build-hamlib-android.sh)
+.hamlib-build/
