@@ -301,9 +301,10 @@ class UsbSerialManager(private val context: Context) {
             val (epIn, epOut) = endpoints
             Log.i(TAG, "  endpoints: IN=0x%02X OUT=0x%02X".format(epIn.address, epOut.address))
 
-            // Configure serial parameters
-            configureBaudRate(conn, device, baudRate)
+            // Configure serial parameters. Chip init runs BEFORE the baud rate —
+            // the FTDI RESET would otherwise wipe the baud setting.
             enableDevice(conn, device.chipType, device.interfaceIndex)
+            configureBaudRate(conn, device, baudRate)
             applyModemLinesForDevice(conn, device, dtr, rts)
 
             // Start native pty bridge
@@ -468,7 +469,18 @@ class UsbSerialManager(private val context: Context) {
                 conn.controlTransfer(0x41, 0x13, 0, idx, noFlow, noFlow.size, 5000)
                 conn.controlTransfer(0x41, 0x12, 0x000F, idx, null, 0, 5000)
             }
-            ChipType.CDC_ACM, ChipType.FTDI, ChipType.CH340, ChipType.PROLIFIC, ChipType.UNKNOWN -> {
+            ChipType.FTDI -> {
+                // FT232R etc. need RESET + line format + flow control set up before
+                // the baud rate. Without SET_DATA the chip uses an undefined framing
+                // and the rig never replies (the KX3 / FT232R symptom). wIndex is the
+                // FTDI port = interface + 1 (1 for a single-port FT232R), matching
+                // usb-serial-for-android (what FT8CN uses).
+                val idx = ifaceIdx + 1
+                conn.controlTransfer(0x40, 0x00, 0x0000, idx, null, 0, 5000)  // RESET (reset all)
+                conn.controlTransfer(0x40, 0x04, 0x0008, idx, null, 0, 5000)  // SET_DATA: 8 data, no parity, 1 stop
+                conn.controlTransfer(0x40, 0x02, 0x0000, idx, null, 0, 5000)  // SET_FLOW_CTRL: none
+            }
+            ChipType.CDC_ACM, ChipType.CH340, ChipType.PROLIFIC, ChipType.UNKNOWN -> {
                 // No chip-specific init beyond baud rate needed here.
             }
         }
@@ -509,9 +521,12 @@ class UsbSerialManager(private val context: Context) {
                 conn.controlTransfer(0x41, 0x07, value, ifaceIdx, null, 0, 5000)
             }
             ChipType.FTDI -> {
-                // FTDI SET_MODEM_CTRL: two separate commands, one per line. High byte = mask.
-                conn.controlTransfer(0x40, 1, if (dtr) 0x0101 else 0x0100, 0, null, 0, 5000)
-                conn.controlTransfer(0x40, 1, if (rts) 0x0202 else 0x0200, 0, null, 0, 5000)
+                // FTDI SET_MODEM_CTRL: two commands, one per line. High byte = mask.
+                // wIndex is the FTDI port = interface + 1 (1 for a single-port FT232R);
+                // using 0 here meant DTR/RTS were never actually applied.
+                val idx = ifaceIdx + 1
+                conn.controlTransfer(0x40, 1, if (dtr) 0x0101 else 0x0100, idx, null, 0, 5000)
+                conn.controlTransfer(0x40, 1, if (rts) 0x0202 else 0x0200, idx, null, 0, 5000)
             }
             ChipType.CH340 -> {
                 // CH340 modem ctrl (0xA4): value bits are active-low.
