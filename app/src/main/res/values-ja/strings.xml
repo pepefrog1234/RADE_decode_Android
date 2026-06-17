@@ -126,6 +126,13 @@
     <string name="header_performance">パフォーマンス</string>
     <string name="settings_power_save_mode">省電力モード</string>
     <string name="settings_power_save_mode_help">スペクトラムとウォーターフォール表示を非表示にし、FFT処理を停止して低スペック端末の負荷を軽減し、デコードを安定して動作させます。</string>
+    <string name="header_diagnostics">診断</string>
+    <string name="settings_diag_help">リグ／CAT 関連のログ（rigctld・USB シリアル橋）を取得して、不具合報告に添付できます。先に問題を再現してから、取得→コピーしてください。</string>
+    <string name="settings_diag_capture">CAT ログを取得</string>
+    <string name="settings_diag_capturing">取得中…</string>
+    <string name="settings_diag_copy">コピー</string>
+    <string name="settings_diag_copied">コピーしました ✓</string>
+    <string name="settings_diag_clear">クリア</string>
     <string name="header_about">概要</string>
     <string name="about_app_name">RADE Decode</string>
     <string name="about_description">HFデジタル音声トランシーバー。デバイス上のFARGANニューラルネットワークボコーダーでRADE OFDM信号をデコード・エンコードします。</string>

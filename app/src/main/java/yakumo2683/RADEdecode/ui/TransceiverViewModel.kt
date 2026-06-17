@@ -587,6 +587,35 @@ class TransceiverViewModel(application: Application) : AndroidViewModel(applicat
 
     fun getSavedTxVolume(): Float = prefs.getFloat("tx_volume", 0.2f)
 
+    /* ── Diagnostics: in-app CAT/rig log capture (no adb needed) ─── */
+
+    /**
+     * Dump the app's own recent rig/CAT-related logcat: [RigController] (CAT
+     * commands, connection-lost detail), [RigctldProcess], the native USB-serial
+     * bridge + piped rigctld stderr ("UsbPtyBridge"), and "UsbSerialManager".
+     * An app may read its own log buffer without permissions. Blocking — call off
+     * the main thread.
+     */
+    fun captureCatLog(): String = try {
+        val proc = Runtime.getRuntime().exec(
+            arrayOf(
+                "logcat", "-d", "-v", "time",
+                "RigController:V", "RigctldProcess:V",
+                "UsbPtyBridge:V", "UsbSerialManager:V", "*:S"
+            )
+        )
+        val out = proc.inputStream.bufferedReader().use { it.readText() }
+        proc.waitFor()
+        out.ifBlank { "(no CAT log captured — connect the rig and reproduce, then capture again)" }
+    } catch (e: Exception) {
+        "Failed to read logcat: ${e.message}"
+    }
+
+    /** Clear the log buffer so a fresh reproduction can be captured cleanly. */
+    fun clearCatLog() {
+        try { Runtime.getRuntime().exec(arrayOf("logcat", "-c")).waitFor() } catch (_: Exception) {}
+    }
+
     fun refreshDevices() {
         val bridge = AudioBridge(getApplication())
         val devices = bridge.getInputDevices()

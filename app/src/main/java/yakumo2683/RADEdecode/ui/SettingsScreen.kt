@@ -7,6 +7,11 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.ui.platform.LocalUriHandler
+import androidx.compose.ui.platform.LocalClipboardManager
+import androidx.compose.ui.text.AnnotatedString
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Usb
@@ -609,6 +614,98 @@ fun SettingsScreen(viewModel: TransceiverViewModel = viewModel()) {
                     stringResource(R.string.settings_power_save_mode_help),
                     fontSize = 11.sp, color = OnSurfaceDim, lineHeight = 16.sp
                 )
+            }
+        }
+
+        SectionHeader(stringResource(R.string.header_diagnostics))
+
+        Surface(
+            shape = RoundedCornerShape(12.dp),
+            color = SurfaceCard,
+            modifier = Modifier
+                .fillMaxWidth()
+                .border(1.dp, MaterialTheme.colorScheme.outline, RoundedCornerShape(12.dp))
+        ) {
+            Column(modifier = Modifier.padding(16.dp)) {
+                Text(
+                    stringResource(R.string.settings_diag_help),
+                    fontSize = 11.sp, color = OnSurfaceDim, lineHeight = 16.sp
+                )
+                Spacer(Modifier.height(8.dp))
+
+                val clipboard = LocalClipboardManager.current
+                val diagScope = rememberCoroutineScope()
+                var catLog by remember { mutableStateOf("") }
+                var capturing by remember { mutableStateOf(false) }
+                var copied by remember { mutableStateOf(false) }
+
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Button(
+                        onClick = {
+                            capturing = true
+                            copied = false
+                            diagScope.launch {
+                                val log = withContext(Dispatchers.IO) { viewModel.captureCatLog() }
+                                catLog = log
+                                capturing = false
+                            }
+                        },
+                        enabled = !capturing,
+                        colors = ButtonDefaults.buttonColors(containerColor = Cyan600)
+                    ) {
+                        Text(
+                            if (capturing) stringResource(R.string.settings_diag_capturing)
+                            else stringResource(R.string.settings_diag_capture)
+                        )
+                    }
+                    OutlinedButton(
+                        onClick = {
+                            clipboard.setText(AnnotatedString(catLog))
+                            copied = true
+                        },
+                        enabled = catLog.isNotEmpty()
+                    ) {
+                        Text(
+                            if (copied) stringResource(R.string.settings_diag_copied)
+                            else stringResource(R.string.settings_diag_copy)
+                        )
+                    }
+                    OutlinedButton(
+                        onClick = {
+                            diagScope.launch {
+                                withContext(Dispatchers.IO) { viewModel.clearCatLog() }
+                                catLog = ""
+                                copied = false
+                            }
+                        }
+                    ) {
+                        Text(stringResource(R.string.settings_diag_clear))
+                    }
+                }
+
+                if (catLog.isNotEmpty()) {
+                    Spacer(Modifier.height(8.dp))
+                    Surface(
+                        shape = RoundedCornerShape(8.dp),
+                        color = MaterialTheme.colorScheme.surface,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .border(1.dp, MaterialTheme.colorScheme.outline, RoundedCornerShape(8.dp))
+                    ) {
+                        Text(
+                            catLog,
+                            fontSize = 10.sp,
+                            fontFamily = FontFamily.Monospace,
+                            lineHeight = 13.sp,
+                            color = MaterialTheme.colorScheme.onSurface,
+                            modifier = Modifier
+                                .heightIn(max = 280.dp)
+                                .fillMaxWidth()
+                                .verticalScroll(rememberScrollState())
+                                .padding(8.dp)
+                        )
+                    }
+                }
             }
         }
 

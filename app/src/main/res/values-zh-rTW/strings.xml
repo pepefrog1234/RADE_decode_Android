@@ -126,6 +126,13 @@
     <string name="header_performance">效能</string>
     <string name="settings_power_save_mode">效能節約模式</string>
     <string name="settings_power_save_mode_help">隱藏頻譜圖與瀑布圖並停止 FFT 運算，減輕低效能裝置的負擔，讓解碼能順暢運作。</string>
+    <string name="header_diagnostics">診斷</string>
+    <string name="settings_diag_help">擷取 App 近期的電台／CAT 紀錄（rigctld、USB 序列橋），用於回報控制問題。請先重現問題，再擷取並複製。</string>
+    <string name="settings_diag_capture">擷取 CAT 紀錄</string>
+    <string name="settings_diag_capturing">擷取中…</string>
+    <string name="settings_diag_copy">複製</string>
+    <string name="settings_diag_copied">已複製 ✓</string>
+    <string name="settings_diag_clear">清除</string>
     <string name="header_about">關於</string>
     <string name="about_app_name">RADE Decode</string>
     <string name="about_description">HF 數位語音收發器。使用裝置上的 FARGAN 神經網路聲碼器來解碼和編碼 RADE OFDM 訊號。</string>

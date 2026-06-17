@@ -11,8 +11,8 @@ android {
         applicationId = "yakumo2683.RADEdecode"
         minSdk = 26
         targetSdk = 35
-        versionCode = 10533
-        versionName = "1.5.33-rig-autoreconnect"
+        versionCode = 10534
+        versionName = "1.5.34-cat-diag-ui"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 

@@ -126,6 +126,13 @@
     <string name="header_performance">性能</string>
     <string name="settings_power_save_mode">性能节约模式</string>
     <string name="settings_power_save_mode_help">隐藏频谱图与瀑布图并停止 FFT 运算，减轻低性能设备的负担，让解码能流畅运行。</string>
+    <string name="header_diagnostics">诊断</string>
+    <string name="settings_diag_help">抓取应用近期的电台／CAT 日志（rigctld、USB 串口桥），用于回报控制问题。请先重现问题，再抓取并复制。</string>
+    <string name="settings_diag_capture">抓取 CAT 日志</string>
+    <string name="settings_diag_capturing">抓取中…</string>
+    <string name="settings_diag_copy">复制</string>
+    <string name="settings_diag_copied">已复制 ✓</string>
+    <string name="settings_diag_clear">清除</string>
     <string name="header_about">关于</string>
     <string name="about_app_name">RADE Decode</string>
     <string name="about_description">HF 数字语音收发器。使用设备上的 FARGAN 神经网络声码器来解码和编码 RADE OFDM 信号。</string>
