@@ -61,6 +61,8 @@ typedef struct {
     jobject      connection;   /* UsbDeviceConnection (global ref) */
     jobject      epIn;         /* UsbEndpoint IN  (global ref)     */
     jobject      epOut;        /* UsbEndpoint OUT (global ref)     */
+    int          inStatusBytes;/* bytes prepended to each IN packet to strip (FTDI=2) */
+    int          inPacketSize; /* IN endpoint max packet size (for status stripping)  */
     int          masterFd;
     int          slaveFd;      /* keep slave open to prevent EIO on master */
     volatile int running;
@@ -105,15 +107,29 @@ static void *usb_read_thread(void *arg) {
         }
         if (n > 0) {
             jbyte *bytes = (*env)->GetByteArrayElements(env, jbuf, NULL);
-            int off = 0;
-            while (off < n && ctx->running) {
-                int w = write(ctx->masterFd, bytes + off, n - off);
-                if (w < 0) {
-                    if (errno == EINTR) continue;
-                    LOGE("usb_read: write to pty failed: %s", strerror(errno));
-                    break;
+            /* FTDI prepends inStatusBytes (modem+line status) to EVERY USB IN
+             * packet. Forwarding them into the pty corrupts the rig's replies so
+             * rigctld never parses a valid response (every CAT command times out).
+             * Strip them packet-by-packet. For non-FTDI inStatusBytes==0 → the
+             * whole buffer is written unchanged. */
+            int sb  = ctx->inStatusBytes;
+            int pkt = (sb > 0 && ctx->inPacketSize > sb) ? ctx->inPacketSize : n;
+            int pos = 0;
+            while (pos < n && ctx->running) {
+                int chunk = n - pos;
+                if (chunk > pkt) chunk = pkt;
+                int dstart = (sb > 0 && chunk > sb) ? sb : 0;
+                int off = dstart;
+                while (off < chunk && ctx->running) {
+                    int w = write(ctx->masterFd, bytes + pos + off, chunk - off);
+                    if (w < 0) {
+                        if (errno == EINTR) continue;
+                        LOGE("usb_read: write to pty failed: %s", strerror(errno));
+                        break;
+                    }
+                    off += w;
                 }
-                off += w;
+                pos += chunk;
             }
             (*env)->ReleaseByteArrayElements(env, jbuf, bytes, JNI_ABORT);
         }
@@ -227,7 +243,8 @@ static void stop_bridge_locked(JNIEnv *env) {
 JNIEXPORT jstring JNICALL
 Java_yakumo2683_RADEdecode_usb_UsbSerialManager_nativeStartBridge(
         JNIEnv *env, jclass cls,
-        jobject connection, jobject endpointIn, jobject endpointOut) {
+        jobject connection, jobject endpointIn, jobject endpointOut,
+        jint inStatusBytes, jint inPacketSize) {
 
     pthread_mutex_lock(&g_lock);
 
@@ -267,6 +284,8 @@ Java_yakumo2683_RADEdecode_usb_UsbSerialManager_nativeStartBridge(
     ctx->masterFd   = masterFd;
     ctx->slaveFd    = slaveFd;
     ctx->running    = 1;
+    ctx->inStatusBytes = inStatusBytes;
+    ctx->inPacketSize  = inPacketSize;
 
     if (pthread_create(&ctx->tRead, NULL, usb_read_thread, ctx) != 0) {
         LOGE("Failed to create usb_read thread");

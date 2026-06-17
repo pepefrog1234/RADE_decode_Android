@@ -50,7 +50,9 @@ class UsbSerialManager(private val context: Context) {
         external fun nativeStartBridge(
             connection: UsbDeviceConnection,
             endpointIn: UsbEndpoint,
-            endpointOut: UsbEndpoint
+            endpointOut: UsbEndpoint,
+            inStatusBytes: Int,
+            inPacketSize: Int
         ): String?
 
         @JvmStatic
@@ -307,9 +309,12 @@ class UsbSerialManager(private val context: Context) {
             configureBaudRate(conn, device, baudRate)
             applyModemLinesForDevice(conn, device, dtr, rts)
 
-            // Start native pty bridge
-            Log.i(TAG, "  starting pty bridge…")
-            val slavePath = nativeStartBridge(conn, epIn, epOut)
+            // Start native pty bridge. FTDI prepends 2 status bytes to every IN
+            // packet — tell the bridge to strip them (else the rig's replies are
+            // corrupted and rigctld times out on every command).
+            val inStatusBytes = if (device.chipType == ChipType.FTDI) 2 else 0
+            Log.i(TAG, "  starting pty bridge… (inStatusBytes=$inStatusBytes inPkt=${epIn.maxPacketSize})")
+            val slavePath = nativeStartBridge(conn, epIn, epOut, inStatusBytes, epIn.maxPacketSize)
             if (slavePath == null) {
                 setError("pty bridge failed (posix_openpt may be blocked by SELinux)")
                 closeQuietly(conn)
