@@ -31,6 +31,10 @@
     <string name="header_ptt">PTT</string>
     <string name="settings_ptt_hold">按住發話（PTT）</string>
     <string name="settings_ptt_hold_help">開啟後，發射鍵變成對講機式操作：按住才發射，放開立即返回接收。關閉時，點一下發射鍵即可切換發射／接收。</string>
+    <string name="header_tx_mic">發射麥克風</string>
+    <string name="settings_tx_mic_help">選擇發射時使用的麥克風。選用 USB 集線器上的外接麥克風,音質更好、按下發射也更靈敏(優於藍牙麥克風)。(開啟下方的藍牙麥克風時,會以藍牙優先。)</string>
+    <string name="settings_tx_mic_builtin">內建麥克風</string>
+    <string name="settings_tx_mic_builtin_help">手機自帶的麥克風。</string>
     <string name="header_bt_mic">藍牙麥克風（發射）</string>
     <string name="settings_bt_mic_tx">發射使用藍牙麥克風（實驗性）</string>
     <string name="settings_bt_mic_tx_help">發射時從藍牙耳機麥克風擷取語音，而非手機麥克風。支援時優先使用 LE Audio（LC3・高音質／需 Android 13+ 及相容耳機），否則使用傳統通話音訊（SCO・電話品質）。實驗性功能。關閉＝手機麥克風。不影響接收與藍牙播放。</string>

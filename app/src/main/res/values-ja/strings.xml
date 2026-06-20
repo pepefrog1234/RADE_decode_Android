@@ -31,6 +31,10 @@
     <string name="header_ptt">PTT</string>
     <string name="settings_ptt_hold">押し続けて送信（PTT）</string>
     <string name="settings_ptt_hold_help">オンにすると送信ボタンがトランシーバー式になります：押している間だけ送信し、離すとすぐに受信へ戻ります。オフの場合はタップで送信／受信を切り替えます。</string>
+    <string name="header_tx_mic">送信マイク</string>
+    <string name="settings_tx_mic_help">送信時に使うマイクを選びます。USB ハブの外部マイクを選ぶと、Bluetooth マイクより高音質で、送信の反応も速くなります。（下の Bluetooth マイクをオンにすると、そちらが優先されます。）</string>
+    <string name="settings_tx_mic_builtin">内蔵マイク</string>
+    <string name="settings_tx_mic_builtin_help">スマホ本体のマイク。</string>
     <string name="header_bt_mic">Bluetooth マイク（送信）</string>
     <string name="settings_bt_mic_tx">送信に Bluetooth マイクを使う（実験的）</string>
     <string name="settings_bt_mic_tx_help">送信時の音声を、スマホのマイクではなく Bluetooth ヘッドセットのマイクから取り込みます。対応していれば LE Audio（LC3・高音質／Android 13以降＋対応ヘッドセットが必要）を優先し、なければ従来の通話音声（SCO・電話品質）を使います。実験的機能です。オフ＝スマホのマイク。受信と Bluetooth 再生には影響しません。</string>

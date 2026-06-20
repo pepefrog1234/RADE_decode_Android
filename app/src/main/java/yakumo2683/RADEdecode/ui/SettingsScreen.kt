@@ -441,6 +441,38 @@ fun SettingsScreen(viewModel: TransceiverViewModel = viewModel()) {
             }
         }
 
+        SectionHeader(stringResource(R.string.header_tx_mic))
+
+        Surface(
+            shape = RoundedCornerShape(12.dp),
+            color = SurfaceCard,
+            modifier = Modifier
+                .fillMaxWidth()
+                .border(1.dp, MaterialTheme.colorScheme.outline, RoundedCornerShape(12.dp))
+        ) {
+            Column(modifier = Modifier.padding(16.dp)) {
+                Text(
+                    stringResource(R.string.settings_tx_mic_help),
+                    fontSize = 11.sp, color = OnSurfaceDim, lineHeight = 16.sp
+                )
+                RxOutputOptionRow(
+                    selected = state.txMicDeviceId <= 0,
+                    onClick = { viewModel.selectTxMicDevice(-1) },
+                    title = stringResource(R.string.settings_tx_mic_builtin),
+                    subtitle = stringResource(R.string.settings_tx_mic_builtin_help)
+                )
+                // External (USB-hub / wired) mics. Bluetooth mics are handled by the
+                // experimental toggle below, so they're excluded here.
+                state.devices.filter { it.isUsb || it.isWired }.forEach { device ->
+                    AudioDeviceOptionRow(
+                        device = device,
+                        selected = device.id == state.txMicDeviceId,
+                        onClick = { viewModel.selectTxMicDevice(device.id) }
+                    )
+                }
+            }
+        }
+
         SectionHeader(stringResource(R.string.header_bt_mic))
 
         Surface(

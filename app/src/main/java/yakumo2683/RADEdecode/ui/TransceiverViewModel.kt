@@ -72,7 +72,8 @@ class TransceiverViewModel(application: Application) : AndroidViewModel(applicat
         val serviceBound: Boolean = false,
         val powerSaveMode: Boolean = false,  // 效能節約模式: hide spectrum/waterfall + skip FFT on weak devices
         val pttHoldMode: Boolean = false,    // hold-to-talk: TX is keyed only while the TX button is held
-        val bluetoothMicTx: Boolean = false  // experimental: capture TX voice from the Bluetooth headset mic (SCO)
+        val bluetoothMicTx: Boolean = false, // experimental: capture TX voice from the Bluetooth headset mic (SCO)
+        val txMicDeviceId: Int = -1          // selected TX mic input device id (-1 = built-in mic)
     ) {
         val syncText: String get() = when (syncState) {
             0 -> "SEARCH"
@@ -149,6 +150,7 @@ class TransceiverViewModel(application: Application) : AndroidViewModel(applicat
             powerSaveMode = prefs.getBoolean("power_save_mode", false),
             pttHoldMode = prefs.getBoolean("ptt_hold_mode", false),
             bluetoothMicTx = prefs.getBoolean("bluetooth_mic_tx", false),
+            txMicDeviceId = prefs.getInt("tx_mic_device", -1),
             selectedDeviceId = savedRxInputDeviceId,
             selectedRxOutputDeviceId = prefs.getInt(
                 "rx_output_device",
@@ -338,6 +340,24 @@ class TransceiverViewModel(application: Application) : AndroidViewModel(applicat
     }
 
     /**
+     * Choose the TX microphone input device (e.g. a USB-hub external mic) instead of
+     * the phone's built-in mic. -1 = built-in. Avoids the Bluetooth SCO mic's delay
+     * and quality loss. The Bluetooth-mic toggle, when on, still takes priority.
+     */
+    fun selectTxMicDevice(deviceId: Int) {
+        prefs.edit().putInt("tx_mic_device", deviceId).apply()
+        _uiState.value = _uiState.value.copy(txMicDeviceId = deviceId)
+    }
+
+    /** Resolve the TX mic device id, falling back to the built-in mic when the
+     *  selected device is gone or none was chosen. */
+    private fun resolveTxMicId(): Int {
+        val sel = _uiState.value.txMicDeviceId
+        return if (sel > 0 && _uiState.value.devices.any { it.id == sel }) sel
+               else _uiState.value.builtInMicId
+    }
+
+    /**
      * Release of the held TX button. A very short press can be released
      * before TX has finished engaging (isTx still false), and switchToRx()
      * would no-op then — leaving the rig keyed. Wait briefly for TX to
@@ -383,7 +403,7 @@ class TransceiverViewModel(application: Application) : AndroidViewModel(applicat
                 attempts++
             }
             audioService?.startTransmitting(
-                inputDeviceId = _uiState.value.builtInMicId,  // built-in mic, not USB audio
+                inputDeviceId = resolveTxMicId(),  // built-in mic or a chosen USB mic
                 outputDeviceId = _uiState.value.selectedOutputDeviceId,
                 callsign = _uiState.value.txCallsign,
                 useBluetoothMic = _uiState.value.bluetoothMicTx
@@ -435,7 +455,7 @@ class TransceiverViewModel(application: Application) : AndroidViewModel(applicat
         // startTransmitting: use built-in mic for TX input (not USB audio input
         // which is the radio's audio output used for RX decoding)
         audioService?.startTransmitting(
-            inputDeviceId = _uiState.value.builtInMicId,
+            inputDeviceId = resolveTxMicId(),
             outputDeviceId = outId,
             callsign = _uiState.value.txCallsign,
             useBluetoothMic = _uiState.value.bluetoothMicTx

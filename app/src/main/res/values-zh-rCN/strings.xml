@@ -31,6 +31,10 @@
     <string name="header_ptt">PTT</string>
     <string name="settings_ptt_hold">按住发话（PTT）</string>
     <string name="settings_ptt_hold_help">开启后，发射键变成对讲机式操作：按住才发射，松开立即返回接收。关闭时，点一下发射键即可切换发射／接收。</string>
+    <string name="header_tx_mic">发射麦克风</string>
+    <string name="settings_tx_mic_help">选择发射时使用的麦克风。选用 USB 集线器上的外接麦克风，音质更好、按下发射也更灵敏（优于蓝牙麦克风）。（开启下方的蓝牙麦克风时，会以蓝牙优先。）</string>
+    <string name="settings_tx_mic_builtin">内置麦克风</string>
+    <string name="settings_tx_mic_builtin_help">手机自带的麦克风。</string>
     <string name="header_bt_mic">蓝牙麦克风（发射）</string>
     <string name="settings_bt_mic_tx">发射使用蓝牙麦克风（实验性）</string>
     <string name="settings_bt_mic_tx_help">发射时从蓝牙耳机麦克风采集语音，而非手机麦克风。支持时优先使用 LE Audio（LC3・高音质／需 Android 13+ 及兼容耳机），否则使用传统通话音频（SCO・电话品质）。实验性功能。关闭＝手机麦克风。不影响接收与蓝牙播放。</string>
