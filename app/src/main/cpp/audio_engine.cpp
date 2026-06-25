@@ -843,11 +843,16 @@ bool AudioEngine::startTx(int inputDeviceId, int outputDeviceId) {
     txPlaybackRing_.reset();
     txRunning_.store(true);
 
-    // Start input stream FIRST so it begins capturing and processing audio
-    // before the output stream starts consuming from the ring buffer.
+    // Open the mic input (learns the negotiated rate) but DON'T start it yet —
+    // the callback must stay idle until the decimation filter and ring buffer
+    // are fully set up below, or the audio thread races this setup code.
     if (!openTxInputStream()) {
         txRunning_.store(false); releaseTxModem(); return false;
     }
+
+    // Build the mic-rate → 16 kHz decimation filter now that txActualInputRate_
+    // is known, while the input callback is still idle.
+    designTxDecimFilter();
 
     // Pre-fill ring buffer with silence-encoded modem frames to prevent
     // underruns at startup and absorb input jitter during TX.
@@ -879,36 +884,15 @@ bool AudioEngine::startTx(int inputDeviceId, int outputDeviceId) {
         releaseTxModem(); return false;
     }
 
-    // Design decimation filter for speech input if needed
-    if (txActualInputRate_ != SPEECH_SAMPLE_RATE) {
-        txDecimFactor_ = txActualInputRate_ / SPEECH_SAMPLE_RATE;
-        if (txDecimFactor_ < 1) txDecimFactor_ = 1;
-        // Reuse the same FIR design as RX but for speech rate
-        int totalTaps = DECIM_FIR_TAPS * txDecimFactor_;
-        float fc = (float)SPEECH_SAMPLE_RATE / (2.0f * (float)txActualInputRate_);
-        txDecimCoeffs_.resize(totalTaps);
-        float sum = 0;
-        int M = totalTaps - 1;
-        for (int i = 0; i < totalTaps; i++) {
-            float n = (float)i - (float)M / 2.0f;
-            float h = (fabsf(n) < 1e-6f) ? 2.0f * fc :
-                      sinf(2.0f * (float)M_PI * fc * n) / ((float)M_PI * n);
-            float w = 0.35875f
-                    - 0.48829f * cosf(2.0f * (float)M_PI * (float)i / (float)M)
-                    + 0.14128f * cosf(4.0f * (float)M_PI * (float)i / (float)M)
-                    - 0.01168f * cosf(6.0f * (float)M_PI * (float)i / (float)M);
-            txDecimCoeffs_[i] = h * w;
-            sum += txDecimCoeffs_[i];
-        }
-        for (int i = 0; i < totalTaps; i++) txDecimCoeffs_[i] /= sum;
-        txDecimHistory_.resize(totalTaps, 0.0f);
-        txDecimHistPos_ = 0;
-        txDecimPhase_ = 0;
-        LOGI("TX: decimation %dHz→%dHz factor=%d", txActualInputRate_, SPEECH_SAMPLE_RATE, txDecimFactor_);
-    } else {
-        txDecimFactor_ = 1;
-        txDecimCoeffs_.clear();
-        txDecimHistory_.clear();
+    // Everything is initialized — only now is it safe to start the mic callback.
+    // The ~360 ms prefill covers the brief gap until the first mic frames land.
+    auto startRes = txInputStream_->requestStart();
+    if (startRes != oboe::Result::OK) {
+        LOGE("TX: failed to start input: %s", oboe::convertToText(startRes));
+        txRunning_.store(false);
+        txInputStream_->close(); txInputStream_.reset();
+        if (txOutputStream_) { txOutputStream_->stop(); txOutputStream_->close(); txOutputStream_.reset(); }
+        releaseTxModem(); return false;
     }
 
     LOGI("TX: started, input=%dHz output=%dHz outDev=%d",
@@ -964,6 +948,43 @@ void AudioEngine::setTxCallsign(const char *callsign) {
 
 void AudioEngine::setTxOutputDevice(int deviceId) {
     txOutputDeviceId_ = (deviceId > 0) ? deviceId : 0;
+}
+
+// Design the mic-rate → 16 kHz speech decimation FIR. Must run BEFORE the TX
+// input stream is started: it resize()s txDecimCoeffs_/txDecimHistory_, which
+// the input callback indexes into, so the two must never run concurrently.
+void AudioEngine::designTxDecimFilter() {
+    if (txActualInputRate_ != SPEECH_SAMPLE_RATE && txActualInputRate_ > 0) {
+        txDecimFactor_ = txActualInputRate_ / SPEECH_SAMPLE_RATE;
+        if (txDecimFactor_ < 1) txDecimFactor_ = 1;
+        int totalTaps = DECIM_FIR_TAPS * txDecimFactor_;
+        float fc = (float)SPEECH_SAMPLE_RATE / (2.0f * (float)txActualInputRate_);
+        txDecimCoeffs_.resize(totalTaps);
+        float sum = 0;
+        int M = totalTaps - 1;
+        for (int i = 0; i < totalTaps; i++) {
+            float n = (float)i - (float)M / 2.0f;
+            float h = (fabsf(n) < 1e-6f) ? 2.0f * fc :
+                      sinf(2.0f * (float)M_PI * fc * n) / ((float)M_PI * n);
+            float w = 0.35875f
+                    - 0.48829f * cosf(2.0f * (float)M_PI * (float)i / (float)M)
+                    + 0.14128f * cosf(4.0f * (float)M_PI * (float)i / (float)M)
+                    - 0.01168f * cosf(6.0f * (float)M_PI * (float)i / (float)M);
+            txDecimCoeffs_[i] = h * w;
+            sum += txDecimCoeffs_[i];
+        }
+        for (int i = 0; i < totalTaps; i++) txDecimCoeffs_[i] /= sum;
+        txDecimHistory_.resize(totalTaps, 0.0f);
+        txDecimHistPos_ = 0;
+        txDecimPhase_ = 0;
+        LOGI("TX: decimation %dHz→%dHz factor=%d", txActualInputRate_, SPEECH_SAMPLE_RATE, txDecimFactor_);
+    } else {
+        txDecimFactor_ = 1;
+        txDecimCoeffs_.clear();
+        txDecimHistory_.clear();
+        txDecimHistPos_ = 0;
+        txDecimPhase_ = 0;
+    }
 }
 
 bool AudioEngine::openTxInputStream() {
@@ -1028,11 +1049,13 @@ bool AudioEngine::openTxInputStream() {
     LOGI("TX: input rate=%d device=%d (wanted=%d) session=%d (SCO 16k=mSBC/WBS 8k=CVSD/NB)",
          txActualInputRate_, txInputStream_->getDeviceId(), txInputDeviceId_, inputSessionId_);
 
-    result = txInputStream_->requestStart();
-    if (result != oboe::Result::OK) {
-        LOGE("TX: failed to start input: %s", oboe::convertToText(result));
-        txInputStream_->close(); txInputStream_.reset(); return false;
-    }
+    // Intentionally left open but NOT started. The mic callback must not run
+    // until startTx()/startNetTx() have designed the decimation filter and
+    // pre-filled the ring buffer — otherwise the audio thread races that setup
+    // on the shared encoder/modem and resize()s the decim vectors out from
+    // under itself (a crash that surfaces with Bluetooth LE Audio / LC3, whose
+    // routing change makes the first callback land inside the setup window).
+    // The caller calls requestStart() once everything is initialized.
     return true;
 }
 
@@ -1332,6 +1355,10 @@ bool AudioEngine::startNetTx(int inputDeviceId, int netRate) {
     // is known. Must precede the first fillNetTxFrame() call.
     designNetTxInterpFilter(txOutputRate_ / MODEM_SAMPLE_RATE);
 
+    // Build the mic-rate → 16 kHz decimation filter while the mic callback is
+    // still idle (the input stream has not been started yet).
+    designTxDecimFilter();
+
     // Pre-fill the ring with silence-encoded modem frames to absorb startup
     // jitter and the phone-vs-radio clock difference. Target ~200 ms so the
     // deadline-paced UDP TX pump (AudioService.startNetTxPump) never underruns
@@ -1360,35 +1387,13 @@ bool AudioEngine::startNetTx(int inputDeviceId, int netRate) {
         LOGI("Net TX: pre-filled ring with %d samples", txPlaybackRing_.availableToRead());
     }
 
-    // Design mic-rate → 16kHz decimation if needed (same as USB TX path).
-    if (txActualInputRate_ != SPEECH_SAMPLE_RATE) {
-        txDecimFactor_ = txActualInputRate_ / SPEECH_SAMPLE_RATE;
-        if (txDecimFactor_ < 1) txDecimFactor_ = 1;
-        int totalTaps = DECIM_FIR_TAPS * txDecimFactor_;
-        float fc = (float)SPEECH_SAMPLE_RATE / (2.0f * (float)txActualInputRate_);
-        txDecimCoeffs_.resize(totalTaps);
-        float sum = 0;
-        int M = totalTaps - 1;
-        for (int i = 0; i < totalTaps; i++) {
-            float n = (float)i - (float)M / 2.0f;
-            float h = (fabsf(n) < 1e-6f) ? 2.0f * fc :
-                      sinf(2.0f * (float)M_PI * fc * n) / ((float)M_PI * n);
-            float w = 0.35875f
-                    - 0.48829f * cosf(2.0f * (float)M_PI * (float)i / (float)M)
-                    + 0.14128f * cosf(4.0f * (float)M_PI * (float)i / (float)M)
-                    - 0.01168f * cosf(6.0f * (float)M_PI * (float)i / (float)M);
-            txDecimCoeffs_[i] = h * w;
-            sum += txDecimCoeffs_[i];
-        }
-        for (int i = 0; i < totalTaps; i++) txDecimCoeffs_[i] /= sum;
-        txDecimHistory_.resize(totalTaps, 0.0f);
-        txDecimHistPos_ = 0;
-        txDecimPhase_ = 0;
-        LOGI("Net TX: decimation %dHz→%dHz factor=%d", txActualInputRate_, SPEECH_SAMPLE_RATE, txDecimFactor_);
-    } else {
-        txDecimFactor_ = 1;
-        txDecimCoeffs_.clear();
-        txDecimHistory_.clear();
+    // Everything is initialized — only now is it safe to start the mic callback.
+    auto startRes = txInputStream_->requestStart();
+    if (startRes != oboe::Result::OK) {
+        LOGE("Net TX: failed to start input: %s", oboe::convertToText(startRes));
+        txRunning_.store(false); txNetMode_ = false;
+        txInputStream_->close(); txInputStream_.reset();
+        releaseTxModem(); return false;
     }
 
     LOGI("Net TX: started, input=%dHz netRate=%d", txActualInputRate_, txOutputRate_);

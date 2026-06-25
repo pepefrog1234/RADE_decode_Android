@@ -264,8 +264,9 @@ private:
 
     bool initTxModem();
     void releaseTxModem();
-    bool openTxInputStream();
+    bool openTxInputStream();   // opens but does NOT start; caller starts it last
     bool openTxOutputStream();
+    void designTxDecimFilter();  // mic-rate → 16 kHz speech decimation FIR
     void processTxInputFrames(const float *data, int32_t numFrames, int32_t channelCount);
     void processTxFeatureFrame();
     void generateTxOutput();
