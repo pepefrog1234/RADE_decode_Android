@@ -322,7 +322,20 @@ class AudioService : LifecycleService() {
 
     private fun resolveRxOutputDeviceId(bridge: AudioBridge, selection: Int): Int {
         return when {
-            selection > 0 -> selection
+            selection > 0 -> {
+                val outputs = bridge.getOutputDevices()
+                when {
+                    outputs.any { it.id == selection } -> selection
+                    // The chosen output vanished. Common case: a Bluetooth LE Audio
+                    // (LC3) headset whose AudioDeviceInfo id changes across a TX
+                    // cycle (opening/closing the TX mic reconfigures LE Audio). Re-
+                    // bind to the live BLE Audio output so RX returns to the headset
+                    // instead of silently falling back to the phone speaker.
+                    else -> outputs.firstOrNull { it.isBleAudio }?.id?.also {
+                        Log.i("AudioService", "RX output id=$selection gone; re-binding to BLE Audio id=$it")
+                    } ?: selection
+                }
+            }
             selection == RX_OUTPUT_SYSTEM_DEFAULT -> -1
             else -> bridge.findPreferredRxOutputDevice()?.id ?: -1
         }

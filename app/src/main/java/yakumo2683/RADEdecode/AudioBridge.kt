@@ -292,6 +292,12 @@ class AudioBridge(private val context: Context) {
     fun findPreferredRxOutputDevice(): AudioDevice? {
         val outputs = getOutputDevices()
         return outputs.firstOrNull { it.isWired }
+            // Prefer a Bluetooth LE Audio (LC3) headset/speaker when present. RX is
+            // opened on it by hard device id via Oboe (not the A2DP/SCO soft-hint
+            // path that regressed before), so playback goes to the LC3 earphone
+            // instead of the phone speaker — and AUTO recovers to it after a TX
+            // cycle. Classic A2DP/SCO are still not auto-preferred.
+            ?: outputs.firstOrNull { it.isBleAudio }
             ?: outputs.firstOrNull { it.type == AudioDeviceInfo.TYPE_BUILTIN_SPEAKER }
             ?: outputs.firstOrNull { !it.isBluetooth && !it.isUsb }
     }
