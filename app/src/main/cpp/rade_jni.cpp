@@ -520,8 +520,8 @@ JNI_AUDIO(nativeStartTx)(JNIEnv *env, jobject /* this */,
 }
 
 JNIEXPORT void JNICALL
-JNI_AUDIO(nativeStopTx)(JNIEnv *env, jobject /* this */) {
-    if (g_audioEngine) g_audioEngine->stopTx();
+JNI_AUDIO(nativeStopTx)(JNIEnv *env, jobject /* this */, jboolean drainEoo) {
+    if (g_audioEngine) g_audioEngine->stopTx(drainEoo == JNI_TRUE);
 }
 
 JNIEXPORT void JNICALL

@@ -188,7 +188,7 @@ class AudioBridge(private val context: Context) {
     /** Release native resources. Call when done. */
     fun release() {
         stop()
-        stopTx()
+        stopTx(drainEoo = false)
         nativeDestroy()
     }
 
@@ -198,8 +198,9 @@ class AudioBridge(private val context: Context) {
     fun startTx(inputDeviceId: Int = -1, outputDeviceId: Int = -1): Boolean =
         nativeStartTx(inputDeviceId, outputDeviceId)
 
-    /** Stop transmitting (sends EOO frame, then stops). */
-    fun stopTx() = nativeStopTx()
+    /** Stop transmitting (sends EOO frame, then stops). When [drainEoo] is false
+     *  (no rig / local monitoring) the EOO drain + output tail wait are skipped. */
+    fun stopTx(drainEoo: Boolean = true) = nativeStopTx(drainEoo)
 
     /** Check if TX is currently running. */
     val isTxRunning: Boolean get() = nativeIsTxRunning()
@@ -341,7 +342,7 @@ class AudioBridge(private val context: Context) {
 
     /* TX native methods */
     private external fun nativeStartTx(inputDeviceId: Int, outputDeviceId: Int): Boolean
-    private external fun nativeStopTx()
+    private external fun nativeStopTx(drainEoo: Boolean)
     private external fun nativeIsTxRunning(): Boolean
     private external fun nativeSetTxCallsign(callsign: String)
     private external fun nativeGetTxLevel(): Float

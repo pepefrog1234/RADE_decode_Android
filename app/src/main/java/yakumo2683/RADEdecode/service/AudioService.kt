@@ -9,16 +9,13 @@ import android.content.Intent
 import android.content.pm.PackageManager
 import android.content.pm.ServiceInfo
 import android.media.AudioAttributes
-import android.media.AudioDeviceCallback
 import android.media.AudioDeviceInfo
 import android.media.AudioFormat
 import android.media.AudioManager
 import android.media.AudioTrack
 import android.os.Binder
 import android.os.Build
-import android.os.Handler
 import android.os.IBinder
-import android.os.Looper
 import android.util.Log
 import androidx.core.app.NotificationCompat
 import androidx.core.content.ContextCompat
@@ -73,14 +70,6 @@ class AudioService : LifecycleService() {
     private var totalModemFrames: Int = 0
     private var syncedFrames: Int = 0
     private var currentInputDeviceId: Int = -1
-
-    // RX output device watcher: re-routes RX playback back onto a Bluetooth LE
-    // Audio (LC3) headset when it re-appears after a TX cycle (its AudioDeviceInfo
-    // id changes when the mic open/close reconfigures LE Audio), instead of
-    // leaving RX stranded on the phone speaker.
-    private var rxOutputDeviceCallback: AudioDeviceCallback? = null
-    private var currentRxOutputSelection: Int = RX_OUTPUT_AUTO
-    @Volatile private var lastAppliedRxOutputId: Int = Int.MIN_VALUE
 
     // Session splitting: finalize session when sync lost > 2 seconds
     private var lastSyncedTime: Long = 0   // last time syncState was 2 (0 = never synced this session)
@@ -183,8 +172,6 @@ class AudioService : LifecycleService() {
         }
 
         val rxOutputDeviceId = resolveRxOutputDeviceId(bridge, outputDeviceId)
-        currentRxOutputSelection = outputDeviceId
-        lastAppliedRxOutputId = rxOutputDeviceId
         val bluetoothRouteActive = prepareBluetoothCommunicationRoute(inputDeviceId)
         val effectiveInputDeviceId = effectiveBluetoothInputDeviceId(inputDeviceId, bluetoothRouteActive)
         val effectiveOutputDeviceId = effectiveBluetoothOutputDeviceId(rxOutputDeviceId, bluetoothRouteActive)
@@ -217,7 +204,6 @@ class AudioService : LifecycleService() {
         _state.value = _state.value.copy(isRunning = true)
         startPolling()
         startNotificationUpdates()
-        registerRxOutputDeviceWatcher()
     }
 
     fun setInputGain(gain: Float) {
@@ -225,7 +211,6 @@ class AudioService : LifecycleService() {
     }
 
     fun stopDecoding() {
-        unregisterRxOutputDeviceWatcher()
         stopPolling()
         stopNotificationUpdates()
 
@@ -259,8 +244,6 @@ class AudioService : LifecycleService() {
         val bridge = audioBridge ?: return
         if (!_state.value.isRunning || _state.value.isTx) return
         val resolved = resolveRxOutputDeviceId(bridge, deviceId)
-        currentRxOutputSelection = deviceId
-        lastAppliedRxOutputId = resolved
         val bluetoothRouteActive = prepareBluetoothCommunicationRoute(null)
         val effectiveOutput = effectiveBluetoothOutputDeviceId(resolved, bluetoothRouteActive)
         val useJavaRxOutput = shouldUseJavaRxOutput(resolved)
@@ -355,52 +338,6 @@ class AudioService : LifecycleService() {
             }
             selection == RX_OUTPUT_SYSTEM_DEFAULT -> -1
             else -> bridge.findPreferredRxOutputDevice()?.id ?: -1
-        }
-    }
-
-    /**
-     * Watch for output-device changes while RX is running so playback can follow a
-     * Bluetooth LE Audio (LC3) headset that re-registers — often with a new
-     * AudioDeviceInfo id — after a TX cycle. Without this, RX stays on the phone
-     * speaker even once the LC3 device is back. Active during RX only (never TX).
-     */
-    private fun registerRxOutputDeviceWatcher() {
-        if (rxOutputDeviceCallback != null) return
-        val cb = object : AudioDeviceCallback() {
-            override fun onAudioDevicesAdded(addedDevices: Array<out AudioDeviceInfo>?) = maybeRebindRxOutput()
-            override fun onAudioDevicesRemoved(removedDevices: Array<out AudioDeviceInfo>?) = maybeRebindRxOutput()
-        }
-        rxOutputDeviceCallback = cb
-        try {
-            audioManager().registerAudioDeviceCallback(cb, Handler(Looper.getMainLooper()))
-        } catch (e: Exception) {
-            Log.w("AudioService", "registerAudioDeviceCallback failed", e)
-            rxOutputDeviceCallback = null
-        }
-    }
-
-    private fun unregisterRxOutputDeviceWatcher() {
-        val cb = rxOutputDeviceCallback ?: return
-        rxOutputDeviceCallback = null
-        try { audioManager().unregisterAudioDeviceCallback(cb) } catch (_: Exception) {}
-    }
-
-    /**
-     * Re-resolve the RX output; if it now maps to a different device than what is
-     * applied, re-bind RX playback to it. No-op during TX or when RX is stopped.
-     * Runs off the main thread because setOutputDevice() restarts the native
-     * output stream.
-     */
-    private fun maybeRebindRxOutput() {
-        lifecycleScope.launch(Dispatchers.IO) {
-            val bridge = audioBridge ?: return@launch
-            val st = _state.value
-            if (!st.isRunning || st.isTx) return@launch
-            val resolved = resolveRxOutputDeviceId(bridge, currentRxOutputSelection)
-            if (resolved == lastAppliedRxOutputId) return@launch
-            lastAppliedRxOutputId = resolved
-            Log.i("AudioService", "RX output watcher: device set changed; re-binding RX output to id=$resolved")
-            bridge.setOutputDevice(resolved)
         }
     }
 
@@ -964,9 +901,6 @@ class AudioService : LifecycleService() {
     ) {
         if (_state.value.isTx) return
 
-        // The RX-output watcher must not fire while we tear RX down and run TX.
-        unregisterRxOutputDeviceWatcher()
-
         // Stop RX immediately: mute output, stop bridge, finalize session
         // — but do NOT call stopForeground to keep foreground status during transition
         if (_state.value.isRunning) {
@@ -1074,14 +1008,21 @@ class AudioService : LifecycleService() {
         startNotificationUpdates()
     }
 
-    fun stopTransmitting() {
+    /**
+     * @param drainEoo when true (a rig/USB/network TX path exists) stopTx blocks
+     *   until the EOO callsign frame has played out, so it makes it over the air.
+     *   When false (no rig — pure local LC3 monitoring) the native side tears the
+     *   TX engine down immediately, removing up to ~2.5 s of pointless drain/tail.
+     */
+    fun stopTransmitting(drainEoo: Boolean = true) {
         stopTxPolling()
         stopNotificationUpdates()
 
         // Stop the mic/encoder and queue the EOO (callsign) frame into the TX
         // ring. On the Oboe output path this blocks until the ring has played
-        // out; on the AudioTrack/network paths the pumps below drain it.
-        audioBridge?.stopTx()
+        // out (only when drainEoo); on the AudioTrack/network paths the pumps
+        // below drain it.
+        audioBridge?.stopTx(drainEoo)
 
         // Wait for the pump to finish playing the EOO before tearing anything
         // down, so the callsign makes it over the air before PTT drops.
@@ -1536,7 +1477,8 @@ class AudioService : LifecycleService() {
     }
 
     override fun onDestroy() {
-        if (_state.value.isTx) stopTransmitting()
+        // Fast teardown on destroy — don't block the main thread draining the EOO.
+        if (_state.value.isTx) stopTransmitting(drainEoo = false)
         else stopDecoding()
         super.onDestroy()
     }

@@ -82,7 +82,7 @@ public:
 
     /* TX mode */
     bool startTx(int inputDeviceId, int outputDeviceId);
-    void stopTx();
+    void stopTx(bool drainEoo = true);
     bool isTxRunning() const { return txRunning_.load(); }
     void setTxCallsign(const char *callsign);
     void setTxOutputDevice(int deviceId);

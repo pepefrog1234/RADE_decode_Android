@@ -470,8 +470,8 @@ class TransceiverViewModel(application: Application) : AndroidViewModel(applicat
         if (txStopJob?.isActive == true) return
         txStopJob = viewModelScope.launch {
             stopTxAndUnkeyPtt()
-            // Resume RX
-            delay(100) // brief pause for clean transition
+            // Resume RX — brief settle for the audio route to quiesce.
+            delay(20)
             if (useNetworkAudio()) {
                 audioService?.startNetworkDecoding(
                     outputDeviceId = _uiState.value.selectedRxOutputDeviceId
@@ -494,9 +494,18 @@ class TransceiverViewModel(application: Application) : AndroidViewModel(applicat
      * behaviour) cut the callsign off mid-air.
      */
     private suspend fun stopTxAndUnkeyPtt() {
-        withContext(Dispatchers.IO) { audioService?.stopTransmitting() }
-        delay(TX_PTT_TAIL_MS)
-        if (rigController.isConnected) rigController.setPtt(false)
+        // Only drain the EOO callsign and hold the RF tail when there is a real
+        // transmit path: a CAT-keyed rig, network audio, or a USB audio output.
+        // With none of those (pure local LC3 monitoring) tear down immediately —
+        // this removes several seconds of dead time from the TX->RX switch.
+        val onAir = rigController.isConnected ||
+            useNetworkAudio() ||
+            _uiState.value.selectedOutputDeviceId > 0
+        withContext(Dispatchers.IO) { audioService?.stopTransmitting(drainEoo = onAir) }
+        if (rigController.isConnected) {
+            delay(TX_PTT_TAIL_MS)
+            rigController.setPtt(false)
+        }
     }
 
     /** Stop everything and tear down the service */

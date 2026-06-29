@@ -82,7 +82,7 @@ AudioEngine::AudioEngine() {
     txOutputCb_ = std::make_shared<TxOutputCallback>(this);
 }
 
-AudioEngine::~AudioEngine() { stop(); stopTx(); }
+AudioEngine::~AudioEngine() { stop(); stopTx(false); }
 
 /* ── Polyphase FIR decimation filter design ──────────────────── */
 
@@ -900,37 +900,44 @@ bool AudioEngine::startTx(int inputDeviceId, int outputDeviceId) {
     return true;
 }
 
-void AudioEngine::stopTx() {
+void AudioEngine::stopTx(bool drainEoo) {
     if (!txRunning_.load()) return;
 
     // Stop accepting new mic input
     if (txInputStream_) { txInputStream_->stop(); txInputStream_->close(); txInputStream_.reset(); }
 
-    // Send EOO frame — writes encoded callsign into txPlaybackRing_
-    sendTxEoo();
+    if (drainEoo) {
+        // Send EOO frame — writes encoded callsign into txPlaybackRing_
+        sendTxEoo();
 
-    // Wait for the output stream to drain the EOO data from the ring buffer.
-    // Skip drain wait when using Java AudioTrack or network TX — there the
-    // service pumps drain the ring before tearing the engine down.
-    if (!txUseJavaOutput_) {
-        int waitMs = 0;
-        while (txPlaybackRing_.availableToRead() > 0 && waitMs < 2000) {
-            usleep(10000);  // 10ms
-            waitMs += 10;
-        }
-        LOGI("TX: EOO drain waited %dms, remaining=%d", waitMs, txPlaybackRing_.availableToRead());
-        // An empty ring only means Oboe has consumed the samples; the stream's
-        // own buffer is still playing. Wait that out so the EOO tail isn't cut
-        // when the stream stops.
-        if (txOutputStream_) {
-            int32_t bufFrames = txOutputStream_->getBufferSizeInFrames();
-            int32_t rate = txOutputStream_->getSampleRate();
-            if (bufFrames > 0 && rate > 0) {
-                int tailMs = (int)((int64_t)bufFrames * 1000 / rate) + 20;
-                if (tailMs > 500) tailMs = 500;
-                usleep(tailMs * 1000);
+        // Wait for the output stream to drain the EOO data from the ring buffer.
+        // Skip drain wait when using Java AudioTrack or network TX — there the
+        // service pumps drain the ring before tearing the engine down.
+        if (!txUseJavaOutput_) {
+            int waitMs = 0;
+            while (txPlaybackRing_.availableToRead() > 0 && waitMs < 2000) {
+                usleep(10000);  // 10ms
+                waitMs += 10;
+            }
+            LOGI("TX: EOO drain waited %dms, remaining=%d", waitMs, txPlaybackRing_.availableToRead());
+            // An empty ring only means Oboe has consumed the samples; the stream's
+            // own buffer is still playing. Wait that out so the EOO tail isn't cut
+            // when the stream stops.
+            if (txOutputStream_) {
+                int32_t bufFrames = txOutputStream_->getBufferSizeInFrames();
+                int32_t rate = txOutputStream_->getSampleRate();
+                if (bufFrames > 0 && rate > 0) {
+                    int tailMs = (int)((int64_t)bufFrames * 1000 / rate) + 20;
+                    if (tailMs > 500) tailMs = 500;
+                    usleep(tailMs * 1000);
+                }
             }
         }
+    } else {
+        // No rig / pure local LC3 monitoring: nothing is going over the air, so
+        // skip the EOO callsign and its drain/tail entirely and tear down now.
+        // This removes up to ~2.5 s of dead time from each TX->RX switch.
+        LOGI("TX: stop (no rig — skipping EOO drain)");
     }
 
     txRunning_.store(false);
