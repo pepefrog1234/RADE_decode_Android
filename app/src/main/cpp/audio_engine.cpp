@@ -185,6 +185,40 @@ void AudioEngine::stop() {
     releaseModem();
 }
 
+bool AudioEngine::pauseRxInput() {
+    // Close only the RX mic input; KEEP outputStream_ (and its LE Audio/LC3 media
+    // route) open and running_ = true so renderOutput keeps the route alive
+    // (playing out the ring, then silence). Frees the mic for a local TX.
+    std::shared_ptr<oboe::AudioStream> inputToClose;
+    {
+        std::lock_guard<std::mutex> lk(streamMutex_);
+        inputToClose = inputStream_;
+        inputStream_.reset();
+    }
+    if (inputToClose) { inputToClose->stop(); inputToClose->close(); }
+    inputSessionId_ = -1;
+    LOGI("RX input paused (output stream kept alive for LC3 route)");
+    return true;
+}
+
+bool AudioEngine::resumeRxInput() {
+    std::lock_guard<std::mutex> lk(streamMutex_);
+    if (!running_.load()) return false;
+    // If the RX output errored away during the keep-alive TX (route disconnect),
+    // reopen it now so RX is audible again.
+    if (!outputStream_ && !rxUseJavaOutput_) {
+        if (!openOutputStream()) LOGE("RX output reopen on resume failed");
+    }
+    if (inputStream_) return true;  // already running
+    if (openInputStream()) {
+        designDecimFilter(actualInputRate_, MODEM_SAMPLE_RATE);
+        LOGI("RX input resumed");
+        return true;
+    }
+    LOGE("RX input resume failed");
+    return false;
+}
+
 void AudioEngine::setInputDevice(int deviceId) {
     inputDeviceId_ = (deviceId > 0) ? deviceId : 0;
     if (running_.load()) { stop(); start(inputDeviceId_, outputDeviceId_); }
@@ -697,6 +731,9 @@ void AudioEngine::restartInputStream(oboe::AudioStream *closedStream) {
     {
         std::lock_guard<std::mutex> lk(streamMutex_);
         if (!running_.load() || netRxRunning_.load()) return;
+        // RX input is intentionally paused while a keep-alive (local LC3) TX owns
+        // the mic — never reopen the RX mic here or it would fight TX for it.
+        if (txRunning_.load()) { LOGI("Skip RX input restart: TX active"); return; }
         if (closedStream != nullptr && inputStream_ && inputStream_.get() != closedStream) {
             LOGI("Ignoring stale input stream callback");
             return;
@@ -716,7 +753,9 @@ void AudioEngine::restartInputStream(oboe::AudioStream *closedStream) {
 
     {
         std::lock_guard<std::mutex> lk(streamMutex_);
-        if (!running_.load() || netRxRunning_.load() || inputStream_) return;
+        // Re-check after the sleep: TX may have grabbed the mic in the meantime
+        // (keep-alive TX). Never reopen the RX mic while TX owns it.
+        if (!running_.load() || netRxRunning_.load() || txRunning_.load() || inputStream_) return;
         if (openInputStream()) {
             designDecimFilter(actualInputRate_, MODEM_SAMPLE_RATE);
             LOGI("Input stream restarted successfully");
@@ -729,10 +768,19 @@ void AudioEngine::restartInputStream(oboe::AudioStream *closedStream) {
 void AudioEngine::restartOutputStream(oboe::AudioStream *closedStream) {
     LOGI("Restarting output stream...");
     std::shared_ptr<oboe::AudioStream> streamToClose;
+    bool keepRxSkipReopen = false;
     {
         std::lock_guard<std::mutex> lk(streamMutex_);
         if (!running_.load()) return;
-        if (rxUseJavaOutput_) {
+        if (txKeepRxAlive_) {
+            // Keep-alive (local LC3) TX in progress: do NOT reopen the media
+            // output on a route error — reopening is what bounces a dual-mode LC3
+            // headset to A2DP. Drop the errored stream; resumeRxInput() reopens it
+            // after TX ends.
+            if (closedStream == nullptr) streamToClose = outputStream_;
+            outputStream_.reset();
+            keepRxSkipReopen = true;
+        } else if (rxUseJavaOutput_) {
             if (closedStream == nullptr) streamToClose = outputStream_;
             outputStream_.reset();
         } else if (closedStream != nullptr && outputStream_ && outputStream_.get() != closedStream) {
@@ -751,6 +799,10 @@ void AudioEngine::restartOutputStream(oboe::AudioStream *closedStream) {
         streamToClose->close();
     }
 
+    if (keepRxSkipReopen) {
+        LOGI("Output restart skipped (keep-alive TX); will reopen on RX resume");
+        return;
+    }
     if (rxUseJavaOutput_) return;
 
     usleep(200000);
@@ -830,12 +882,31 @@ void AudioEngine::releaseTxModem() {
     txSpeechPos_ = 0;
 }
 
-bool AudioEngine::startTx(int inputDeviceId, int outputDeviceId) {
+bool AudioEngine::startTx(int inputDeviceId, int outputDeviceId, bool keepRxAlive) {
     if (txRunning_.load()) return true;
-    if (running_.load()) stop();  // stop RX first
-
+    txKeepRxAlive_ = keepRxAlive;
     txInputDeviceId_ = (inputDeviceId > 0) ? inputDeviceId : 0;
     txOutputDeviceId_ = (outputDeviceId > 0) ? outputDeviceId : 0;
+
+    if (keepRxAlive) {
+        // Local LC3 monitoring, no rig: the caller has already paused RX input
+        // (mic freed) but kept the RX output stream — and its LE Audio media
+        // route — open. Capture the mic for the TX level meter only; open no
+        // modem and no output stream, so the media route is never disturbed.
+        LOGI("TX(keepRx): mic-only TX, inputDev=%d (RX output kept alive)", txInputDeviceId_);
+        txRunning_.store(true);
+        if (!openTxInputStream()) { txRunning_.store(false); txKeepRxAlive_ = false; return false; }
+        auto sres = txInputStream_->requestStart();
+        if (sres != oboe::Result::OK) {
+            LOGE("TX(keepRx): failed to start input: %s", oboe::convertToText(sres));
+            txRunning_.store(false); txKeepRxAlive_ = false;
+            txInputStream_->close(); txInputStream_.reset();
+            return false;
+        }
+        return true;
+    }
+
+    if (running_.load()) stop();  // stop RX first
     LOGI("TX: startTx inputDev=%d outputDev=%d", txInputDeviceId_, txOutputDeviceId_);
 
     if (!initTxModem()) return false;
@@ -905,6 +976,15 @@ void AudioEngine::stopTx(bool drainEoo) {
 
     // Stop accepting new mic input
     if (txInputStream_) { txInputStream_->stop(); txInputStream_->close(); txInputStream_.reset(); }
+
+    if (txKeepRxAlive_) {
+        // Mic-only local TX: no modem/output/ring was opened, and the RX output
+        // stream stays open. Just drop the mic; the caller resumes RX input.
+        txRunning_.store(false);
+        txKeepRxAlive_ = false;
+        LOGI("TX(keepRx): stopped (RX output untouched)");
+        return;
+    }
 
     if (drainEoo) {
         // Send EOO frame — writes encoded callsign into txPlaybackRing_
@@ -1106,6 +1186,17 @@ bool AudioEngine::openTxOutputStream() {
 }
 
 void AudioEngine::processTxInputFrames(const float *data, int32_t numFrames, int32_t channelCount) {
+    if (txKeepRxAlive_) {
+        // Local LC3 monitoring: hold the mic for the TX level meter only — no
+        // decimation, no encode, no output (there is no radio, and the RX LC3
+        // output stream is alive separately).
+        float rms = 0.0f;
+        for (int i = 0; i < numFrames; i++) { float r = data[i * channelCount]; rms += r * r; }
+        if (numFrames > 0)
+            txInputLevelDb_.store(10.0f * log10f(rms / (float)numFrames + 1e-10f));
+        return;
+    }
+
     float rmsSum = 0.0f;
 
     for (int i = 0; i < numFrames; i++) {
@@ -1346,6 +1437,7 @@ bool AudioEngine::startNetTx(int inputDeviceId, int netRate) {
     txOutputDeviceId_ = 0;
     txNetMode_ = true;
     txUseJavaOutput_ = true;     // reuse: no Oboe output stream, skip drain wait
+    txKeepRxAlive_ = false;      // defensive: network TX is never mic-only keep-alive
     txOutputRate_ = netRate;
     LOGI("Net TX: startNetTx inputDev=%d netRate=%d", txInputDeviceId_, netRate);
 

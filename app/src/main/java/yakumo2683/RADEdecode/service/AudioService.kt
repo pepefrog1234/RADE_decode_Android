@@ -71,6 +71,10 @@ class AudioService : LifecycleService() {
     private var syncedFrames: Int = 0
     private var currentInputDeviceId: Int = -1
 
+    // True while a local LC3-monitoring TX is running with the RX output stream
+    // kept alive (mic-only TX). Drives the keep-alive teardown in stopTransmitting.
+    private var txKeepRxAliveActive: Boolean = false
+
     // Session splitting: finalize session when sync lost > 2 seconds
     private var lastSyncedTime: Long = 0   // last time syncState was 2 (0 = never synced this session)
     private var lastRxReportMs: Long = 0   // last time we emitted an rx_report to the reporter
@@ -130,7 +134,7 @@ class AudioService : LifecycleService() {
         super.onStartCommand(intent, flags, startId)
 
         if (intent?.action == ACTION_STOP) {
-            if (_state.value.isTx) stopTransmitting()
+            if (_state.value.isTx) stopTransmitting(forceFullTeardown = true)
             else stopDecoding()
             stopSelf()
             return START_NOT_STICKY
@@ -211,6 +215,7 @@ class AudioService : LifecycleService() {
     }
 
     fun stopDecoding() {
+        txKeepRxAliveActive = false  // never let a keep-alive flag survive a full RX teardown
         stopPolling()
         stopNotificationUpdates()
 
@@ -897,9 +902,38 @@ class AudioService : LifecycleService() {
         inputDeviceId: Int = -1,
         outputDeviceId: Int = -1,
         callsign: String = "",
-        useBluetoothMic: Boolean = false
+        useBluetoothMic: Boolean = false,
+        keepRxAlive: Boolean = false
     ) {
         if (_state.value.isTx) return
+
+        // Local LC3 monitoring (no rig/USB/network, built-in mic): keep the RX
+        // output stream — and its LE Audio media route — OPEN across TX. Pause RX
+        // decoding, free the mic, and run a mic-only TX (level meter only). The
+        // bridge is reused, never torn down, so the headset never falls back to
+        // A2DP/silence. Anything other than this case uses the full path below.
+        val keepBridge = audioBridge
+        if (keepRxAlive && _state.value.isRunning && keepBridge != null) {
+            stopPolling()
+            stopNotificationUpdates()
+            finalizeCurrentSession()
+            if (callsign.isNotEmpty()) keepBridge.setTxCallsign(callsign)
+            keepBridge.pauseRxInput()
+            if (!keepBridge.startTx(inputDeviceId, -1, keepRxAlive = true)) {
+                Log.w("AudioService", "keepRxAlive TX failed to start; resuming RX")
+                keepBridge.resumeRxInput()
+                startPolling()
+                startNotificationUpdates()
+                return
+            }
+            txKeepRxAliveActive = true
+            _state.value = _state.value.copy(isTx = true, isRunning = false)
+            Log.i("AudioService", "TX (keepRxAlive): RX LC3 output kept open across TX")
+            startTxPolling()
+            startNotificationUpdates()
+            return
+        }
+        txKeepRxAliveActive = false
 
         // Stop RX immediately: mute output, stop bridge, finalize session
         // — but do NOT call stopForeground to keep foreground status during transition
@@ -1013,10 +1047,35 @@ class AudioService : LifecycleService() {
      *   until the EOO callsign frame has played out, so it makes it over the air.
      *   When false (no rig — pure local LC3 monitoring) the native side tears the
      *   TX engine down immediately, removing up to ~2.5 s of pointless drain/tail.
+     * @param forceFullTeardown when true, even a keep-alive (local LC3) TX is fully
+     *   torn down (bridge released, foreground stopped) instead of resuming RX —
+     *   used by the Stop button / ACTION_STOP / onDestroy so the service can die.
      */
-    fun stopTransmitting(drainEoo: Boolean = true) {
+    fun stopTransmitting(drainEoo: Boolean = true, forceFullTeardown: Boolean = false) {
         stopTxPolling()
         stopNotificationUpdates()
+
+        // Keep-alive (local LC3 monitoring) teardown for switch-back-to-RX: drop the
+        // mic-only TX and resume RX decoding into the still-open RX output stream.
+        // The bridge and its LE Audio media route were never torn down, so RX keeps
+        // playing on the LC3 headset with no A2DP fallback. Skipped on a hard stop.
+        val keepBridge = audioBridge
+        if (txKeepRxAliveActive && keepBridge != null && !forceFullTeardown) {
+            keepBridge.stopTx(drainEoo = false)
+            val resumed = keepBridge.resumeRxInput()
+            txKeepRxAliveActive = false
+            if (resumed) {
+                _state.value = _state.value.copy(isTx = false, isRunning = true)
+                startPolling()
+                startNotificationUpdates()
+                Log.i("AudioService", "TX (keepRxAlive) stopped; RX resumed on the kept-open LC3 output")
+                return
+            }
+            // Resume failed (mic unavailable) — fall through to a full teardown so
+            // RX is not left silently dead.
+            Log.w("AudioService", "keepRxAlive resume failed; full teardown")
+        }
+        txKeepRxAliveActive = false
 
         // Stop the mic/encoder and queue the EOO (callsign) frame into the TX
         // ring. On the Oboe output path this blocks until the ring has played
@@ -1478,7 +1537,7 @@ class AudioService : LifecycleService() {
 
     override fun onDestroy() {
         // Fast teardown on destroy — don't block the main thread draining the EOO.
-        if (_state.value.isTx) stopTransmitting(drainEoo = false)
+        if (_state.value.isTx) stopTransmitting(drainEoo = false, forceFullTeardown = true)
         else stopDecoding()
         super.onDestroy()
     }

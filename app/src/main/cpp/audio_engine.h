@@ -79,9 +79,16 @@ public:
     bool start(int inputDeviceId = 0, int outputDeviceId = 0);
     void stop();
     bool isRunning() const { return running_.load(); }
+    /* Half-duplex pause: close the RX mic input but KEEP the RX output stream
+     * (and its Bluetooth LE Audio / LC3 media route) open, so a local-monitoring
+     * TX can run without tearing the media route down. */
+    bool pauseRxInput();
+    bool resumeRxInput();
 
-    /* TX mode */
-    bool startTx(int inputDeviceId, int outputDeviceId);
+    /* TX mode. keepRxAlive = local LC3 monitoring with no rig: capture the mic
+     * for the level meter only, open no modem/output, and never touch the RX
+     * output stream (the caller pauses/resumes RX input around this). */
+    bool startTx(int inputDeviceId, int outputDeviceId, bool keepRxAlive = false);
     void stopTx(bool drainEoo = true);
     bool isTxRunning() const { return txRunning_.load(); }
     void setTxCallsign(const char *callsign);
@@ -221,6 +228,7 @@ private:
     int txOutputDeviceId_ = 0;
     bool txUseJavaOutput_ = false;
     bool rxUseJavaOutput_ = false;
+    bool txKeepRxAlive_ = false;        // local LC3 monitoring: mic-only TX, RX output kept open
     bool txNetMode_ = false;            // TX audio goes to UDP, not Oboe/AudioTrack
     std::atomic<bool> netRxRunning_{false};  // RX audio comes from UDP, not Oboe input
 

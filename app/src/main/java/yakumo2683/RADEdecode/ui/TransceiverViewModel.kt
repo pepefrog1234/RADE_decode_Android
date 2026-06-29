@@ -406,7 +406,8 @@ class TransceiverViewModel(application: Application) : AndroidViewModel(applicat
                 inputDeviceId = resolveTxMicId(),  // built-in mic or a chosen USB mic
                 outputDeviceId = _uiState.value.selectedOutputDeviceId,
                 callsign = _uiState.value.txCallsign,
-                useBluetoothMic = _uiState.value.bluetoothMicTx
+                useBluetoothMic = _uiState.value.bluetoothMicTx,
+                keepRxAlive = shouldKeepRxAliveAcrossTx()
             )
         }
     }
@@ -458,8 +459,27 @@ class TransceiverViewModel(application: Application) : AndroidViewModel(applicat
             inputDeviceId = resolveTxMicId(),
             outputDeviceId = outId,
             callsign = _uiState.value.txCallsign,
-            useBluetoothMic = _uiState.value.bluetoothMicTx
+            useBluetoothMic = _uiState.value.bluetoothMicTx,
+            keepRxAlive = shouldKeepRxAliveAcrossTx()
         )
+    }
+
+    /**
+     * Whether to keep the RX output stream (and its Bluetooth LE Audio / LC3 media
+     * route) open across TX instead of tearing the engine down. Only for local
+     * monitoring on a Bluetooth output with no separate transmit path — opening/
+     * closing the media output on TX is what makes a dual-mode LC3 headset fall
+     * back to A2DP/silence, and no app API can switch it back. The USB/rig and
+     * network paths keep the original full teardown (unchanged).
+     */
+    private fun shouldKeepRxAliveAcrossTx(): Boolean {
+        val s = _uiState.value
+        val rxOut = s.outputDevices.firstOrNull { it.id == s.selectedRxOutputDeviceId }
+        val rxIsBluetooth = rxOut?.isBluetooth == true || rxOut?.isBleAudio == true
+        return rxIsBluetooth &&
+            !useNetworkAudio() &&
+            s.selectedOutputDeviceId <= 0 &&
+            !s.bluetoothMicTx
     }
 
     /** Switch from TX → RX: stop TX (drains the EOO callsign frame), hold the
@@ -493,7 +513,7 @@ class TransceiverViewModel(application: Application) : AndroidViewModel(applicat
      * TX audio chain, and only then is PTT dropped. Unkeying first (the old
      * behaviour) cut the callsign off mid-air.
      */
-    private suspend fun stopTxAndUnkeyPtt() {
+    private suspend fun stopTxAndUnkeyPtt(fullTeardown: Boolean = false) {
         // Only drain the EOO callsign and hold the RF tail when there is a real
         // transmit path: a CAT-keyed rig, network audio, or a USB audio output.
         // With none of those (pure local LC3 monitoring) tear down immediately —
@@ -501,7 +521,11 @@ class TransceiverViewModel(application: Application) : AndroidViewModel(applicat
         val onAir = rigController.isConnected ||
             useNetworkAudio() ||
             _uiState.value.selectedOutputDeviceId > 0
-        withContext(Dispatchers.IO) { audioService?.stopTransmitting(drainEoo = onAir) }
+        // fullTeardown (Stop pressed): release the engine instead of resuming RX,
+        // so a keep-alive (local LC3) TX doesn't leave RX running after Stop.
+        withContext(Dispatchers.IO) {
+            audioService?.stopTransmitting(drainEoo = onAir, forceFullTeardown = fullTeardown)
+        }
         if (rigController.isConnected) {
             delay(TX_PTT_TAIL_MS)
             rigController.setPtt(false)
@@ -515,7 +539,7 @@ class TransceiverViewModel(application: Application) : AndroidViewModel(applicat
             // Let the EOO finish over the air and unkey before the service dies.
             viewModelScope.launch {
                 txStopJob?.join()
-                if (audioService?.state?.value?.isTx == true) stopTxAndUnkeyPtt()
+                if (audioService?.state?.value?.isTx == true) stopTxAndUnkeyPtt(fullTeardown = true)
                 app.stopService(Intent(app, AudioService::class.java))
             }
         } else {

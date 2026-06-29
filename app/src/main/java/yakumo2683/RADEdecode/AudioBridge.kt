@@ -194,9 +194,18 @@ class AudioBridge(private val context: Context) {
 
     /* ── TX (Transmit) ───────────────────────────────────────── */
 
-    /** Start transmitting: mic → RADE encoder → output device. */
-    fun startTx(inputDeviceId: Int = -1, outputDeviceId: Int = -1): Boolean =
-        nativeStartTx(inputDeviceId, outputDeviceId)
+    /** Start transmitting: mic → RADE encoder → output device. When [keepRxAlive]
+     *  is true (local LC3 monitoring, no rig) the RX output stream is left open and
+     *  TX captures the mic for the level meter only — no modem, no output. */
+    fun startTx(inputDeviceId: Int = -1, outputDeviceId: Int = -1, keepRxAlive: Boolean = false): Boolean =
+        nativeStartTx(inputDeviceId, outputDeviceId, keepRxAlive)
+
+    /** Pause RX decoding (close the mic) but keep the RX output stream — and its
+     *  Bluetooth LE Audio / LC3 media route — open. Pair with [resumeRxInput]. */
+    fun pauseRxInput(): Boolean = nativePauseRxInput()
+
+    /** Resume RX decoding after [pauseRxInput] (reopens the mic input stream). */
+    fun resumeRxInput(): Boolean = nativeResumeRxInput()
 
     /** Stop transmitting (sends EOO frame, then stops). When [drainEoo] is false
      *  (no rig / local monitoring) the EOO drain + output tail wait are skipped. */
@@ -341,7 +350,9 @@ class AudioBridge(private val context: Context) {
     private external fun nativeGetLastCallsign(): String
 
     /* TX native methods */
-    private external fun nativeStartTx(inputDeviceId: Int, outputDeviceId: Int): Boolean
+    private external fun nativeStartTx(inputDeviceId: Int, outputDeviceId: Int, keepRxAlive: Boolean): Boolean
+    private external fun nativePauseRxInput(): Boolean
+    private external fun nativeResumeRxInput(): Boolean
     private external fun nativeStopTx(drainEoo: Boolean)
     private external fun nativeIsTxRunning(): Boolean
     private external fun nativeSetTxCallsign(callsign: String)
