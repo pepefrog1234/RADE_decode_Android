@@ -38,7 +38,7 @@
     <string name="settings_tx_mic_builtin_help">The phone\'s own microphone.</string>
     <string name="header_bt_mic">BLUETOOTH MIC (TX)</string>
     <string name="settings_bt_mic_tx">Use Bluetooth mic for TX (experimental)</string>
-    <string name="settings_bt_mic_tx_help">Captures your transmit voice from the Bluetooth headset mic instead of the phone mic. Prefers LE Audio (LC3, high quality — needs Android 13+ and a compatible headset); otherwise uses classic call-audio (SCO, telephony quality). Experimental. Off = phone mic. RX and Bluetooth playback are unaffected.</string>
+    <string name="settings_bt_mic_tx_help">Captures TX voice from the Bluetooth headset mic. When an LE Audio (LC3) headset is available, RX/TX uses Android call-audio routing so the headset mic and speaker stay on LC3; otherwise TX may fall back to classic SCO. Experimental. Off = phone mic.</string>
     <string name="btn_stop">STOP</string>
     <string name="btn_start">START</string>
 

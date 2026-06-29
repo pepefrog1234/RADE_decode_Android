@@ -129,10 +129,11 @@ void AudioEngine::designDecimFilter(int inputRate, int outputRate) {
 
 /* ── Start / Stop ──────────────────────────────────────────── */
 
-bool AudioEngine::start(int inputDeviceId, int outputDeviceId) {
+bool AudioEngine::start(int inputDeviceId, int outputDeviceId, bool voiceCommunicationOutput) {
     if (running_.load()) return true;
     inputDeviceId_ = (inputDeviceId > 0) ? inputDeviceId : 0;
     outputDeviceId_ = (outputDeviceId > 0) ? outputDeviceId : 0;
+    rxUseVoiceCommunicationOutput_ = voiceCommunicationOutput;
 
     if (!initModem()) return false;
 
@@ -254,6 +255,12 @@ void AudioEngine::setRxJavaOutputEnabled(bool enabled) {
     } else {
         restartOutputStream();
     }
+}
+
+void AudioEngine::setRxVoiceCommunicationOutputEnabled(bool enabled) {
+    if (rxUseVoiceCommunicationOutput_ == enabled) return;
+    rxUseVoiceCommunicationOutput_ = enabled;
+    if (running_.load() && !rxUseJavaOutput_) restartOutputStream();
 }
 
 void AudioEngine::setOutputVolume(float volume) {
@@ -385,6 +392,9 @@ bool AudioEngine::openInputStream() {
 }
 
 bool AudioEngine::openOutputStream() {
+    auto usage = rxUseVoiceCommunicationOutput_
+            ? oboe::Usage::VoiceCommunication
+            : oboe::Usage::Media;
     oboe::AudioStreamBuilder builder;
     builder.setDirection(oboe::Direction::Output)
            ->setPerformanceMode(oboe::PerformanceMode::None)
@@ -393,7 +403,7 @@ bool AudioEngine::openOutputStream() {
            ->setSampleRate(SPEECH_SAMPLE_RATE)
            ->setSampleRateConversionQuality(oboe::SampleRateConversionQuality::High)
            ->setChannelCount(oboe::ChannelCount::Mono)
-           ->setUsage(oboe::Usage::Media)
+           ->setUsage(usage)
            ->setDataCallback(std::static_pointer_cast<oboe::AudioStreamDataCallback>(outputCb_))
            ->setErrorCallback(std::static_pointer_cast<oboe::AudioStreamErrorCallback>(outputCb_));
 
@@ -416,7 +426,7 @@ bool AudioEngine::openOutputStream() {
                  ->setSampleRate(SPEECH_SAMPLE_RATE)
                  ->setSampleRateConversionQuality(oboe::SampleRateConversionQuality::High)
                  ->setChannelCount(oboe::ChannelCount::Mono)
-                 ->setUsage(oboe::Usage::Media)
+                 ->setUsage(usage)
                  ->setDataCallback(std::static_pointer_cast<oboe::AudioStreamDataCallback>(outputCb_))
                  ->setErrorCallback(std::static_pointer_cast<oboe::AudioStreamErrorCallback>(outputCb_));
             result = retry.openStream(outputStream_);
@@ -428,9 +438,10 @@ bool AudioEngine::openOutputStream() {
         }
     }
 
-    LOGI("Output opened: rate=%d ch=%d device=%d (requested=%d)",
+    LOGI("Output opened: rate=%d ch=%d device=%d (requested=%d usage=%s)",
          outputStream_->getSampleRate(), outputStream_->getChannelCount(),
-         outputStream_->getDeviceId(), outputDeviceId_);
+         outputStream_->getDeviceId(), outputDeviceId_,
+         rxUseVoiceCommunicationOutput_ ? "voice_comm" : "media");
 
     // Buffer headroom against underruns during the CPU-heavy startup window
     // (see openInputStream for the full rationale — same MediaPad M5 symptom).

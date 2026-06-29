@@ -380,9 +380,15 @@ JNI_AUDIO(nativeSetCallback)(JNIEnv *env, jobject /* this */, jobject callback) 
 }
 
 JNIEXPORT jboolean JNICALL
-JNI_AUDIO(nativeStart)(JNIEnv *env, jobject /* this */, jint inputDeviceId, jint outputDeviceId) {
+JNI_AUDIO(nativeStart)(JNIEnv *env, jobject /* this */,
+                       jint inputDeviceId, jint outputDeviceId,
+                       jboolean voiceCommunicationOutput) {
     if (!g_audioEngine) return JNI_FALSE;
-    return g_audioEngine->start(inputDeviceId, outputDeviceId) ? JNI_TRUE : JNI_FALSE;
+    return g_audioEngine->start(
+        inputDeviceId,
+        outputDeviceId,
+        voiceCommunicationOutput == JNI_TRUE
+    ) ? JNI_TRUE : JNI_FALSE;
 }
 
 JNIEXPORT void JNICALL
@@ -409,6 +415,11 @@ JNI_AUDIO(nativeSetOutputDevice)(JNIEnv *env, jobject /* this */, jint deviceId)
 JNIEXPORT void JNICALL
 JNI_AUDIO(nativeSetRxJavaOutputEnabled)(JNIEnv *env, jobject /* this */, jboolean enabled) {
     if (g_audioEngine) g_audioEngine->setRxJavaOutputEnabled(enabled == JNI_TRUE);
+}
+
+JNIEXPORT void JNICALL
+JNI_AUDIO(nativeSetRxVoiceCommunicationOutputEnabled)(JNIEnv *env, jobject /* this */, jboolean enabled) {
+    if (g_audioEngine) g_audioEngine->setRxVoiceCommunicationOutputEnabled(enabled == JNI_TRUE);
 }
 
 JNIEXPORT jboolean JNICALL

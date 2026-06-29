@@ -76,7 +76,8 @@ public:
     ~AudioEngine();
 
     /* RX mode */
-    bool start(int inputDeviceId = 0, int outputDeviceId = 0);
+    bool start(int inputDeviceId = 0, int outputDeviceId = 0,
+               bool voiceCommunicationOutput = false);
     void stop();
     bool isRunning() const { return running_.load(); }
     /* Half-duplex pause: close the RX mic input but KEEP the RX output stream
@@ -101,6 +102,7 @@ public:
     int readRxRing(int16_t *buf, int maxSamples) { return playbackRing_.read(buf, maxSamples); }
     void setRxJavaOutputEnabled(bool enabled);
     bool isRxUsingJavaOutput() const { return rxUseJavaOutput_; }
+    void setRxVoiceCommunicationOutputEnabled(bool enabled);
 
     /* ── Network audio (Icom RS-BA1 / IC-705 Wi-Fi) ──────────────
      * Same DSP pipeline as the USB/Oboe path, but the rig-facing audio
@@ -228,6 +230,7 @@ private:
     int txOutputDeviceId_ = 0;
     bool txUseJavaOutput_ = false;
     bool rxUseJavaOutput_ = false;
+    bool rxUseVoiceCommunicationOutput_ = false;
     bool txKeepRxAlive_ = false;        // local LC3 monitoring: mic-only TX, RX output kept open
     bool txNetMode_ = false;            // TX audio goes to UDP, not Oboe/AudioTrack
     std::atomic<bool> netRxRunning_{false};  // RX audio comes from UDP, not Oboe input

@@ -50,8 +50,12 @@ class AudioBridge(private val context: Context) {
      * @param inputDeviceId  Android AudioDeviceInfo ID for capture, or -1 for default.
      * @param outputDeviceId Android AudioDeviceInfo ID for playback, or -1 for default.
      */
-    fun start(inputDeviceId: Int = -1, outputDeviceId: Int = -1): Boolean =
-        nativeStart(inputDeviceId, outputDeviceId)
+    fun start(
+        inputDeviceId: Int = -1,
+        outputDeviceId: Int = -1,
+        voiceCommunicationOutput: Boolean = false
+    ): Boolean =
+        nativeStart(inputDeviceId, outputDeviceId, voiceCommunicationOutput)
 
     /** Stop the audio engine. */
     fun stop() {
@@ -70,6 +74,10 @@ class AudioBridge(private val context: Context) {
 
     /** Use Kotlin/AudioTrack for RX playback instead of native Oboe output. */
     fun setRxJavaOutputEnabled(enabled: Boolean) = nativeSetRxJavaOutputEnabled(enabled)
+
+    /** Route native RX playback as call audio instead of media audio. */
+    fun setRxVoiceCommunicationOutputEnabled(enabled: Boolean) =
+        nativeSetRxVoiceCommunicationOutputEnabled(enabled)
 
     /** Switch RX input and decoded-speech output together. */
     fun setDevices(inputDeviceId: Int, outputDeviceId: Int) =
@@ -330,12 +338,17 @@ class AudioBridge(private val context: Context) {
     private external fun nativeStartRecording(path: String): Boolean
     private external fun nativeStopRecording()
     private external fun nativeSetCallback(callback: Any)
-    private external fun nativeStart(inputDeviceId: Int, outputDeviceId: Int): Boolean
+    private external fun nativeStart(
+        inputDeviceId: Int,
+        outputDeviceId: Int,
+        voiceCommunicationOutput: Boolean
+    ): Boolean
     private external fun nativeStop()
     private external fun nativeIsRunning(): Boolean
     private external fun nativeSetInputDevice(deviceId: Int)
     private external fun nativeSetOutputDevice(deviceId: Int)
     private external fun nativeSetRxJavaOutputEnabled(enabled: Boolean)
+    private external fun nativeSetRxVoiceCommunicationOutputEnabled(enabled: Boolean)
     external fun nativeIsRxUsingJavaOutput(): Boolean
     private external fun nativeSetDevices(inputDeviceId: Int, outputDeviceId: Int)
     private external fun nativeSetOutputVolume(volume: Float)

@@ -287,7 +287,8 @@ class TransceiverViewModel(application: Application) : AndroidViewModel(applicat
                 audioService?.startDecoding(
                     inputDeviceId = _uiState.value.selectedDeviceId,
                     outputDeviceId = _uiState.value.selectedRxOutputDeviceId,
-                    recordWav = false
+                    recordWav = false,
+                    useLeAudioCommunication = shouldUseLeAudioCommunicationSession()
                 )
             }
         }
@@ -407,7 +408,8 @@ class TransceiverViewModel(application: Application) : AndroidViewModel(applicat
                 outputDeviceId = _uiState.value.selectedOutputDeviceId,
                 callsign = _uiState.value.txCallsign,
                 useBluetoothMic = _uiState.value.bluetoothMicTx,
-                keepRxAlive = shouldKeepRxAliveAcrossTx()
+                keepRxAlive = shouldKeepRxAliveAcrossTx(),
+                preferLeAudioCommunication = shouldUseLeAudioCommunicationSession()
             )
         }
     }
@@ -460,8 +462,18 @@ class TransceiverViewModel(application: Application) : AndroidViewModel(applicat
             outputDeviceId = outId,
             callsign = _uiState.value.txCallsign,
             useBluetoothMic = _uiState.value.bluetoothMicTx,
-            keepRxAlive = shouldKeepRxAliveAcrossTx()
+            keepRxAlive = shouldKeepRxAliveAcrossTx(),
+            preferLeAudioCommunication = shouldUseLeAudioCommunicationSession()
         )
+    }
+
+    private fun shouldUseLeAudioCommunicationSession(): Boolean {
+        val s = _uiState.value
+        if (!s.bluetoothMicTx || useNetworkAudio()) return false
+        val hasDeviceSnapshot = s.devices.isNotEmpty() || s.outputDevices.isNotEmpty()
+        return !hasDeviceSnapshot ||
+            s.devices.any { it.isBleAudio } ||
+            s.outputDevices.any { it.isBleAudio }
     }
 
     /**
@@ -500,7 +512,8 @@ class TransceiverViewModel(application: Application) : AndroidViewModel(applicat
                 audioService?.startDecoding(
                     inputDeviceId = _uiState.value.selectedDeviceId,
                     outputDeviceId = _uiState.value.selectedRxOutputDeviceId,
-                    recordWav = false
+                    recordWav = false,
+                    useLeAudioCommunication = shouldUseLeAudioCommunicationSession()
                 )
             }
         }

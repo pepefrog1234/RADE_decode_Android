@@ -37,7 +37,7 @@
     <string name="settings_tx_mic_builtin_help">スマホ本体のマイク。</string>
     <string name="header_bt_mic">Bluetooth マイク（送信）</string>
     <string name="settings_bt_mic_tx">送信に Bluetooth マイクを使う（実験的）</string>
-    <string name="settings_bt_mic_tx_help">送信時の音声を、スマホのマイクではなく Bluetooth ヘッドセットのマイクから取り込みます。対応していれば LE Audio（LC3・高音質／Android 13以降＋対応ヘッドセットが必要）を優先し、なければ従来の通話音声（SCO・電話品質）を使います。実験的機能です。オフ＝スマホのマイク。受信と Bluetooth 再生には影響しません。</string>
+    <string name="settings_bt_mic_tx_help">送信音声を Bluetooth ヘッドセットのマイクから取り込みます。LE Audio（LC3）ヘッドセットが使える場合は、受信/送信を Android の通話音声ルーティングで動かし、ヘッドセットのマイクとスピーカーを LC3 に保ちます。使えない場合は従来の SCO に戻ることがあります。実験的機能です。オフ＝スマホのマイク。</string>
     <string name="btn_stop">停止</string>
     <string name="btn_start">開始</string>
 
