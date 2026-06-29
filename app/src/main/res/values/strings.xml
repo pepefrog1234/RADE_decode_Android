@@ -134,6 +134,7 @@
     <string name="header_diagnostics">DIAGNOSTICS</string>
     <string name="settings_diag_help">Capture the app\'s recent rig/CAT logs (rigctld, USB-serial bridge) to share when reporting a control problem. Reproduce the issue first, then capture and copy.</string>
     <string name="settings_diag_capture">Capture CAT log</string>
+    <string name="settings_diag_capture_audio">Capture audio log (LC3/BT)</string>
     <string name="settings_diag_capturing">Capturing…</string>
     <string name="settings_diag_copy">Copy</string>
     <string name="settings_diag_copied">Copied ✓</string>

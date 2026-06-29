@@ -133,6 +133,7 @@
     <string name="header_diagnostics">診断</string>
     <string name="settings_diag_help">リグ／CAT 関連のログ（rigctld・USB シリアル橋）を取得して、不具合報告に添付できます。先に問題を再現してから、取得→コピーしてください。</string>
     <string name="settings_diag_capture">CAT ログを取得</string>
+    <string name="settings_diag_capture_audio">音声ログを取得（LC3/BT）</string>
     <string name="settings_diag_capturing">取得中…</string>
     <string name="settings_diag_copy">コピー</string>
     <string name="settings_diag_copied">コピーしました ✓</string>

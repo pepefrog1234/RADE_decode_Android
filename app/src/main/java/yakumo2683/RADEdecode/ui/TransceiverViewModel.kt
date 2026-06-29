@@ -669,6 +669,26 @@ class TransceiverViewModel(application: Application) : AndroidViewModel(applicat
         try { Runtime.getRuntime().exec(arrayOf("logcat", "-c")).waitFor() } catch (_: Exception) {}
     }
 
+    /**
+     * Dump the app's own recent audio/routing logcat: [AudioService] (RX/TX
+     * lifecycle, Bluetooth/LE Audio routing, keep-alive), [AudioBridge], and the
+     * native "AudioEngine" / "RADE_JNI" tags. Used to diagnose LE Audio (LC3)
+     * routing across TX. Blocking — call off the main thread.
+     */
+    fun captureAudioLog(): String = try {
+        val proc = Runtime.getRuntime().exec(
+            arrayOf(
+                "logcat", "-d", "-v", "time",
+                "AudioService:V", "AudioBridge:V", "AudioEngine:V", "RADE_JNI:V", "*:S"
+            )
+        )
+        val out = proc.inputStream.bufferedReader().use { it.readText() }
+        proc.waitFor()
+        out.ifBlank { "(no audio log — start RX, do one TX→RX with the LC3 headset, then capture)" }
+    } catch (e: Exception) {
+        "Failed to read logcat: ${e.message}"
+    }
+
     fun refreshDevices() {
         val bridge = AudioBridge(getApplication())
         val devices = bridge.getInputDevices()

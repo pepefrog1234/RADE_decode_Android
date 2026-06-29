@@ -715,6 +715,28 @@ fun SettingsScreen(viewModel: TransceiverViewModel = viewModel()) {
                     }
                 }
 
+                Spacer(Modifier.height(8.dp))
+                // Audio / LE Audio (LC3) routing log — for diagnosing Bluetooth
+                // output switching on TX. Reproduce one TX->RX, then capture+copy.
+                Button(
+                    onClick = {
+                        capturing = true
+                        copied = false
+                        diagScope.launch {
+                            val log = withContext(Dispatchers.IO) { viewModel.captureAudioLog() }
+                            catLog = log
+                            capturing = false
+                        }
+                    },
+                    enabled = !capturing,
+                    colors = ButtonDefaults.buttonColors(containerColor = Cyan600)
+                ) {
+                    Text(
+                        if (capturing) stringResource(R.string.settings_diag_capturing)
+                        else stringResource(R.string.settings_diag_capture_audio)
+                    )
+                }
+
                 if (catLog.isNotEmpty()) {
                     Spacer(Modifier.height(8.dp))
                     Surface(
