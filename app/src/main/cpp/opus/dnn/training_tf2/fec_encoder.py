@@ -27,6 +27,7 @@
 */
 """
 import os
+import shlex
 import subprocess
 import argparse
 
@@ -116,10 +117,10 @@ signal.tofile(padded_signal_file)
 # write signal and call dump_data to create features
 
 feature_file = os.path.splitext(args.input)[0] + '_features.f32'
-command = f"{args.dump_data} -test {padded_signal_file} {feature_file}"
-r = subprocess.run(command, shell=True)
+command = [shlex.quote(args.dump_data), "-test", shlex.quote(padded_signal_file), shlex.quote(feature_file)]
+r = subprocess.run(command, shell=False)
 if r.returncode != 0:
-    raise RuntimeError(f"command '{command}' failed with exit code {r.returncode}")
+    raise RuntimeError(f"command failed with exit code {r.returncode}")
 
 # load features
 nb_features = model.nb_used_features + lpc_order
