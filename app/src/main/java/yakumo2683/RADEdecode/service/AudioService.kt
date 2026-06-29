@@ -9,13 +9,16 @@ import android.content.Intent
 import android.content.pm.PackageManager
 import android.content.pm.ServiceInfo
 import android.media.AudioAttributes
+import android.media.AudioDeviceCallback
 import android.media.AudioDeviceInfo
 import android.media.AudioFormat
 import android.media.AudioManager
 import android.media.AudioTrack
 import android.os.Binder
 import android.os.Build
+import android.os.Handler
 import android.os.IBinder
+import android.os.Looper
 import android.util.Log
 import androidx.core.app.NotificationCompat
 import androidx.core.content.ContextCompat
@@ -70,6 +73,14 @@ class AudioService : LifecycleService() {
     private var totalModemFrames: Int = 0
     private var syncedFrames: Int = 0
     private var currentInputDeviceId: Int = -1
+
+    // RX output device watcher: re-routes RX playback back onto a Bluetooth LE
+    // Audio (LC3) headset when it re-appears after a TX cycle (its AudioDeviceInfo
+    // id changes when the mic open/close reconfigures LE Audio), instead of
+    // leaving RX stranded on the phone speaker.
+    private var rxOutputDeviceCallback: AudioDeviceCallback? = null
+    private var currentRxOutputSelection: Int = RX_OUTPUT_AUTO
+    @Volatile private var lastAppliedRxOutputId: Int = Int.MIN_VALUE
 
     // Session splitting: finalize session when sync lost > 2 seconds
     private var lastSyncedTime: Long = 0   // last time syncState was 2 (0 = never synced this session)
@@ -172,6 +183,8 @@ class AudioService : LifecycleService() {
         }
 
         val rxOutputDeviceId = resolveRxOutputDeviceId(bridge, outputDeviceId)
+        currentRxOutputSelection = outputDeviceId
+        lastAppliedRxOutputId = rxOutputDeviceId
         val bluetoothRouteActive = prepareBluetoothCommunicationRoute(inputDeviceId)
         val effectiveInputDeviceId = effectiveBluetoothInputDeviceId(inputDeviceId, bluetoothRouteActive)
         val effectiveOutputDeviceId = effectiveBluetoothOutputDeviceId(rxOutputDeviceId, bluetoothRouteActive)
@@ -204,6 +217,7 @@ class AudioService : LifecycleService() {
         _state.value = _state.value.copy(isRunning = true)
         startPolling()
         startNotificationUpdates()
+        registerRxOutputDeviceWatcher()
     }
 
     fun setInputGain(gain: Float) {
@@ -211,6 +225,7 @@ class AudioService : LifecycleService() {
     }
 
     fun stopDecoding() {
+        unregisterRxOutputDeviceWatcher()
         stopPolling()
         stopNotificationUpdates()
 
@@ -244,6 +259,8 @@ class AudioService : LifecycleService() {
         val bridge = audioBridge ?: return
         if (!_state.value.isRunning || _state.value.isTx) return
         val resolved = resolveRxOutputDeviceId(bridge, deviceId)
+        currentRxOutputSelection = deviceId
+        lastAppliedRxOutputId = resolved
         val bluetoothRouteActive = prepareBluetoothCommunicationRoute(null)
         val effectiveOutput = effectiveBluetoothOutputDeviceId(resolved, bluetoothRouteActive)
         val useJavaRxOutput = shouldUseJavaRxOutput(resolved)
@@ -338,6 +355,52 @@ class AudioService : LifecycleService() {
             }
             selection == RX_OUTPUT_SYSTEM_DEFAULT -> -1
             else -> bridge.findPreferredRxOutputDevice()?.id ?: -1
+        }
+    }
+
+    /**
+     * Watch for output-device changes while RX is running so playback can follow a
+     * Bluetooth LE Audio (LC3) headset that re-registers — often with a new
+     * AudioDeviceInfo id — after a TX cycle. Without this, RX stays on the phone
+     * speaker even once the LC3 device is back. Active during RX only (never TX).
+     */
+    private fun registerRxOutputDeviceWatcher() {
+        if (rxOutputDeviceCallback != null) return
+        val cb = object : AudioDeviceCallback() {
+            override fun onAudioDevicesAdded(addedDevices: Array<out AudioDeviceInfo>?) = maybeRebindRxOutput()
+            override fun onAudioDevicesRemoved(removedDevices: Array<out AudioDeviceInfo>?) = maybeRebindRxOutput()
+        }
+        rxOutputDeviceCallback = cb
+        try {
+            audioManager().registerAudioDeviceCallback(cb, Handler(Looper.getMainLooper()))
+        } catch (e: Exception) {
+            Log.w("AudioService", "registerAudioDeviceCallback failed", e)
+            rxOutputDeviceCallback = null
+        }
+    }
+
+    private fun unregisterRxOutputDeviceWatcher() {
+        val cb = rxOutputDeviceCallback ?: return
+        rxOutputDeviceCallback = null
+        try { audioManager().unregisterAudioDeviceCallback(cb) } catch (_: Exception) {}
+    }
+
+    /**
+     * Re-resolve the RX output; if it now maps to a different device than what is
+     * applied, re-bind RX playback to it. No-op during TX or when RX is stopped.
+     * Runs off the main thread because setOutputDevice() restarts the native
+     * output stream.
+     */
+    private fun maybeRebindRxOutput() {
+        lifecycleScope.launch(Dispatchers.IO) {
+            val bridge = audioBridge ?: return@launch
+            val st = _state.value
+            if (!st.isRunning || st.isTx) return@launch
+            val resolved = resolveRxOutputDeviceId(bridge, currentRxOutputSelection)
+            if (resolved == lastAppliedRxOutputId) return@launch
+            lastAppliedRxOutputId = resolved
+            Log.i("AudioService", "RX output watcher: device set changed; re-binding RX output to id=$resolved")
+            bridge.setOutputDevice(resolved)
         }
     }
 
@@ -452,6 +515,68 @@ class AudioService : LifecycleService() {
             else am.mode = previousAudioMode
             Log.w("AudioService", "Bluetooth communication route failed", e)
             false
+        }
+    }
+
+    /**
+     * Activate the Bluetooth LE Audio (LC3) communication route so the headset
+     * mic actually captures. Earlier builds assumed LE Audio could be captured
+     * directly by device id, but its mic only routes in once it is set as the
+     * communication device (setCommunicationDevice) — without that, capture
+     * silently falls back to the built-in mic (the "checkbox on, internal mic"
+     * symptom). LE Audio stays wideband LC3 in this conversational context, so it
+     * remains far better than SCO/CVSD. Returns the BLE headset *input* device id,
+     * or -1 if unavailable (caller then tries SCO / built-in mic).
+     */
+    private fun activateBleAudioCommunicationRoute(): Int {
+        if (!hasBluetoothConnectPermission()) {
+            Log.w("AudioService", "LE Audio route requested without BLUETOOTH_CONNECT permission")
+            return -1
+        }
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.S) return -1
+        val am = audioManager()
+        val wasActive = bluetoothCommunicationRouteActive
+        if (!wasActive) previousAudioMode = am.mode
+        return try {
+            am.mode = AudioManager.MODE_IN_COMMUNICATION
+            // The LE Audio comm device can appear a beat after the mode switch.
+            var ble = am.availableCommunicationDevices.firstOrNull {
+                it.type == AudioDeviceInfo.TYPE_BLE_HEADSET
+            }
+            var attempt = 0
+            while (ble == null && attempt < 5) {
+                try { Thread.sleep(100) } catch (_: InterruptedException) {}
+                ble = am.availableCommunicationDevices.firstOrNull {
+                    it.type == AudioDeviceInfo.TYPE_BLE_HEADSET
+                }
+                attempt++
+            }
+            if (ble == null) {
+                Log.w("AudioService", "No LE Audio communication device available")
+                if (wasActive) clearBluetoothCommunicationRouteIfNeeded() else am.mode = previousAudioMode
+                -1
+            } else {
+                val routed = am.setCommunicationDevice(ble)
+                bluetoothCommunicationRouteActive = routed
+                Log.i(
+                    "AudioService",
+                    "LE Audio communication route: routed=$routed device=${ble.productName} id=${ble.id}"
+                )
+                if (routed) {
+                    findBleHeadsetInputId() ?: ble.id
+                } else {
+                    if (wasActive) clearBluetoothCommunicationRouteIfNeeded() else am.mode = previousAudioMode
+                    -1
+                }
+            }
+        } catch (e: SecurityException) {
+            if (wasActive) clearBluetoothCommunicationRouteIfNeeded() else try { am.mode = previousAudioMode } catch (_: Exception) {}
+            Log.w("AudioService", "LE Audio communication route denied", e)
+            -1
+        } catch (e: RuntimeException) {
+            if (wasActive) clearBluetoothCommunicationRouteIfNeeded() else try { am.mode = previousAudioMode } catch (_: Exception) {}
+            Log.w("AudioService", "LE Audio communication route failed", e)
+            -1
         }
     }
 
@@ -839,6 +964,9 @@ class AudioService : LifecycleService() {
     ) {
         if (_state.value.isTx) return
 
+        // The RX-output watcher must not fire while we tear RX down and run TX.
+        unregisterRxOutputDeviceWatcher()
+
         // Stop RX immediately: mute output, stop bridge, finalize session
         // — but do NOT call stopForeground to keep foreground status during transition
         if (_state.value.isRunning) {
@@ -883,14 +1011,15 @@ class AudioService : LifecycleService() {
         var effectiveInputDeviceId = inputDeviceId
         var bluetoothMicEngaged = false
         if (useBluetoothMic) {
-            // Prefer LE Audio (LC3): captured directly from the BLE headset mic — no
-            // SCO call-audio route, no narrowband codec, up to 32 kHz. This is the
-            // high-quality path and avoids the A2DP<->SCO switching of classic BT.
-            val bleInput = findBleHeadsetInputId()
-            if (bleInput != null) {
+            // Prefer LE Audio (LC3): set the headset as the communication device so
+            // its mic actually captures (wideband LC3, far better than SCO). This
+            // setCommunicationDevice step is what was missing — without it TX stayed
+            // on the built-in mic even with the box checked.
+            val bleInput = activateBleAudioCommunicationRoute()
+            if (bleInput > 0) {
                 effectiveInputDeviceId = bleInput
                 bluetoothMicEngaged = true
-                Log.i("AudioService", "TX Bluetooth mic: using LE Audio (BLE headset) input id=$bleInput")
+                Log.i("AudioService", "TX Bluetooth mic: using LE Audio (LC3) input id=$bleInput")
             } else {
                 // No LE Audio headset present — fall back to classic Bluetooth SCO
                 // (call-audio route, telephony-grade quality).

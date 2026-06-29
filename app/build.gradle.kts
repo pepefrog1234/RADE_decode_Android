@@ -11,8 +11,8 @@ android {
         applicationId = "yakumo2683.RADEdecode"
         minSdk = 26
         targetSdk = 35
-        versionCode = 10542
-        versionName = "1.5.42-lc3-rx-route"
+        versionCode = 10543
+        versionName = "1.5.43-lc3-mic-rx"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 
