@@ -89,8 +89,12 @@ public:
 
     /* TX mode. keepRxAlive = local LC3 monitoring with no rig: capture the mic
      * for the level meter only, open no modem/output, and never touch the RX
-     * output stream (the caller pauses/resumes RX input around this). */
-    bool startTx(int inputDeviceId, int outputDeviceId, bool keepRxAlive = false);
+     * output stream (the caller pauses/resumes RX input around this).
+     * voiceCommunicationInput = capture through the Bluetooth communication
+     * route (LE Audio / LC3 headset mic): use the VOICE_COMMUNICATION preset and
+     * follow the communication device instead of pinning a device id. */
+    bool startTx(int inputDeviceId, int outputDeviceId, bool keepRxAlive = false,
+                 bool voiceCommunicationInput = false);
     void stopTx(bool drainEoo = true);
     bool isTxRunning() const { return txRunning_.load(); }
     void setTxCallsign(const char *callsign);
@@ -241,6 +245,14 @@ private:
     // LC3 group stays render-only. Effects are stripped via the session id anyway.
     bool rxBleAudioOutput_ = false;
     bool txKeepRxAlive_ = false;        // local LC3 monitoring: mic-only TX, RX output kept open
+    // Capture the TX mic through the active Bluetooth communication route (LE
+    // Audio / LC3). VOICE_COMMUNICATION maps to the conversational context the
+    // headset actually advertises as a source; Generic/Unprocessed map to
+    // contexts that either fall back to the built-in mic or drag the LC3 group
+    // into the failing "LIVE" reconfig. Routing follows the communication device
+    // set from Kotlin, so no device id is pinned (BLE ids go stale on every
+    // LE Audio reconfig).
+    bool txUseVoiceCommInput_ = false;
     bool txNetMode_ = false;            // TX audio goes to UDP, not Oboe/AudioTrack
     std::atomic<bool> netRxRunning_{false};  // RX audio comes from UDP, not Oboe input
 

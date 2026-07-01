@@ -526,10 +526,15 @@ JNI_AUDIO(nativeStopRecording)(JNIEnv *env, jobject /* this */) {
 
 JNIEXPORT jboolean JNICALL
 JNI_AUDIO(nativeStartTx)(JNIEnv *env, jobject /* this */,
-                          jint inputDeviceId, jint outputDeviceId, jboolean keepRxAlive) {
+                          jint inputDeviceId, jint outputDeviceId, jboolean keepRxAlive,
+                          jboolean voiceCommunicationInput) {
     if (!g_audioEngine) return JNI_FALSE;
-    return g_audioEngine->startTx(inputDeviceId, outputDeviceId, keepRxAlive == JNI_TRUE)
-        ? JNI_TRUE : JNI_FALSE;
+    return g_audioEngine->startTx(
+        inputDeviceId,
+        outputDeviceId,
+        keepRxAlive == JNI_TRUE,
+        voiceCommunicationInput == JNI_TRUE
+    ) ? JNI_TRUE : JNI_FALSE;
 }
 
 JNIEXPORT jboolean JNICALL

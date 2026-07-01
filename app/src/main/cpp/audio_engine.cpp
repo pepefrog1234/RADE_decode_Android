@@ -911,9 +911,11 @@ void AudioEngine::releaseTxModem() {
     txSpeechPos_ = 0;
 }
 
-bool AudioEngine::startTx(int inputDeviceId, int outputDeviceId, bool keepRxAlive) {
+bool AudioEngine::startTx(int inputDeviceId, int outputDeviceId, bool keepRxAlive,
+                          bool voiceCommunicationInput) {
     if (txRunning_.load()) return true;
     txKeepRxAlive_ = keepRxAlive;
+    txUseVoiceCommInput_ = voiceCommunicationInput;
     txInputDeviceId_ = (inputDeviceId > 0) ? inputDeviceId : 0;
     txOutputDeviceId_ = (outputDeviceId > 0) ? outputDeviceId : 0;
 
@@ -936,7 +938,8 @@ bool AudioEngine::startTx(int inputDeviceId, int outputDeviceId, bool keepRxAliv
     }
 
     if (running_.load()) stop();  // stop RX first
-    LOGI("TX: startTx inputDev=%d outputDev=%d", txInputDeviceId_, txOutputDeviceId_);
+    LOGI("TX: startTx inputDev=%d outputDev=%d voiceCommInput=%d",
+         txInputDeviceId_, txOutputDeviceId_, txUseVoiceCommInput_ ? 1 : 0);
 
     if (!initTxModem()) return false;
 
@@ -1116,7 +1119,17 @@ bool AudioEngine::openTxInputStream() {
            ->setDataCallback(std::static_pointer_cast<oboe::AudioStreamDataCallback>(txInputCb_))
            ->setErrorCallback(std::static_pointer_cast<oboe::AudioStreamErrorCallback>(txInputCb_));
 
-    if (txInputDeviceId_ > 0) {
+    if (txUseVoiceCommInput_) {
+        // Bluetooth communication-route mic (LE Audio / LC3 headset).
+        // VOICE_COMMUNICATION is the conversational-context capture the headset
+        // advertises as a source, and routing follows the communication device
+        // set from Kotlin — so no device id pin. Pinning the BLE input id here
+        // (with a Generic/Unprocessed preset) is unreliable: the id goes stale
+        // on every LE Audio reconfig, and those presets map to contexts the
+        // headset does not serve, silently falling back to the built-in mic.
+        builder.setInputPreset(oboe::InputPreset::VoiceCommunication);
+        builder.setPerformanceMode(oboe::PerformanceMode::None);
+    } else if (txInputDeviceId_ > 0) {
         // Force built-in mic when USB audio is connected.
         // Try multiple strategies since Oboe may ignore setDeviceId with some presets.
         builder.setDeviceId(txInputDeviceId_);
@@ -1132,8 +1145,11 @@ bool AudioEngine::openTxInputStream() {
         return false;
     }
 
-    // Check if we got the requested device; if not, retry with Exclusive mode
-    if (txInputDeviceId_ > 0 && txInputStream_->getDeviceId() != txInputDeviceId_) {
+    // Check if we got the requested device; if not, retry with Exclusive mode.
+    // Skipped for the communication-route mic: no device was pinned there, the
+    // route follows the communication device by design.
+    if (!txUseVoiceCommInput_ && txInputDeviceId_ > 0 &&
+        txInputStream_->getDeviceId() != txInputDeviceId_) {
         LOGI("TX: input device mismatch: wanted %d got %d, retrying Exclusive",
              txInputDeviceId_, txInputStream_->getDeviceId());
         txInputStream_->close(); txInputStream_.reset();
@@ -1467,6 +1483,7 @@ bool AudioEngine::startNetTx(int inputDeviceId, int netRate) {
     txNetMode_ = true;
     txUseJavaOutput_ = true;     // reuse: no Oboe output stream, skip drain wait
     txKeepRxAlive_ = false;      // defensive: network TX is never mic-only keep-alive
+    txUseVoiceCommInput_ = false; // network TX always captures the requested mic directly
     txOutputRate_ = netRate;
     LOGI("Net TX: startNetTx inputDev=%d netRate=%d", txInputDeviceId_, netRate);
 

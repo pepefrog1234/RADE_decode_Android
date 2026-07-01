@@ -193,7 +193,12 @@ class AudioService : LifecycleService() {
             false
         }
         val effectiveInputDeviceId = if (leRoute != null) {
-            inputDeviceId
+            // In MODE_IN_COMMUNICATION the *default* capture route follows the
+            // communication device — i.e. the LC3 headset mic, not the radio.
+            // Pin an unselected input to the built-in mic so RX keeps decoding
+            // the radio signal instead of the headset mic.
+            if (inputDeviceId > 0) inputDeviceId
+            else findBuiltInMicInputId() ?: inputDeviceId
         } else {
             effectiveBluetoothInputDeviceId(inputDeviceId, bluetoothRouteActive)
         }
@@ -206,12 +211,13 @@ class AudioService : LifecycleService() {
         bridge.setRxJavaOutputEnabled(useJavaRxOutput)
         bridge.setRxVoiceCommunicationOutputEnabled(leRoute != null)
         val nativeOutputDeviceId = if (useJavaRxOutput) -1 else effectiveOutputDeviceId
-        // Plain MEDIA playback to an LC3 headset: capture with VoiceRecognition
-        // instead of Unprocessed so Samsung doesn't reconfigure the streaming LC3
-        // group into a failing bidirectional "LIVE" capture (which silences the
-        // headset after the first TX). Comm-mode routes RX as VOICE_COMMUNICATION
-        // and is handled separately, so it's excluded here.
-        val bleAudioMediaOutput = leRoute == null && isBleAudioOutputDevice(rxOutputDeviceId)
+        // RX renders to an LC3 headset — plain MEDIA playback OR the LE Audio
+        // communication mode: capture with VoiceRecognition instead of Unprocessed
+        // so Samsung doesn't reconfigure the streaming LC3 group into a failing
+        // bidirectional "LIVE" capture (which silences the headset after the first
+        // TX). The same UNPROCESSED→LIVE mapping hijacks a comm-mode session's
+        // CONVERSATIONAL group, so comm mode needs the guard too.
+        val bleAudioOutput = leRoute != null || isBleAudioOutputDevice(rxOutputDeviceId)
         Log.i(
             "AudioService",
             "startDecoding: input=$inputDeviceId effectiveInput=$effectiveInputDeviceId " +
@@ -219,13 +225,13 @@ class AudioService : LifecycleService() {
                 "effectiveOutput=$effectiveOutputDeviceId nativeOutput=$nativeOutputDeviceId " +
                 "bluetoothRoute=$bluetoothRouteActive leComm=${leRoute != null} " +
                 "leCommDev=${leRoute?.communicationDeviceId} javaOutput=$useJavaRxOutput " +
-                "bleAudioOut=$bleAudioMediaOutput"
+                "bleAudioOut=$bleAudioOutput"
         )
         if (!bridge.start(
                 effectiveInputDeviceId,
                 nativeOutputDeviceId,
                 voiceCommunicationOutput = leRoute != null,
-                bleAudioOutput = bleAudioMediaOutput
+                bleAudioOutput = bleAudioOutput
         )) {
             stopRxAudioTrackPump()
             clearBluetoothCommunicationRouteIfNeeded()
@@ -668,6 +674,14 @@ class AudioService : LifecycleService() {
         getAudioDevices(AudioManager.GET_DEVICES_OUTPUTS)
             .firstOrNull { it.type == AudioDeviceInfo.TYPE_BLE_HEADSET }?.id
 
+    private fun findBuiltInMicInputId(): Int? =
+        getAudioDevices(AudioManager.GET_DEVICES_INPUTS)
+            .firstOrNull { it.type == AudioDeviceInfo.TYPE_BUILTIN_MIC }?.id
+
+    private fun findBuiltInSpeakerOutputId(): Int? =
+        getAudioDevices(AudioManager.GET_DEVICES_OUTPUTS)
+            .firstOrNull { it.type == AudioDeviceInfo.TYPE_BUILTIN_SPEAKER }?.id
+
     /** True when [deviceId] is a connected Bluetooth LE Audio (LC3) output. */
     private fun isBleAudioOutputDevice(deviceId: Int): Boolean {
         if (deviceId <= 0) return false
@@ -1076,11 +1090,13 @@ class AudioService : LifecycleService() {
         // only when this is not an LE Audio communication-mode session.
         var effectiveInputDeviceId = inputDeviceId
         var bluetoothMicEngaged = false
+        var bleCommMicCapture = false
         if (useBluetoothMic) {
             val bleRoute = activateBleAudioCommunicationRoute()
             if (bleRoute != null) {
                 effectiveInputDeviceId = bleRoute.inputDeviceId
                 bluetoothMicEngaged = true
+                bleCommMicCapture = true
                 Log.i(
                     "AudioService",
                     "TX Bluetooth mic: using LE Audio (LC3) input id=${bleRoute.inputDeviceId} " +
@@ -1111,13 +1127,32 @@ class AudioService : LifecycleService() {
             }
         }
 
+        // In a comm-mode session the *default* TX output route follows the
+        // communication device — the LC3 headset — so the modem waveform would
+        // play into the user's ears instead of the phone speaker (the acoustic-
+        // coupling TX path). Pin it to the built-in speaker; an explicit output
+        // (USB rig) is untouched. The pinned id takes the existing Java
+        // AudioTrack output path, which routes by device id.
+        var effectiveOutputDeviceId = outputDeviceId
+        if (leAudioCommunicationSessionActive && effectiveOutputDeviceId <= 0) {
+            findBuiltInSpeakerOutputId()?.let {
+                effectiveOutputDeviceId = it
+                Log.i("AudioService", "TX output: LE comm session, pinning modem audio to built-in speaker id=$it")
+            }
+        }
+
         Log.i(
             "AudioService",
             "startTx: inputDeviceId=$inputDeviceId effectiveInput=$effectiveInputDeviceId " +
-                "outputDeviceId=$outputDeviceId useBluetoothMic=$useBluetoothMic " +
+                "outputDeviceId=$outputDeviceId effectiveOutput=$effectiveOutputDeviceId " +
+                "useBluetoothMic=$useBluetoothMic bleCommMic=$bleCommMicCapture " +
                 "preferLeComm=$preferLeAudioCommunication leComm=$leAudioCommunicationSessionActive"
         )
-        if (!bridge.startTx(effectiveInputDeviceId, outputDeviceId)) {
+        if (!bridge.startTx(
+                effectiveInputDeviceId,
+                effectiveOutputDeviceId,
+                voiceCommunicationInput = bleCommMicCapture
+        )) {
             bridge.release()
             audioBridge = null
             clearBluetoothCommunicationRouteIfNeeded()
@@ -1138,9 +1173,10 @@ class AudioService : LifecycleService() {
             Log.i("AudioService", "TX Bluetooth mic effects: $report")
         }
 
-        // If native chose Java output (USB audio), start AudioTrack pump
+        // If native chose Java output (USB audio / speaker-pinned comm mode),
+        // start the AudioTrack pump
         if (bridge.nativeIsTxUsingJavaOutput()) {
-            startTxAudioTrackPump(bridge, outputDeviceId)
+            startTxAudioTrackPump(bridge, effectiveOutputDeviceId)
         }
 
         startTxPolling()
