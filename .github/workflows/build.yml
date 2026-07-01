@@ -6,6 +6,12 @@ on:
     tags: [ 'v*' ]        # pushing a vX.Y.Z tag builds and publishes a Release
   pull_request:
     branches: [ main ]
+  workflow_dispatch:      # manual release: creates the tag + Release from CI
+    inputs:
+      release_tag:
+        description: 'Tag to release (e.g. v1.5.49). Tags the built commit and publishes a Release with the APKs. Leave empty for a plain build.'
+        required: false
+        default: ''
 
 jobs:
   build:
@@ -58,16 +64,20 @@ jobs:
           compression-level: 0
 
       - name: Publish GitHub Release with APKs
-        if: startsWith(github.ref, 'refs/tags/')
+        if: startsWith(github.ref, 'refs/tags/') || (github.event_name == 'workflow_dispatch' && inputs.release_tag != '')
         env:
           GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.release_tag || github.ref_name }}
         run: |
           DEBUG_APK="app/build/outputs/apk/debug/app-debug.apk#RADE_decode-debug.apk"
           REL_APK="app/build/outputs/apk/release/app-release-unsigned.apk#RADE_decode-release-unsigned.apk"
-          if gh release view "${{ github.ref_name }}" >/dev/null 2>&1; then
+          if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
             # Release already exists (e.g. drafted in the UI) — just (re)upload assets.
-            gh release upload "${{ github.ref_name }}" "$DEBUG_APK" "$REL_APK" --clobber
+            gh release upload "$RELEASE_TAG" "$DEBUG_APK" "$REL_APK" --clobber
           else
-            gh release create "${{ github.ref_name }}" "$DEBUG_APK" "$REL_APK" \
-              --title "${{ github.ref_name }}" --generate-notes
+            # On a manual dispatch the tag may not exist yet: gh creates it at the
+            # built commit (--target), so no tag push is needed from the client.
+            gh release create "$RELEASE_TAG" "$DEBUG_APK" "$REL_APK" \
+              --target "${{ github.sha }}" \
+              --title "$RELEASE_TAG" --generate-notes
           fi
