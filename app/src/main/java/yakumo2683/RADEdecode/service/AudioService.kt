@@ -206,15 +206,27 @@ class AudioService : LifecycleService() {
         bridge.setRxJavaOutputEnabled(useJavaRxOutput)
         bridge.setRxVoiceCommunicationOutputEnabled(leRoute != null)
         val nativeOutputDeviceId = if (useJavaRxOutput) -1 else effectiveOutputDeviceId
+        // Plain MEDIA playback to an LC3 headset: capture with VoiceRecognition
+        // instead of Unprocessed so Samsung doesn't reconfigure the streaming LC3
+        // group into a failing bidirectional "LIVE" capture (which silences the
+        // headset after the first TX). Comm-mode routes RX as VOICE_COMMUNICATION
+        // and is handled separately, so it's excluded here.
+        val bleAudioMediaOutput = leRoute == null && isBleAudioOutputDevice(rxOutputDeviceId)
         Log.i(
             "AudioService",
             "startDecoding: input=$inputDeviceId effectiveInput=$effectiveInputDeviceId " +
                 "rxOutputSelection=$outputDeviceId resolved=$rxOutputDeviceId " +
                 "effectiveOutput=$effectiveOutputDeviceId nativeOutput=$nativeOutputDeviceId " +
                 "bluetoothRoute=$bluetoothRouteActive leComm=${leRoute != null} " +
-                "leCommDev=${leRoute?.communicationDeviceId} javaOutput=$useJavaRxOutput"
+                "leCommDev=${leRoute?.communicationDeviceId} javaOutput=$useJavaRxOutput " +
+                "bleAudioOut=$bleAudioMediaOutput"
         )
-        if (!bridge.start(effectiveInputDeviceId, nativeOutputDeviceId, voiceCommunicationOutput = leRoute != null)) {
+        if (!bridge.start(
+                effectiveInputDeviceId,
+                nativeOutputDeviceId,
+                voiceCommunicationOutput = leRoute != null,
+                bleAudioOutput = bleAudioMediaOutput
+        )) {
             stopRxAudioTrackPump()
             clearBluetoothCommunicationRouteIfNeeded()
             stopSelf()
@@ -655,6 +667,18 @@ class AudioService : LifecycleService() {
     private fun findBleHeadsetOutputId(): Int? =
         getAudioDevices(AudioManager.GET_DEVICES_OUTPUTS)
             .firstOrNull { it.type == AudioDeviceInfo.TYPE_BLE_HEADSET }?.id
+
+    /** True when [deviceId] is a connected Bluetooth LE Audio (LC3) output. */
+    private fun isBleAudioOutputDevice(deviceId: Int): Boolean {
+        if (deviceId <= 0) return false
+        return getAudioDevices(AudioManager.GET_DEVICES_OUTPUTS).any {
+            it.id == deviceId && (
+                it.type == AudioDeviceInfo.TYPE_BLE_HEADSET ||
+                    it.type == AudioDeviceInfo.TYPE_BLE_SPEAKER ||
+                    it.type == AudioDeviceInfo.TYPE_BLE_BROADCAST
+            )
+        }
+    }
 
     private fun describeCommunicationDevices(am: AudioManager): String {
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.S) return "(api < 31)"

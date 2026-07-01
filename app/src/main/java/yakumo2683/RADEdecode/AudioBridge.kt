@@ -53,9 +53,10 @@ class AudioBridge(private val context: Context) {
     fun start(
         inputDeviceId: Int = -1,
         outputDeviceId: Int = -1,
-        voiceCommunicationOutput: Boolean = false
+        voiceCommunicationOutput: Boolean = false,
+        bleAudioOutput: Boolean = false
     ): Boolean =
-        nativeStart(inputDeviceId, outputDeviceId, voiceCommunicationOutput)
+        nativeStart(inputDeviceId, outputDeviceId, voiceCommunicationOutput, bleAudioOutput)
 
     /** Stop the audio engine. */
     fun stop() {
@@ -341,7 +342,8 @@ class AudioBridge(private val context: Context) {
     private external fun nativeStart(
         inputDeviceId: Int,
         outputDeviceId: Int,
-        voiceCommunicationOutput: Boolean
+        voiceCommunicationOutput: Boolean,
+        bleAudioOutput: Boolean
     ): Boolean
     private external fun nativeStop()
     private external fun nativeIsRunning(): Boolean

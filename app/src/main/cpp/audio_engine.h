@@ -77,7 +77,8 @@ public:
 
     /* RX mode */
     bool start(int inputDeviceId = 0, int outputDeviceId = 0,
-               bool voiceCommunicationOutput = false);
+               bool voiceCommunicationOutput = false,
+               bool bleAudioOutput = false);
     void stop();
     bool isRunning() const { return running_.load(); }
     /* Half-duplex pause: close the RX mic input but KEEP the RX output stream
@@ -231,6 +232,14 @@ private:
     bool txUseJavaOutput_ = false;
     bool rxUseJavaOutput_ = false;
     bool rxUseVoiceCommunicationOutput_ = false;
+    // RX is rendering MEDIA to a Bluetooth LE Audio (LC3) headset. When set, the
+    // RX capture uses VoiceRecognition instead of Unprocessed: on Samsung an
+    // UNPROCESSED capture is mapped to the LE Audio "LIVE" context, which drags the
+    // streaming LC3 group into a bidirectional (render + headset-mic) reconfig that
+    // fails to start in a permanent loop, silencing the headset after the first TX.
+    // VoiceRecognition maps to a context the headset mic does not advertise, so the
+    // LC3 group stays render-only. Effects are stripped via the session id anyway.
+    bool rxBleAudioOutput_ = false;
     bool txKeepRxAlive_ = false;        // local LC3 monitoring: mic-only TX, RX output kept open
     bool txNetMode_ = false;            // TX audio goes to UDP, not Oboe/AudioTrack
     std::atomic<bool> netRxRunning_{false};  // RX audio comes from UDP, not Oboe input

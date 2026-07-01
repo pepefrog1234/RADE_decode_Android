@@ -11,8 +11,8 @@ android {
         applicationId = "yakumo2683.RADEdecode"
         minSdk = 26
         targetSdk = 35
-        versionCode = 10547
-        versionName = "1.5.47-le-audio-comm"
+        versionCode = 10548
+        versionName = "1.5.48-lc3-rx-preset"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 

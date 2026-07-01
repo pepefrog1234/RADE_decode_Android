@@ -129,11 +129,13 @@ void AudioEngine::designDecimFilter(int inputRate, int outputRate) {
 
 /* ── Start / Stop ──────────────────────────────────────────── */
 
-bool AudioEngine::start(int inputDeviceId, int outputDeviceId, bool voiceCommunicationOutput) {
+bool AudioEngine::start(int inputDeviceId, int outputDeviceId, bool voiceCommunicationOutput,
+                        bool bleAudioOutput) {
     if (running_.load()) return true;
     inputDeviceId_ = (inputDeviceId > 0) ? inputDeviceId : 0;
     outputDeviceId_ = (outputDeviceId > 0) ? outputDeviceId : 0;
     rxUseVoiceCommunicationOutput_ = voiceCommunicationOutput;
+    rxBleAudioOutput_ = bleAudioOutput;
 
     if (!initModem()) return false;
 
@@ -222,7 +224,7 @@ bool AudioEngine::resumeRxInput() {
 
 void AudioEngine::setInputDevice(int deviceId) {
     inputDeviceId_ = (deviceId > 0) ? deviceId : 0;
-    if (running_.load()) { stop(); start(inputDeviceId_, outputDeviceId_); }
+    if (running_.load()) { stop(); start(inputDeviceId_, outputDeviceId_, rxUseVoiceCommunicationOutput_, rxBleAudioOutput_); }
 }
 
 void AudioEngine::setOutputDevice(int deviceId) {
@@ -233,7 +235,7 @@ void AudioEngine::setOutputDevice(int deviceId) {
 void AudioEngine::setDevices(int inputDeviceId, int outputDeviceId) {
     inputDeviceId_ = (inputDeviceId > 0) ? inputDeviceId : 0;
     outputDeviceId_ = (outputDeviceId > 0) ? outputDeviceId : 0;
-    if (running_.load()) { stop(); start(inputDeviceId_, outputDeviceId_); }
+    if (running_.load()) { stop(); start(inputDeviceId_, outputDeviceId_, rxUseVoiceCommunicationOutput_, rxBleAudioOutput_); }
 }
 
 void AudioEngine::setRxJavaOutputEnabled(bool enabled) {
@@ -274,6 +276,14 @@ void AudioEngine::setInputGain(float gain) {
 /* ── Stream setup ──────────────────────────────────────────── */
 
 bool AudioEngine::openInputStream() {
+    // Normally Unprocessed (bypass AGC/NS/AEC so the modem signal is untouched).
+    // But when RX renders MEDIA to an LC3 headset, Unprocessed triggers a failing
+    // LE Audio "LIVE" reconfiguration (see rxBleAudioOutput_): use VoiceRecognition
+    // there instead. Effects are stripped via the session id after open either way.
+    const oboe::InputPreset rxPreset = rxBleAudioOutput_
+        ? oboe::InputPreset::VoiceRecognition
+        : oboe::InputPreset::Unprocessed;
+
     oboe::AudioStreamBuilder builder;
     builder.setDirection(oboe::Direction::Input)
            ->setPerformanceMode(oboe::PerformanceMode::LowLatency)
@@ -286,11 +296,11 @@ bool AudioEngine::openInputStream() {
            ->setSampleRate(INPUT_SAMPLE_RATE)
            ->setSampleRateConversionQuality(oboe::SampleRateConversionQuality::High)
            ->setChannelCount(oboe::ChannelCount::Mono)
-           // Unprocessed: ask the platform to bypass AGC, NS, AEC. Some OEMs
+           // Ask the platform to bypass AGC, NS, AEC (rxPreset above). Some OEMs
            // (Samsung S24, Pixel variants) ignore this hint at the HAL layer,
            // so we additionally disable effects on the allocated session id
            // from Kotlin after open — that's the canonical, always-works path.
-           ->setInputPreset(oboe::InputPreset::Unprocessed)
+           ->setInputPreset(rxPreset)
            ->setSessionId(oboe::SessionId::Allocate)
            ->setDataCallback(std::static_pointer_cast<oboe::AudioStreamDataCallback>(inputCb_))
            ->setErrorCallback(std::static_pointer_cast<oboe::AudioStreamErrorCallback>(inputCb_));
@@ -355,7 +365,15 @@ bool AudioEngine::openInputStream() {
          actualInputRate_, inputStream_->getChannelCount(),
          inputStream_->getDeviceId(), (int)actualPreset, (int)actualPerf,
          (int)actualFormat, (int)actualSharing, inputSessionId_);
-    if (actualPreset != oboe::InputPreset::Unprocessed) {
+    if (rxBleAudioOutput_) {
+        // We deliberately requested VoiceRecognition (not Unprocessed) to keep the
+        // LC3 media route from reconfiguring into a failing LIVE capture. Effects
+        // are still stripped via the session id from Kotlin, so this is NOT a
+        // rejection — don't raise the "device ignored Unprocessed" UI warning.
+        LOGI("Input: LE Audio (LC3) media output — using VoiceRecognition preset "
+             "(got %d); effects disabled via session id.", (int)actualPreset);
+        unprocessedRejected_.store(false);
+    } else if (actualPreset != oboe::InputPreset::Unprocessed) {
         LOGE("Input: device did NOT honor Unprocessed preset (got %d). "
              "Kotlin will disable effects via session id as a fallback.",
              (int)actualPreset);

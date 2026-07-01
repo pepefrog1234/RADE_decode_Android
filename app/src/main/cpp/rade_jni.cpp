@@ -382,12 +382,13 @@ JNI_AUDIO(nativeSetCallback)(JNIEnv *env, jobject /* this */, jobject callback) 
 JNIEXPORT jboolean JNICALL
 JNI_AUDIO(nativeStart)(JNIEnv *env, jobject /* this */,
                        jint inputDeviceId, jint outputDeviceId,
-                       jboolean voiceCommunicationOutput) {
+                       jboolean voiceCommunicationOutput, jboolean bleAudioOutput) {
     if (!g_audioEngine) return JNI_FALSE;
     return g_audioEngine->start(
         inputDeviceId,
         outputDeviceId,
-        voiceCommunicationOutput == JNI_TRUE
+        voiceCommunicationOutput == JNI_TRUE,
+        bleAudioOutput == JNI_TRUE
     ) ? JNI_TRUE : JNI_FALSE;
 }
 
