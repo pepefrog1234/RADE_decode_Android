@@ -1,0 +1,30 @@
+name: Update Release Notes
+
+# Applies docs/release-notes/<tag>.md to an existing GitHub Release. Lets the
+# notes be written/edited from clients that cannot call the Releases API
+# directly — commit the file, then dispatch this with the tag.
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Release tag whose notes to update (e.g. v1.5.49). Reads docs/release-notes/<tag>.md.'
+        required: true
+
+jobs:
+  update-notes:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write     # required for gh release edit
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Update release notes from docs/release-notes/<tag>.md
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ inputs.tag }}
+        run: |
+          NOTES="docs/release-notes/${TAG}.md"
+          if [ ! -f "$NOTES" ]; then
+            echo "::error::$NOTES not found" ; exit 1
+          fi
+          gh release edit "$TAG" --notes-file "$NOTES"
