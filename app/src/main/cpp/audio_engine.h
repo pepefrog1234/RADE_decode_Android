@@ -92,9 +92,14 @@ public:
      * output stream (the caller pauses/resumes RX input around this).
      * voiceCommunicationInput = capture through the Bluetooth communication
      * route (LE Audio / LC3 headset mic): use the VOICE_COMMUNICATION preset and
-     * follow the communication device instead of pinning a device id. */
+     * follow the communication device instead of pinning a device id.
+     * voiceRecognitionInput = an LC3 headset is connected but the TX mic is NOT
+     * it (built-in/USB mic): use VOICE_RECOGNITION instead of Generic/Unprocessed
+     * so the mic-open doesn't drag the headset's LC3 group into the failing
+     * "LIVE" reconfiguration (multi-second open stall + silence after TX). */
     bool startTx(int inputDeviceId, int outputDeviceId, bool keepRxAlive = false,
-                 bool voiceCommunicationInput = false);
+                 bool voiceCommunicationInput = false,
+                 bool voiceRecognitionInput = false);
     void stopTx(bool drainEoo = true);
     bool isTxRunning() const { return txRunning_.load(); }
     void setTxCallsign(const char *callsign);
@@ -253,6 +258,14 @@ private:
     // set from Kotlin, so no device id is pinned (BLE ids go stale on every
     // LE Audio reconfig).
     bool txUseVoiceCommInput_ = false;
+    // TX mic is the built-in/USB mic while an LC3 headset is connected: capture
+    // with VOICE_RECOGNITION instead of Generic/Unprocessed. Same mechanism as
+    // rxBleAudioOutput_: Samsung maps Generic/Unprocessed capture to LE Audio
+    // contexts the headset serves, force-attaching a headset-mic leg to the LC3
+    // group — the mic-open then stalls for seconds on the failing reconfig and
+    // the headset can drop to silence. VoiceAssistants (0x20) is not in the
+    // headset's advertised source contexts, so the group is left alone.
+    bool txUseVoiceRecInput_ = false;
     bool txNetMode_ = false;            // TX audio goes to UDP, not Oboe/AudioTrack
     std::atomic<bool> netRxRunning_{false};  // RX audio comes from UDP, not Oboe input
 

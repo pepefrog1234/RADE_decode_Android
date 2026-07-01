@@ -912,10 +912,11 @@ void AudioEngine::releaseTxModem() {
 }
 
 bool AudioEngine::startTx(int inputDeviceId, int outputDeviceId, bool keepRxAlive,
-                          bool voiceCommunicationInput) {
+                          bool voiceCommunicationInput, bool voiceRecognitionInput) {
     if (txRunning_.load()) return true;
     txKeepRxAlive_ = keepRxAlive;
     txUseVoiceCommInput_ = voiceCommunicationInput;
+    txUseVoiceRecInput_ = voiceRecognitionInput;
     txInputDeviceId_ = (inputDeviceId > 0) ? inputDeviceId : 0;
     txOutputDeviceId_ = (outputDeviceId > 0) ? outputDeviceId : 0;
 
@@ -938,8 +939,9 @@ bool AudioEngine::startTx(int inputDeviceId, int outputDeviceId, bool keepRxAliv
     }
 
     if (running_.load()) stop();  // stop RX first
-    LOGI("TX: startTx inputDev=%d outputDev=%d voiceCommInput=%d",
-         txInputDeviceId_, txOutputDeviceId_, txUseVoiceCommInput_ ? 1 : 0);
+    LOGI("TX: startTx inputDev=%d outputDev=%d voiceCommInput=%d voiceRecInput=%d",
+         txInputDeviceId_, txOutputDeviceId_,
+         txUseVoiceCommInput_ ? 1 : 0, txUseVoiceRecInput_ ? 1 : 0);
 
     if (!initTxModem()) return false;
 
@@ -1132,11 +1134,16 @@ bool AudioEngine::openTxInputStream() {
     } else if (txInputDeviceId_ > 0) {
         // Force built-in mic when USB audio is connected.
         // Try multiple strategies since Oboe may ignore setDeviceId with some presets.
+        // With an LC3 headset connected, Generic/Unprocessed capture contexts drag
+        // the headset's LE Audio group into a failing reconfig (multi-second open
+        // stall) — use VoiceRecognition there (see txUseVoiceRecInput_).
         builder.setDeviceId(txInputDeviceId_);
-        builder.setInputPreset(oboe::InputPreset::Generic);
+        builder.setInputPreset(txUseVoiceRecInput_ ? oboe::InputPreset::VoiceRecognition
+                                                   : oboe::InputPreset::Generic);
         builder.setPerformanceMode(oboe::PerformanceMode::None);
     } else {
-        builder.setInputPreset(oboe::InputPreset::Unprocessed);
+        builder.setInputPreset(txUseVoiceRecInput_ ? oboe::InputPreset::VoiceRecognition
+                                                   : oboe::InputPreset::Unprocessed);
     }
 
     auto result = builder.openStream(txInputStream_);
@@ -1161,7 +1168,10 @@ bool AudioEngine::openTxInputStream() {
              ->setFormat(oboe::AudioFormat::Float)
              ->setChannelCount(oboe::ChannelCount::Mono)
              ->setSessionId(oboe::SessionId::Allocate)
-             ->setInputPreset(oboe::InputPreset::Unprocessed)
+             // Same LC3 guard on the retry — Unprocessed is the worst trigger
+             // (it maps to the LE Audio LIVE context on Samsung).
+             ->setInputPreset(txUseVoiceRecInput_ ? oboe::InputPreset::VoiceRecognition
+                                                  : oboe::InputPreset::Unprocessed)
              ->setDeviceId(txInputDeviceId_)
              ->setDataCallback(std::static_pointer_cast<oboe::AudioStreamDataCallback>(txInputCb_))
              ->setErrorCallback(std::static_pointer_cast<oboe::AudioStreamErrorCallback>(txInputCb_));
@@ -1484,6 +1494,7 @@ bool AudioEngine::startNetTx(int inputDeviceId, int netRate) {
     txUseJavaOutput_ = true;     // reuse: no Oboe output stream, skip drain wait
     txKeepRxAlive_ = false;      // defensive: network TX is never mic-only keep-alive
     txUseVoiceCommInput_ = false; // network TX always captures the requested mic directly
+    txUseVoiceRecInput_ = false;
     txOutputRate_ = netRate;
     LOGI("Net TX: startNetTx inputDev=%d netRate=%d", txInputDeviceId_, netRate);
 

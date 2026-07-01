@@ -208,14 +208,21 @@ class AudioBridge(private val context: Context) {
      *  TX captures the mic for the level meter only — no modem, no output. When
      *  [voiceCommunicationInput] is true the mic is captured through the active
      *  Bluetooth communication route (LE Audio / LC3 headset) with the
-     *  VOICE_COMMUNICATION preset instead of a pinned device id. */
+     *  VOICE_COMMUNICATION preset instead of a pinned device id. When
+     *  [voiceRecognitionInput] is true (an LC3 headset is connected but is NOT
+     *  the TX mic) the mic uses the VOICE_RECOGNITION preset so the mic-open
+     *  doesn't disturb the headset's LC3 group (multi-second stall / silence). */
     fun startTx(
         inputDeviceId: Int = -1,
         outputDeviceId: Int = -1,
         keepRxAlive: Boolean = false,
-        voiceCommunicationInput: Boolean = false
+        voiceCommunicationInput: Boolean = false,
+        voiceRecognitionInput: Boolean = false
     ): Boolean =
-        nativeStartTx(inputDeviceId, outputDeviceId, keepRxAlive, voiceCommunicationInput)
+        nativeStartTx(
+            inputDeviceId, outputDeviceId, keepRxAlive,
+            voiceCommunicationInput, voiceRecognitionInput
+        )
 
     /** Pause RX decoding (close the mic) but keep the RX output stream — and its
      *  Bluetooth LE Audio / LC3 media route — open. Pair with [resumeRxInput]. */
@@ -377,7 +384,8 @@ class AudioBridge(private val context: Context) {
         inputDeviceId: Int,
         outputDeviceId: Int,
         keepRxAlive: Boolean,
-        voiceCommunicationInput: Boolean
+        voiceCommunicationInput: Boolean,
+        voiceRecognitionInput: Boolean
     ): Boolean
     private external fun nativePauseRxInput(): Boolean
     private external fun nativeResumeRxInput(): Boolean

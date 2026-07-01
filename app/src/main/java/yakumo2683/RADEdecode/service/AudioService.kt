@@ -678,6 +678,14 @@ class AudioService : LifecycleService() {
         getAudioDevices(AudioManager.GET_DEVICES_INPUTS)
             .firstOrNull { it.type == AudioDeviceInfo.TYPE_BUILTIN_MIC }?.id
 
+    /** True when any Bluetooth LE Audio (LC3) output device is connected. */
+    private fun hasBleAudioOutput(): Boolean =
+        getAudioDevices(AudioManager.GET_DEVICES_OUTPUTS).any {
+            it.type == AudioDeviceInfo.TYPE_BLE_HEADSET ||
+                it.type == AudioDeviceInfo.TYPE_BLE_SPEAKER ||
+                it.type == AudioDeviceInfo.TYPE_BLE_BROADCAST
+        }
+
     private fun findBuiltInSpeakerOutputId(): Int? =
         getAudioDevices(AudioManager.GET_DEVICES_OUTPUTS)
             .firstOrNull { it.type == AudioDeviceInfo.TYPE_BUILTIN_SPEAKER }?.id
@@ -1029,7 +1037,13 @@ class AudioService : LifecycleService() {
             finalizeCurrentSession()
             if (callsign.isNotEmpty()) keepBridge.setTxCallsign(callsign)
             keepBridge.pauseRxInput()
-            if (!keepBridge.startTx(inputDeviceId, -1, keepRxAlive = true)) {
+            // The RX LC3 output stream stays open here, so the mic-open MUST
+            // avoid presets that reconfigure the LC3 group (voiceRecognitionInput).
+            if (!keepBridge.startTx(
+                    inputDeviceId, -1,
+                    keepRxAlive = true,
+                    voiceRecognitionInput = true
+            )) {
                 Log.w("AudioService", "keepRxAlive TX failed to start; resuming RX")
                 keepBridge.resumeRxInput()
                 startPolling()
@@ -1141,17 +1155,27 @@ class AudioService : LifecycleService() {
             }
         }
 
+        // With an LC3 headset connected but NOT used as the TX mic, opening the
+        // mic with a Generic/Unprocessed capture context makes the platform try
+        // to attach a headset-mic leg to the streaming LC3 group — the mic-open
+        // then stalls for seconds on the failing reconfig (the reported ~7 s
+        // RX->TX switch delay) and the headset can drop to silence. Capture with
+        // VoiceRecognition instead, the same guard v1.5.48 applied to RX.
+        val avoidBleMicTrigger = !bluetoothMicEngaged && hasBleAudioOutput()
+
         Log.i(
             "AudioService",
             "startTx: inputDeviceId=$inputDeviceId effectiveInput=$effectiveInputDeviceId " +
                 "outputDeviceId=$outputDeviceId effectiveOutput=$effectiveOutputDeviceId " +
                 "useBluetoothMic=$useBluetoothMic bleCommMic=$bleCommMicCapture " +
+                "voiceRecMic=$avoidBleMicTrigger " +
                 "preferLeComm=$preferLeAudioCommunication leComm=$leAudioCommunicationSessionActive"
         )
         if (!bridge.startTx(
                 effectiveInputDeviceId,
                 effectiveOutputDeviceId,
-                voiceCommunicationInput = bleCommMicCapture
+                voiceCommunicationInput = bleCommMicCapture,
+                voiceRecognitionInput = avoidBleMicTrigger
         )) {
             bridge.release()
             audioBridge = null
