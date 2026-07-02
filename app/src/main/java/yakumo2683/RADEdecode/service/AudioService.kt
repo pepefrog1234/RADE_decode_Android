@@ -233,6 +233,11 @@ class AudioService : LifecycleService() {
                 voiceCommunicationOutput = leRoute != null,
                 bleAudioOutput = bleAudioOutput
         )) {
+            Log.e(
+                "AudioService",
+                "startDecoding FAILED (native): input=$effectiveInputDeviceId " +
+                    "output=$nativeOutputDeviceId leComm=${leRoute != null} — service stopping"
+            )
             stopRxAudioTrackPump()
             clearBluetoothCommunicationRouteIfNeeded()
             stopSelf()
@@ -1177,6 +1182,12 @@ class AudioService : LifecycleService() {
                 voiceCommunicationInput = bleCommMicCapture,
                 voiceRecognitionInput = avoidBleMicTrigger
         )) {
+            Log.e(
+                "AudioService",
+                "startTx FAILED (native): input=$effectiveInputDeviceId " +
+                    "output=$effectiveOutputDeviceId bleCommMic=$bleCommMicCapture " +
+                    "leComm=$leAudioCommunicationSessionActive — service stopping, UI stays in RX"
+            )
             bridge.release()
             audioBridge = null
             clearBluetoothCommunicationRouteIfNeeded()
@@ -1331,6 +1342,19 @@ class AudioService : LifecycleService() {
         track.play()
         txAudioTrack = track
 
+        // Route verification. setPreferredDevice() is only a soft hint — in
+        // MODE_IN_COMMUNICATION (LE Audio comm session) the policy can pull a
+        // USAGE_MEDIA track to the communication device (the LC3 headset), in
+        // which case the modem waveform never reaches the rig. Log where the TX
+        // audio actually went so a captured log distinguishes "route stolen"
+        // from "no TX audio produced".
+        lifecycleScope.launch(Dispatchers.IO) {
+            delay(300)
+            logTxRoutedDevice(track, outputDeviceId, "300ms")
+            delay(1200)
+            logTxRoutedDevice(track, outputDeviceId, "1500ms")
+        }
+
         // Pump: read from native ring buffer → write to AudioTrack
         val done = java.util.concurrent.CountDownLatch(1)
         txPumpDone = done
@@ -1370,6 +1394,18 @@ class AudioService : LifecycleService() {
                 done.countDown()
             }
         }
+    }
+
+    /** Log where Android actually routed the TX AudioTrack vs. what we requested. */
+    private fun logTxRoutedDevice(track: AudioTrack, requestedId: Int, whenTag: String) {
+        if (txAudioTrack !== track) return
+        val routed = try { track.routedDevice } catch (_: Exception) { null }
+        Log.i(
+            "AudioService",
+            "TX route@$whenTag: requested id=$requestedId routed id=${routed?.id} " +
+                "type=${routed?.type} name=${routed?.productName} " +
+                "matched=${routed != null && routed.id == requestedId}"
+        )
     }
 
     private fun stopTxAudioTrackPump() {
