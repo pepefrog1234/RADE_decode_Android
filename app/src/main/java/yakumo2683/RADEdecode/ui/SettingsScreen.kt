@@ -39,6 +39,7 @@ fun SettingsScreen(viewModel: TransceiverViewModel = viewModel()) {
     val state by viewModel.uiState.collectAsState()
     var volume by remember { mutableFloatStateOf(viewModel.getSavedVolume()) }
     var inputGain by remember { mutableFloatStateOf(viewModel.getSavedInputGain()) }
+    var txMicGain by remember { mutableFloatStateOf(viewModel.getSavedTxMicGain()) }
     var txVolume by remember { mutableFloatStateOf(viewModel.getSavedTxVolume()) }
 
     Column(
@@ -470,6 +471,29 @@ fun SettingsScreen(viewModel: TransceiverViewModel = viewModel()) {
                         onClick = { viewModel.selectTxMicDevice(device.id) }
                     )
                 }
+
+                Spacer(modifier = Modifier.height(12.dp))
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text(stringResource(R.string.settings_tx_mic_gain), color = MaterialTheme.colorScheme.onSurface)
+                    Text(
+                        String.format("%.1fx (%.0f dB)", txMicGain, 20f * kotlin.math.log10(txMicGain)),
+                        fontFamily = FontFamily.Monospace, fontSize = 14.sp, color = Cyan400
+                    )
+                }
+                Slider(
+                    value = txMicGain,
+                    onValueChange = { txMicGain = it; viewModel.setTxMicGain(it) },
+                    valueRange = 0.5f..15f,
+                    colors = SliderDefaults.colors(thumbColor = Cyan400, activeTrackColor = Cyan400)
+                )
+                Text(
+                    stringResource(R.string.settings_tx_mic_gain_help),
+                    fontSize = 11.sp, color = OnSurfaceDim
+                )
             }
         }
 

@@ -36,6 +36,8 @@
     <string name="settings_tx_mic_help">Choose the mic used when transmitting. A USB-hub external mic gives better audio and faster keying than the Bluetooth mic. (The Bluetooth mic option below overrides this when enabled.)</string>
     <string name="settings_tx_mic_builtin">Built-in mic</string>
     <string name="settings_tx_mic_builtin_help">The phone\'s own microphone.</string>
+    <string name="settings_tx_mic_gain">TX Mic Gain</string>
+    <string name="settings_tx_mic_gain_help">Boosts your voice into the RADE encoder. If other stations report low modulation, raise this while watching the TX level meter; lower it if your voice sounds distorted. (Digital Gain only affects RX.)</string>
     <string name="header_bt_mic">BLUETOOTH MIC (TX)</string>
     <string name="settings_bt_mic_tx">Use Bluetooth mic for TX (experimental)</string>
     <string name="settings_bt_mic_tx_help">Captures TX voice from the Bluetooth headset mic. When an LE Audio (LC3) headset is available, RX/TX uses Android call-audio routing so the headset mic and speaker stay on LC3; otherwise TX may fall back to classic SCO. In this call-audio mode the headset firmware may disable its own noise cancelling, and loudness follows the call volume (the volume keys control it while running). Experimental. Off = phone mic.</string>

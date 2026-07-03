@@ -165,6 +165,8 @@ class AudioService : LifecycleService() {
 
         val bridge = AudioBridge(applicationContext)
         audioBridge = bridge
+        bridge.setInputGain(rxInputGain)
+        bridge.setTxMicGain(txMicGain)
 
         bridge.callback = object : AudioBridge.Callback {
             override fun onSyncStateChanged(state: Int) {
@@ -265,8 +267,20 @@ class AudioService : LifecycleService() {
         startNotificationUpdates()
     }
 
+    // Gains are held here and re-applied on every bridge creation: nativeCreate
+    // deletes and recreates the AudioEngine, so a gain set only on the live
+    // bridge silently resets to the native default after any TX/RX cycle.
+    @Volatile private var rxInputGain: Float = 4.0f
+    @Volatile private var txMicGain: Float = 4.0f
+
     fun setInputGain(gain: Float) {
+        rxInputGain = gain
         audioBridge?.setInputGain(gain)
+    }
+
+    fun setTxMicGain(gain: Float) {
+        txMicGain = gain
+        audioBridge?.setTxMicGain(gain)
     }
 
     fun stopDecoding() {
@@ -771,6 +785,8 @@ class AudioService : LifecycleService() {
 
         val bridge = AudioBridge(applicationContext)
         audioBridge = bridge
+        bridge.setInputGain(rxInputGain)
+        bridge.setTxMicGain(txMicGain)
         bridge.callback = object : AudioBridge.Callback {
             override fun onSyncStateChanged(state: Int) = handleSyncChange(state)
             override fun onCallsignDecoded(callsign: String) = handleCallsignDecoded(callsign)
@@ -845,6 +861,8 @@ class AudioService : LifecycleService() {
 
         val bridge = AudioBridge(applicationContext)
         audioBridge = bridge
+        bridge.setInputGain(rxInputGain)
+        bridge.setTxMicGain(txMicGain)
 
         val notification = buildNotification(getString(R.string.btn_tx), 0, callsign)
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
@@ -1048,6 +1066,7 @@ class AudioService : LifecycleService() {
             stopNotificationUpdates()
             finalizeCurrentSession()
             if (callsign.isNotEmpty()) keepBridge.setTxCallsign(callsign)
+            keepBridge.setTxMicGain(txMicGain)
             keepBridge.pauseRxInput()
             // The RX LC3 output stream stays open here, so the mic-open MUST
             // avoid presets that reconfigure the LC3 group (voiceRecognitionInput).
@@ -1094,6 +1113,8 @@ class AudioService : LifecycleService() {
 
         val bridge = AudioBridge(applicationContext)
         audioBridge = bridge
+        bridge.setInputGain(rxInputGain)
+        bridge.setTxMicGain(txMicGain)
 
         // Start/update foreground service (no gap in foreground status)
         val notification = buildNotification(getString(R.string.btn_tx), 0, callsign)

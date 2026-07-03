@@ -95,6 +95,12 @@ class TransceiverViewModel(application: Application) : AndroidViewModel(applicat
     /** In-flight TX→RX transition (EOO drain → PTT tail → unkey → resume RX). */
     private var txStopJob: Job? = null
 
+    /** True while the app itself has keyed the rig's PTT (doSwitchToTx). The
+     *  unkey path checks THIS instead of rigController.isConnected so a
+     *  transient Wi-Fi/rigctld drop can't skip the unkey and leave the rig
+     *  stuck in TX. */
+    private var pttKeyedByApp = false
+
     private val serviceConnection = object : ServiceConnection {
         override fun onServiceConnected(name: ComponentName?, binder: IBinder?) {
             val service = (binder as AudioService.LocalBinder).service
@@ -103,6 +109,7 @@ class TransceiverViewModel(application: Application) : AndroidViewModel(applicat
             service.icomNetwork = icomNetwork   // enables full-wireless audio when IC-705 Wi-Fi is up
             // Restore persisted audio settings
             service.setInputGain(prefs.getFloat("input_gain", 4.0f))
+            service.setTxMicGain(prefs.getFloat("tx_mic_gain", 4.0f))
             service.setOutputVolume(prefs.getFloat("output_volume", 1.0f))
             service.setTxVolume(prefs.getFloat("tx_volume", 0.2f))
             service.powerSaveMode = _uiState.value.powerSaveMode
@@ -440,6 +447,7 @@ class TransceiverViewModel(application: Application) : AndroidViewModel(applicat
         if (!_uiState.value.isRunning || _uiState.value.isTx) return
         // Auto-PTT via rigctld (both paths)
         if (rigController.isConnected) {
+            pttKeyedByApp = true
             viewModelScope.launch { rigController.setPtt(true) }
         }
         if (useNetworkAudio()) {
@@ -540,9 +548,27 @@ class TransceiverViewModel(application: Application) : AndroidViewModel(applicat
         withContext(Dispatchers.IO) {
             audioService?.stopTransmitting(drainEoo = onAir, forceFullTeardown = fullTeardown)
         }
-        if (rigController.isConnected) {
+        // Unkey whenever WE keyed the rig — not gated on isConnected: over Wi-Fi
+        // the rigctld link can be transiently down right here (auto-reconnect in
+        // flight), and skipping the unkey leaves the radio stuck in TX (reported
+        // on an IC-7300mk2 over WLAN). A single "T 0" can also be lost to a
+        // socket timeout, so retry with backoff until rigctld acknowledges.
+        if (pttKeyedByApp) {
             delay(TX_PTT_TAIL_MS)
-            rigController.setPtt(false)
+            var unkeyed = false
+            for (attempt in 1..5) {
+                try {
+                    if (rigController.setPtt(false)) { unkeyed = true; break }
+                } catch (e: Exception) {
+                    Log.w("TransceiverVM", "PTT unkey attempt $attempt failed", e)
+                }
+                Log.w("TransceiverVM", "PTT unkey not acknowledged (attempt $attempt); retrying")
+                delay(300L * attempt)
+            }
+            pttKeyedByApp = false
+            if (!unkeyed) {
+                Log.e("TransceiverVM", "PTT unkey FAILED after retries — rig may be stuck in TX")
+            }
         }
     }
 
@@ -639,6 +665,16 @@ class TransceiverViewModel(application: Application) : AndroidViewModel(applicat
     }
 
     fun getSavedInputGain(): Float = prefs.getFloat("input_gain", 4.0f)
+
+    /** TX mic gain: boosts the mic into the RADE encoder so the far-end decoded
+     *  speech isn't under-modulated (the RX side compensates the same quiet
+     *  Android mic with input_gain; TX had no equivalent until v1.5.53). */
+    fun setTxMicGain(gain: Float) {
+        prefs.edit().putFloat("tx_mic_gain", gain).apply()
+        audioService?.setTxMicGain(gain)
+    }
+
+    fun getSavedTxMicGain(): Float = prefs.getFloat("tx_mic_gain", 4.0f)
 
     fun setVolume(volume: Float) {
         prefs.edit().putFloat("output_volume", volume).apply()

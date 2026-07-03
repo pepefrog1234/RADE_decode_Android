@@ -35,6 +35,8 @@
     <string name="settings_tx_mic_help">送信時に使うマイクを選びます。USB ハブの外部マイクを選ぶと、Bluetooth マイクより高音質で、送信の反応も速くなります。（下の Bluetooth マイクをオンにすると、そちらが優先されます。）</string>
     <string name="settings_tx_mic_builtin">内蔵マイク</string>
     <string name="settings_tx_mic_builtin_help">スマホ本体のマイク。</string>
+    <string name="settings_tx_mic_gain">送信マイクゲイン</string>
+    <string name="settings_tx_mic_gain_help">RADE エンコーダーへ入る音声を増幅します。相手局から「変調が小さい」と言われる場合は、送信レベルメーターを見ながら上げてください。歪む場合は下げます。（デジタルゲインは受信専用です。）</string>
     <string name="header_bt_mic">Bluetooth マイク（送信）</string>
     <string name="settings_bt_mic_tx">送信に Bluetooth マイクを使う（実験的）</string>
     <string name="settings_bt_mic_tx_help">送信音声を Bluetooth ヘッドセットのマイクから取り込みます。LE Audio（LC3）ヘッドセットが使える場合は、受信/送信を Android の通話音声ルーティングで動かし、ヘッドセットのマイクとスピーカーを LC3 に保ちます。使えない場合は従来の SCO に戻ることがあります。この通話音声モード中は、イヤホン本体のノイズキャンセリングがイヤホン側の仕様で無効になることがあり、音量は通話音量に従います（動作中は音量キーで調整できます）。実験的機能です。オフ＝スマホのマイク。</string>

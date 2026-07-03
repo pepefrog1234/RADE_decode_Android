@@ -90,6 +90,10 @@ class AudioBridge(private val context: Context) {
     /** Set digital input gain (1.0 = unity, higher = boost weak signals). */
     fun setInputGain(gain: Float) = nativeSetInputGain(gain)
 
+    /** TX mic gain: boosts the mic samples before RADE feature extraction so the
+     *  far-end decoded speech isn't under-modulated (Android mics run quiet). */
+    fun setTxMicGain(gain: Float) = nativeSetTxMicGain(gain)
+
     /** Get current input gain. */
     val inputGain: Float get() = nativeGetInputGain()
 
@@ -351,6 +355,7 @@ class AudioBridge(private val context: Context) {
     private external fun nativeDestroy()
     private external fun nativeSetInputGain(gain: Float)
     private external fun nativeGetInputGain(): Float
+    private external fun nativeSetTxMicGain(gain: Float)
     private external fun nativeStartRecording(path: String): Boolean
     private external fun nativeStopRecording()
     private external fun nativeSetCallback(callback: Any)

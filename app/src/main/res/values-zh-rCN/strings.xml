@@ -35,6 +35,8 @@
     <string name="settings_tx_mic_help">选择发射时使用的麦克风。选用 USB 集线器上的外接麦克风，音质更好、按下发射也更灵敏（优于蓝牙麦克风）。（开启下方的蓝牙麦克风时，会以蓝牙优先。）</string>
     <string name="settings_tx_mic_builtin">内置麦克风</string>
     <string name="settings_tx_mic_builtin_help">手机自带的麦克风。</string>
+    <string name="settings_tx_mic_gain">发射麦克风增益</string>
+    <string name="settings_tx_mic_gain_help">放大进入 RADE 编码器的语音。若对方报告调制过小，请观察发射电平表并调高；若失真则调低。（数字增益仅作用于接收。）</string>
     <string name="header_bt_mic">蓝牙麦克风（发射）</string>
     <string name="settings_bt_mic_tx">发射使用蓝牙麦克风（实验性）</string>
     <string name="settings_bt_mic_tx_help">发射时从蓝牙耳机麦克风采集语音。若可使用 LE Audio（LC3）耳机，接收/发射会改用 Android 通话音频路由，让耳机麦克风与扬声器维持在 LC3；不可用时可能退回传统 SCO。此通话音频模式下，耳机自身的降噪可能被耳机固件停用，音量遵循通话音量（运行中可用音量键调节）。实验性功能。关闭＝手机麦克风。</string>

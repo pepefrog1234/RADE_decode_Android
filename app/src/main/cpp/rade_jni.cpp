@@ -450,6 +450,11 @@ JNI_AUDIO(nativeGetInputGain)(JNIEnv *env, jobject /* this */) {
     return g_audioEngine->getInputGain();
 }
 
+JNIEXPORT void JNICALL
+JNI_AUDIO(nativeSetTxMicGain)(JNIEnv *env, jobject /* this */, jfloat gain) {
+    if (g_audioEngine) g_audioEngine->setTxMicGain(gain);
+}
+
 JNIEXPORT jint JNICALL
 JNI_AUDIO(nativeGetSyncState)(JNIEnv *env, jobject /* this */) {
     if (!g_audioEngine) return 0;

@@ -269,6 +269,10 @@ void AudioEngine::setOutputVolume(float volume) {
     outputVolume_.store(std::clamp(volume, 0.0f, 1.0f));
 }
 
+void AudioEngine::setTxMicGain(float gain) {
+    txMicGain_.store(std::clamp(gain, 0.1f, 50.0f));
+}
+
 void AudioEngine::setInputGain(float gain) {
     inputGain_.store(std::clamp(gain, 0.1f, 50.0f));
 }
@@ -1245,17 +1249,24 @@ void AudioEngine::processTxInputFrames(const float *data, int32_t numFrames, int
         // Local LC3 monitoring: hold the mic for the TX level meter only — no
         // decimation, no encode, no output (there is no radio, and the RX LC3
         // output stream is alive separately).
+        const float meterGain = txMicGain_.load();
         float rms = 0.0f;
-        for (int i = 0; i < numFrames; i++) { float r = data[i * channelCount]; rms += r * r; }
+        for (int i = 0; i < numFrames; i++) { float r = data[i * channelCount] * meterGain; rms += r * r; }
         if (numFrames > 0)
             txInputLevelDb_.store(10.0f * log10f(rms / (float)numFrames + 1e-10f));
         return;
     }
 
+    // TX mic gain: Android mic capture runs well below full scale (the RX side
+    // compensates the very same mic with inputGain_), so without this the
+    // decoded speech at the far end is under-modulated. Applied before the
+    // decimation/feature chain; clamped so a hot setting clips instead of
+    // wrapping. The TX level meter reads post-gain, i.e. what the encoder sees.
+    const float micGain = txMicGain_.load();
     float rmsSum = 0.0f;
 
     for (int i = 0; i < numFrames; i++) {
-        float raw = data[i * channelCount];
+        float raw = std::clamp(data[i * channelCount] * micGain, -0.999f, 0.999f);
         rmsSum += raw * raw;
 
         // Decimation to 16kHz (if input rate != 16kHz)

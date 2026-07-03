@@ -133,6 +133,12 @@ public:
     void setOutputVolume(float volume);
     void setInputGain(float gain);
     float getInputGain() const { return inputGain_.load(); }
+    /* TX mic gain: applied to the raw mic samples before feature extraction.
+     * Android mic capture is quiet (the RX side compensates the same hardware
+     * with inputGain_ 4x); without this the FARGAN speech decoded at the far
+     * end is reported as under-modulated. */
+    void setTxMicGain(float gain);
+    float getTxMicGain() const { return txMicGain_.load(); }
 
     int getSyncState() const { return syncState_.load(); }
     int getSnrEstimate() const { return snrEstimate_.load(); }
@@ -197,6 +203,7 @@ private:
     std::atomic<float> outputLevelDb_{-100.0f};
     std::atomic<float> outputVolume_{1.0f};
     std::atomic<float> inputGain_{4.0f};   // compensate Android mic low gain vs iOS
+    std::atomic<float> txMicGain_{4.0f};   // same mic, same compensation on the TX side
 
     std::atomic<int> syncState_{0};
     std::atomic<int> snrEstimate_{0};

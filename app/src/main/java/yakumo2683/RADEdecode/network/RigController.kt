@@ -369,7 +369,10 @@ class RigController {
 
     /* ── PTT ────────────────────────────────────────────────── */
 
-    suspend fun setPtt(on: Boolean) = withContext(Dispatchers.IO) {
+    /** @return true when rigctld acknowledged the command; false when the
+     *  command could not be delivered (socket down/timeout) — the caller must
+     *  NOT assume the rig state changed in that case. */
+    suspend fun setPtt(on: Boolean): Boolean = withContext(Dispatchers.IO) {
         Log.i(TAG, "setPtt($on) sending...")
         // Priority over the poller: keying/unkeying must not wait behind a slow
         // background status read (the Xiegu G90 multi-second PTT delay).
@@ -378,6 +381,7 @@ class RigController {
         if (resp != null) {
             _state.value = _state.value.copy(ptt = on)
         }
+        resp != null
     }
 
     suspend fun getPtt(): Boolean = withContext(Dispatchers.IO) {
