@@ -1,5 +1,7 @@
 package yakumo2683.RADEdecode
 
+import android.app.Activity
+import android.media.AudioManager
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
@@ -28,6 +30,8 @@ import androidx.navigation.compose.composable
 import androidx.navigation.compose.currentBackStackEntryAsState
 import androidx.navigation.compose.rememberNavController
 import androidx.lifecycle.viewmodel.compose.viewModel
+import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.map
 import yakumo2683.RADEdecode.ui.*
 import yakumo2683.RADEdecode.ui.theme.RADEDecodeTheme
 
@@ -61,6 +65,21 @@ fun RADEDecodeApp(viewModel: TransceiverViewModel = viewModel()) {
     val navBackStackEntry by navController.currentBackStackEntryAsState()
     val currentRoute = navBackStackEntry?.destination?.route
     val context = LocalContext.current
+
+    // During an LE Audio (LC3) communication session, RX plays as
+    // VOICE_COMMUNICATION and its loudness follows the call-volume stream. Point
+    // the hardware volume keys at that stream while the session is active —
+    // otherwise they adjust media volume and appear to do nothing. (Collected as
+    // its own distinct flow so spectrum updates don't recompose this scope.)
+    val leCommActive by remember {
+        viewModel.uiState
+            .map { it.leCommActive }
+            .distinctUntilChanged()
+    }.collectAsState(initial = false)
+    LaunchedEffect(leCommActive) {
+        (context as? Activity)?.volumeControlStream =
+            if (leCommActive) AudioManager.STREAM_VOICE_CALL else AudioManager.STREAM_MUSIC
+    }
 
     // First-launch battery optimization dialog
     var showBatteryDialog by remember { mutableStateOf(shouldShowBatteryDialog(context)) }

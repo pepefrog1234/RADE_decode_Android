@@ -52,6 +52,7 @@ class TransceiverViewModel(application: Application) : AndroidViewModel(applicat
 
     data class UiState(
         val isRunning: Boolean = false,    // RX is active
+        val leCommActive: Boolean = false, // LE Audio (LC3) communication session active
         val isTx: Boolean = false,         // TX is active
         val syncState: Int = 0,
         val snrDb: Int = 0,
@@ -1004,6 +1005,7 @@ class TransceiverViewModel(application: Application) : AndroidViewModel(applicat
             audioService?.state?.collect { svcState ->
                 _uiState.value = _uiState.value.copy(
                     isRunning = svcState.isRunning,
+                    leCommActive = svcState.leCommActive,
                     isTx = svcState.isTx,
                     syncState = svcState.syncState,
                     snrDb = svcState.snrDb,

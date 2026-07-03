@@ -115,7 +115,11 @@ class AudioService : LifecycleService() {
         val txLevelDb: Float = -100f,
         val lastCallsign: String = "",
         val spectrum: FloatArray = FloatArray(AudioBridge.SPECTRUM_BINS) { -100f },
-        val unprocessedRejected: Boolean = false
+        val unprocessedRejected: Boolean = false,
+        /** LE Audio (LC3) communication session active: RX plays as
+         *  VOICE_COMMUNICATION, so loudness is governed by the call-volume
+         *  stream — the UI points the hardware volume keys at it. */
+        val leCommActive: Boolean = false
     )
 
     private val _state = MutableStateFlow(ServiceState())
@@ -253,7 +257,10 @@ class AudioService : LifecycleService() {
         // Session will be created on first sync (in polling loop)
         currentInputDeviceId = effectiveInputDeviceId
 
-        _state.value = _state.value.copy(isRunning = true)
+        _state.value = _state.value.copy(
+            isRunning = true,
+            leCommActive = leAudioCommunicationSessionActive
+        )
         startPolling()
         startNotificationUpdates()
     }

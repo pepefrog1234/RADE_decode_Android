@@ -37,7 +37,7 @@
     <string name="settings_tx_mic_builtin_help">手機自帶的麥克風。</string>
     <string name="header_bt_mic">藍牙麥克風（發射）</string>
     <string name="settings_bt_mic_tx">發射使用藍牙麥克風（實驗性）</string>
-    <string name="settings_bt_mic_tx_help">發射時從藍牙耳機麥克風擷取語音。若可使用 LE Audio（LC3）耳機，接收/發射會改用 Android 通話音訊路由，讓耳機麥克風與喇叭維持在 LC3；不可用時可能退回傳統 SCO。實驗性功能。關閉＝手機麥克風。</string>
+    <string name="settings_bt_mic_tx_help">發射時從藍牙耳機麥克風擷取語音。若可使用 LE Audio（LC3）耳機，接收/發射會改用 Android 通話音訊路由，讓耳機麥克風與喇叭維持在 LC3；不可用時可能退回傳統 SCO。此通話音訊模式下，耳機自身的降噪可能被耳機韌體停用，音量遵循通話音量（運作中可用音量鍵調整）。實驗性功能。關閉＝手機麥克風。</string>
     <string name="btn_stop">停止</string>
     <string name="btn_start">啟動</string>
 
