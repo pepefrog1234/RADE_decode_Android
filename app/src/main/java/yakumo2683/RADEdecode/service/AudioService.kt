@@ -564,6 +564,14 @@ class AudioService : LifecycleService() {
             return null
         }
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.S) return null
+        // Fast-fail when no LE Audio hardware is connected at all. Probing the
+        // communication-device list costs a mode switch plus a 500 ms poll for a
+        // device that can never appear — pure added PTT latency on classic-SCO
+        // phones (a large slice of the reported ~3 s Bluetooth-mic TX delay).
+        if (!hasBleAudioDevice()) {
+            Log.i("AudioService", "LE Audio route skipped: no LE Audio device connected")
+            return null
+        }
         val am = audioManager()
         val wasActive = bluetoothCommunicationRouteActive
         if (!wasActive) previousAudioMode = am.mode
@@ -675,14 +683,18 @@ class AudioService : LifecycleService() {
         getAudioDevices(flags).firstOrNull { it.type == AudioDeviceInfo.TYPE_BLUETOOTH_SCO }?.id
 
     /**
-     * Resolve the Bluetooth SCO *input* (mic) device id, polling briefly because it
-     * only enumerates once the SCO link is up after [activateBluetoothScoRoute].
+     * Resolve the Bluetooth SCO *input* (mic) device id, polling because it only
+     * enumerates once the eSCO link is up after [activateBluetoothScoRoute] —
+     * which can take the BT stack well over a second when the headset flips over
+     * from A2DP. Poll fine-grained up to ~2 s: with the route now activated before
+     * the RX teardown this usually hits within the first attempts, while the old
+     * 800 ms cap regularly expired and silently transmitted from the phone mic.
      * Returns -1 if it never appears (caller falls back to the built-in mic).
      */
     private fun resolveBluetoothScoInputId(): Int {
-        repeat(8) { attempt ->
+        repeat(40) { attempt ->
             findBluetoothScoDeviceId(AudioManager.GET_DEVICES_INPUTS)?.let { return it }
-            if (attempt < 7) try { Thread.sleep(100) } catch (_: InterruptedException) {}
+            if (attempt < 39) try { Thread.sleep(50) } catch (_: InterruptedException) {}
         }
         return -1
     }
@@ -711,6 +723,13 @@ class AudioService : LifecycleService() {
                 it.type == AudioDeviceInfo.TYPE_BLE_SPEAKER ||
                 it.type == AudioDeviceInfo.TYPE_BLE_BROADCAST
         }
+
+    /** True when any Bluetooth LE Audio (LC3) device — input or output — is connected. */
+    private fun hasBleAudioDevice(): Boolean =
+        hasBleAudioOutput() ||
+            getAudioDevices(AudioManager.GET_DEVICES_INPUTS).any {
+                it.type == AudioDeviceInfo.TYPE_BLE_HEADSET
+            }
 
     private fun findBuiltInSpeakerOutputId(): Int? =
         getAudioDevices(AudioManager.GET_DEVICES_OUTPUTS)
@@ -1090,6 +1109,54 @@ class AudioService : LifecycleService() {
         }
         txKeepRxAliveActive = false
 
+        // Experimental: capture TX voice from the Bluetooth headset mic. Prefer LE
+        // Audio (LC3) through the communication route; fall back to classic SCO
+        // only when this is not an LE Audio communication-mode session.
+        //
+        // The route is brought up BEFORE the RX teardown below: establishing the
+        // SCO link costs the BT stack ~1-2 s (A2DP suspend + eSCO negotiation), so
+        // let it negotiate while RX tears down and the TX bridge is built instead
+        // of paying the two serially (the reported ~3 s Bluetooth-mic PTT delay).
+        // The concrete SCO *input* id is resolved late, just before startTx, giving
+        // the link the whole teardown/setup as head start. Stream-error callbacks
+        // fired by the route change are safe: their restart threads sleep 200 ms
+        // and re-check running_, which stop() below clears first thing.
+        var effectiveInputDeviceId = inputDeviceId
+        var bluetoothMicEngaged = false
+        var bleCommMicCapture = false
+        var scoLinkRequested = false
+        if (useBluetoothMic) {
+            val bleRoute = activateBleAudioCommunicationRoute()
+            if (bleRoute != null) {
+                effectiveInputDeviceId = bleRoute.inputDeviceId
+                bluetoothMicEngaged = true
+                bleCommMicCapture = true
+                Log.i(
+                    "AudioService",
+                    "TX Bluetooth mic: using LE Audio (LC3) input id=${bleRoute.inputDeviceId} " +
+                        "commDev=${bleRoute.communicationDeviceId} name=${bleRoute.deviceName}"
+                )
+            } else if (preferLeAudioCommunication) {
+                Log.w(
+                    "AudioService",
+                    "TX Bluetooth mic: LE Audio communication route unavailable; " +
+                        "falling back to requested mic id=$inputDeviceId"
+                )
+            } else {
+                // No LE Audio headset present — bring up classic Bluetooth SCO
+                // (call-audio route, telephony-grade quality). Reuses an RX-side
+                // SCO route when one is already active instead of renegotiating.
+                scoLinkRequested = activateBluetoothScoRoute()
+                if (!scoLinkRequested) {
+                    Log.w(
+                        "AudioService",
+                        "TX Bluetooth mic requested but the SCO route failed to activate; " +
+                            "falling back to mic id=$inputDeviceId"
+                    )
+                }
+            }
+        }
+
         // Stop RX immediately: mute output, stop bridge, finalize session
         // — but do NOT call stopForeground to keep foreground status during transition
         if (_state.value.isRunning) {
@@ -1102,7 +1169,9 @@ class AudioService : LifecycleService() {
             audioBridge?.stop()
             audioBridge?.release()
             audioBridge = null
-            if (leAudioCommunicationSessionActive && preferLeAudioCommunication) {
+            if (bluetoothMicEngaged || scoLinkRequested) {
+                // Keep the communication route just brought up for the TX mic.
+            } else if (leAudioCommunicationSessionActive && preferLeAudioCommunication) {
                 Log.i("AudioService", "Preserving LE Audio communication route for TX")
             } else {
                 clearBluetoothCommunicationRouteIfNeeded()
@@ -1132,45 +1201,21 @@ class AudioService : LifecycleService() {
             bridge.setTxCallsign(callsign)
         }
 
-        // Experimental: capture TX voice from the Bluetooth headset mic. Prefer LE
-        // Audio (LC3) through the communication route; fall back to classic SCO
-        // only when this is not an LE Audio communication-mode session.
-        var effectiveInputDeviceId = inputDeviceId
-        var bluetoothMicEngaged = false
-        var bleCommMicCapture = false
-        if (useBluetoothMic) {
-            val bleRoute = activateBleAudioCommunicationRoute()
-            if (bleRoute != null) {
-                effectiveInputDeviceId = bleRoute.inputDeviceId
+        // Resolve the Bluetooth SCO mic input now — the link has been negotiating
+        // since before the RX teardown, so this usually returns without polling.
+        if (scoLinkRequested && !bluetoothMicEngaged) {
+            val scoInput = resolveBluetoothScoInputId()
+            if (scoInput > 0) {
+                effectiveInputDeviceId = scoInput
                 bluetoothMicEngaged = true
-                bleCommMicCapture = true
-                Log.i(
-                    "AudioService",
-                    "TX Bluetooth mic: using LE Audio (LC3) input id=${bleRoute.inputDeviceId} " +
-                        "commDev=${bleRoute.communicationDeviceId} name=${bleRoute.deviceName}"
-                )
-            } else if (preferLeAudioCommunication) {
+                Log.i("AudioService", "TX Bluetooth mic: no LE Audio; using classic SCO input id=$scoInput")
+            } else {
                 Log.w(
                     "AudioService",
-                    "TX Bluetooth mic: LE Audio communication route unavailable; " +
-                        "falling back to requested mic id=$inputDeviceId"
+                    "TX Bluetooth mic requested but no SCO input appeared; " +
+                        "falling back to mic id=$inputDeviceId"
                 )
-            } else {
-                // No LE Audio headset present — fall back to classic Bluetooth SCO
-                // (call-audio route, telephony-grade quality).
-                val scoActive = activateBluetoothScoRoute()
-                val scoInput = if (scoActive) resolveBluetoothScoInputId() else -1
-                if (scoInput > 0) {
-                    effectiveInputDeviceId = scoInput
-                    bluetoothMicEngaged = true
-                    Log.i("AudioService", "TX Bluetooth mic: no LE Audio; using classic SCO input id=$scoInput")
-                } else {
-                    Log.w(
-                        "AudioService",
-                        "TX Bluetooth mic requested but unavailable (no LE Audio, scoActive=$scoActive); " +
-                            "falling back to mic id=$inputDeviceId"
-                    )
-                }
+                clearBluetoothCommunicationRouteIfNeeded()
             }
         }
 
