@@ -399,10 +399,13 @@ class AudioService : LifecycleService() {
      */
     @Volatile private var txVolume: Float = 0.2f
 
+    /** True while the TX AudioTrack is held silent pending route verification. */
+    @Volatile private var txTrackMuted = false
+
     fun setTxVolume(volume: Float) {
         val v = volume.coerceIn(0f, 1f)
         txVolume = v
-        txAudioTrack?.setVolume(v)
+        if (!txTrackMuted) txAudioTrack?.setVolume(v)
     }
 
     fun getInputDevices(): List<AudioBridge.AudioDevice> {
@@ -1411,7 +1414,17 @@ class AudioService : LifecycleService() {
         // USB MOD gain (e.g. IC-7300 at default ~50%) to push ALC into the
         // target region; hotter rigs (IC-9700) may need lower, quieter cables
         // may need higher. See SettingsScreen "TX Output" slider.
-        track.setVolume(txVolume)
+        //
+        // Start MUTED when a concrete device was requested: setPreferredDevice()
+        // is applied asynchronously, and in a comm-mode session (LE Audio / LC3)
+        // the policy routes a USAGE_MEDIA track to the communication device
+        // until the preference is honoured — the first ~100 ms of modem waveform
+        // then plays into the operator's earphone (the "ザッ" burst reported at
+        // every PTT-on on Galaxy). The pump below feeds silence until the track
+        // is verifiably routed to the requested device, then unmutes.
+        val awaitRoutedDevice = usbDev != null
+        txTrackMuted = awaitRoutedDevice
+        track.setVolume(if (awaitRoutedDevice) 0f else txVolume)
         track.play()
         txAudioTrack = track
 
@@ -1435,6 +1448,33 @@ class AudioService : LifecycleService() {
             val buf = ShortArray(800)  // 100ms at 8kHz
             var framesWritten = 0L
             try {
+                if (awaitRoutedDevice) {
+                    // Feed silence until the track is actually routed to the
+                    // requested device (or 500 ms worst case), then unmute. The
+                    // modem prefill stays queued in the native ring meanwhile,
+                    // so the rig loses nothing.
+                    val zeros = ShortArray(160)  // 20 ms @ 8 kHz per tick
+                    var waitedMs = 0
+                    var routedOk = false
+                    while (isActive && waitedMs < 500) {
+                        val routed = try { track.routedDevice } catch (_: Exception) { null }
+                        if (routed != null && routed.id == outputDeviceId) {
+                            routedOk = true
+                            break
+                        }
+                        track.write(zeros, 0, zeros.size)
+                        framesWritten += zeros.size
+                        delay(20)
+                        waitedMs += 20
+                    }
+                    txTrackMuted = false
+                    track.setVolume(txVolume)
+                    Log.i(
+                        "AudioService",
+                        "TX unmuted: route ${if (routedOk) "matched" else "TIMEOUT (playing anyway)"} " +
+                            "after ${waitedMs}ms (requested id=$outputDeviceId)"
+                    )
+                }
                 while (isActive && bridge.isTxRunning) {
                     val got = bridge.nativeReadTxRing(buf, buf.size)
                     if (got > 0) {
@@ -1484,6 +1524,7 @@ class AudioService : LifecycleService() {
     private fun stopTxAudioTrackPump() {
         txPumpJob?.cancel()
         txPumpJob = null
+        txTrackMuted = false
         try { txAudioTrack?.stop() } catch (_: Exception) {}
         try { txAudioTrack?.release() } catch (_: Exception) {}
         txAudioTrack = null

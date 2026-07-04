@@ -17,6 +17,14 @@
 #define LOGI(...) __android_log_print(ANDROID_LOG_INFO, LOG_TAG, __VA_ARGS__)
 #define LOGE(...) __android_log_print(ANDROID_LOG_ERROR, LOG_TAG, __VA_ARGS__)
 
+// Raised-cosine onset ramp for the TX modem waveform (20 ms @ 8 kHz). The RADE
+// waveform is a continuous full-scale carrier, so without a ramp the over
+// begins with a hard 0→full-scale step — an audible "pop"/click transmitted at
+// every PTT-on (and a trigger for some phones' DC-settle output pop). 20 ms is
+// far below what could disturb far-end sync (~1 s of encoded silence precedes
+// real speech via the prefill anyway).
+constexpr int TX_FADE_IN_SAMPLES = 160;
+
 /* ── RX Oboe callbacks ──────────────────────────────────────── */
 
 oboe::DataCallbackResult InputCallback::onAudioReady(
@@ -969,6 +977,7 @@ bool AudioEngine::startTx(int inputDeviceId, int outputDeviceId, bool keepRxAliv
     {
         std::vector<int16_t> silence(TX_SPEECH_FRAME, 0);
         float features[NB_TOTAL_FEATURES];
+        int fadeIn = 0;
         for (int prefill = 0; prefill < 3; prefill++) {
             for (int f = 0; f < txFeaturesPerTx_; f++) {
                 lpcnet_compute_single_frame_features(lpcnetEnc_, silence.data(), features, 0);
@@ -980,6 +989,10 @@ bool AudioEngine::startTx(int inputDeviceId, int outputDeviceId, bool keepRxAliv
             int produced = rade_tx(rade_, txOut.data(), txFeatureAccum_.data());
             for (int i = 0; i < produced; i++) {
                 float sample = std::clamp(txOut[i].real, -0.999f, 0.999f);
+                if (fadeIn < TX_FADE_IN_SAMPLES) {
+                    sample *= 0.5f * (1.0f - cosf((float)M_PI * (float)fadeIn / (float)TX_FADE_IN_SAMPLES));
+                    fadeIn++;
+                }
                 int16_t s16 = (int16_t)(sample * 32767.0f);
                 txPlaybackRing_.write(&s16, 1);
             }
@@ -1536,6 +1549,7 @@ bool AudioEngine::startNetTx(int inputDeviceId, int netRate) {
         float features[NB_TOTAL_FEATURES];
         const int prefillTarget = MODEM_SAMPLE_RATE / 5;  // ~200 ms @ 8 kHz
         int prefillGuard = 0;
+        int fadeIn = 0;
         while (txPlaybackRing_.availableToRead() < prefillTarget && prefillGuard++ < 64) {
             for (int f = 0; f < txFeaturesPerTx_; f++) {
                 lpcnet_compute_single_frame_features(lpcnetEnc_, silence.data(), features, 0);
@@ -1547,6 +1561,10 @@ bool AudioEngine::startNetTx(int inputDeviceId, int netRate) {
             int produced = rade_tx(rade_, txOut.data(), txFeatureAccum_.data());
             for (int i = 0; i < produced; i++) {
                 float sample = std::clamp(txOut[i].real, -0.999f, 0.999f);
+                if (fadeIn < TX_FADE_IN_SAMPLES) {
+                    sample *= 0.5f * (1.0f - cosf((float)M_PI * (float)fadeIn / (float)TX_FADE_IN_SAMPLES));
+                    fadeIn++;
+                }
                 int16_t s16 = (int16_t)(sample * 32767.0f);
                 txPlaybackRing_.write(&s16, 1);
             }
