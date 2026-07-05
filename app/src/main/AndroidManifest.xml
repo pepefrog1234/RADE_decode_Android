@@ -16,6 +16,10 @@
     <!-- Network for FreeDV Reporter -->
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+    <!-- Wi-Fi performance lock while streaming I/Q to a Hermes-Lite 2: phone
+         Wi-Fi power save throttles sustained UDP upstream, starving the
+         radio's TX FIFO (keys but no RF). -->
+    <uses-permission android:name="android.permission.WAKE_LOCK" />
 
     <!-- Location for grid square / reception mapping -->
     <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />

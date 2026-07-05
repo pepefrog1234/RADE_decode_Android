@@ -1,5 +1,8 @@
 package yakumo2683.RADEdecode.network
 
+import android.content.Context
+import android.net.wifi.WifiManager
+import android.os.Build
 import android.util.Log
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -37,12 +40,17 @@ import kotlin.math.sqrt
  *   TX: native fillNetTxFrame @8k (RADE waveform) → analytic bandpass
  *       (Hilbert) → complex interpolate ×6 → 16-bit I/Q @48k → EP2 frames.
  *
- * Pacing: protocol 1 is radio-clocked — one host EP2 packet is sent per
- * received EP6 packet (126 samples each way at 48 kHz). A fallback pacer
- * covers the pre-stream window and any RX stall so C&C (and TX I/Q, if
- * keyed) keep flowing.
+ * Pacing: while idle, one host EP2 packet is sent per received EP6 packet
+ * (radio-clocked, 126 samples each way at 48 kHz); while keyed, EP2 is
+ * self-clocked at 48 kHz so TX never depends on the RX stream.
+ *
+ * [appContext] enables a Wi-Fi performance lock for the duration of the
+ * connection: phone Wi-Fi power save throttles the sustained ~3 Mbit/s UDP
+ * *upstream* the TX I/Q needs, which starves the radio's TX FIFO — the rig
+ * keys (MOX arrives) but transmits no RF, while the downstream RX direction
+ * keeps working ("one-way" symptom).
  */
-class HermesNetworkManager : NetworkAudioRig {
+class HermesNetworkManager(private val appContext: Context? = null) : NetworkAudioRig {
 
     companion object {
         private const val TAG = "HermesNet"
@@ -110,6 +118,42 @@ class HermesNetworkManager : NetworkAudioRig {
     /* TX health counters (reset each 1 s stats interval by the pacer) */
     @Volatile private var ep2SentInterval = 0
     @Volatile private var txIqUnderrunInterval = 0
+    @Volatile private var ep6RecvInterval = 0
+    @Volatile private var ep6GapInterval = 0
+    private var ep6LastSeq = -1L
+
+    /* Radio-reported status parsed from EP6 C&C (raw ADC units) */
+    @Volatile private var radioFwdPower = 0
+    @Volatile private var radioRevPower = 0
+    @Volatile private var radioPaCurrent = 0
+    @Volatile private var radioTemp = 0
+    @Volatile private var radioAdcOverflow = false
+
+    private var wifiLock: WifiManager.WifiLock? = null
+
+    private fun acquireWifiLock() {
+        val ctx = appContext ?: return
+        try {
+            val wm = ctx.applicationContext.getSystemService(Context.WIFI_SERVICE) as WifiManager
+            val lock = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                wm.createWifiLock(WifiManager.WIFI_MODE_FULL_LOW_LATENCY, "RADE:HL2")
+            } else {
+                @Suppress("DEPRECATION")
+                wm.createWifiLock(WifiManager.WIFI_MODE_FULL_HIGH_PERF, "RADE:HL2")
+            }
+            lock.setReferenceCounted(false)
+            lock.acquire()
+            wifiLock = lock
+            Log.i(TAG, "Wi-Fi performance lock acquired")
+        } catch (e: Exception) {
+            Log.w(TAG, "Wi-Fi lock unavailable", e)
+        }
+    }
+
+    private fun releaseWifiLock() {
+        try { wifiLock?.release() } catch (_: Exception) {}
+        wifiLock = null
+    }
 
     /* ── Radio control state (C&C) ──────────────────────────── */
 
@@ -132,8 +176,12 @@ class HermesNetworkManager : NetworkAudioRig {
             val sock = DatagramSocket().apply {
                 broadcast = true
                 soTimeout = 700
+                // DSCP EF: ask the Wi-Fi driver/AP to treat the I/Q stream as
+                // voice-class traffic (WMM AC_VO) — best-effort.
+                try { trafficClass = 0xB8 } catch (_: Exception) {}
             }
             socket = sock
+            acquireWifiLock()
 
             val target = if (host.isBlank()) InetAddress.getByName("255.255.255.255")
                          else InetAddress.getByName(host.trim())
@@ -194,6 +242,7 @@ class HermesNetworkManager : NetworkAudioRig {
     }
 
     private fun fail(msg: String): Boolean {
+        releaseWifiLock()
         try { socket?.close() } catch (_: Exception) {}
         socket = null
         radioAddr = null
@@ -203,14 +252,28 @@ class HermesNetworkManager : NetworkAudioRig {
 
     fun disconnect() {
         mox = false
-        try { sendStartStop(start = false); sendStartStop(start = false) } catch (_: Exception) {}
+        // The stop command must not run on the caller's thread — the
+        // Disconnect button invokes this on MAIN, where a UDP send throws
+        // NetworkOnMainThreadException and the radio then keeps streaming
+        // until its own watchdog fires (seen in a tester's log).
+        if (socket != null && radioAddr != null) {
+            val t = kotlin.concurrent.thread(name = "hl2-stop") {
+                try {
+                    sendStartStop(start = false)
+                    sendStartStop(start = false)
+                } catch (_: Exception) {}
+            }
+            try { t.join(300) } catch (_: InterruptedException) {}
+        }
         connScope?.cancel()
         connScope = null
+        releaseWifiLock()
         try { socket?.close() } catch (_: Exception) {}
         socket = null
         radioAddr = null
         onAudioPcm = null
         synchronized(txIqLock) { txIqCount = 0; txIqRead = 0; txIqWrite = 0 }
+        ep6LastSeq = -1L
         _state.value = State(freqHz = freqHz)
         Log.i(TAG, "Disconnected")
     }
@@ -292,6 +355,15 @@ class HermesNetworkManager : NetworkAudioRig {
                     _state.value = _state.value.copy(streaming = true)
                     Log.i(TAG, "EP6 I/Q stream up")
                 }
+                ep6RecvInterval++
+                val seq = ((buf[4].toLong() and 0xFF) shl 24) or
+                    ((buf[5].toLong() and 0xFF) shl 16) or
+                    ((buf[6].toLong() and 0xFF) shl 8) or
+                    (buf[7].toLong() and 0xFF)
+                if (ep6LastSeq >= 0 && seq > ep6LastSeq + 1) {
+                    ep6GapInterval += (seq - ep6LastSeq - 1).toInt()
+                }
+                ep6LastSeq = seq
                 parseUsbFrame(buf, 8)
                 parseUsbFrame(buf, 520)
                 // Radio-clocked 1:1 pacing while idle: one EP2 per EP6. During
@@ -309,6 +381,7 @@ class HermesNetworkManager : NetworkAudioRig {
         if (buf[off] != 0x7F.toByte() || buf[off + 1] != 0x7F.toByte() ||
             buf[off + 2] != 0x7F.toByte()
         ) return
+        parseRadioCc(buf, off + 3)
         var p = off + 8
         for (s in 0 until SAMPLES_PER_FRAME) {
             val i24 = ((buf[p].toInt() and 0xFF) shl 16) or
@@ -321,6 +394,30 @@ class HermesNetworkManager : NetworkAudioRig {
             val fq = (if (q24 >= 0x800000) q24 - 0x1000000 else q24) / 8388608.0f
             demodPush(fi, fq)
             p += 8
+        }
+    }
+
+    /**
+     * From-radio C&C (addr = C0[7:3]). Kept as raw ADC units — enough to tell
+     * "the radio reports forward power" from "the radio emits nothing", which
+     * is the decisive TX diagnostic.
+     */
+    private fun parseRadioCc(buf: ByteArray, off: Int) {
+        val c0 = buf[off].toInt() and 0xFF
+        val c1 = buf[off + 1].toInt() and 0xFF
+        val c2 = buf[off + 2].toInt() and 0xFF
+        val c3 = buf[off + 3].toInt() and 0xFF
+        val c4 = buf[off + 4].toInt() and 0xFF
+        when (c0 shr 3) {
+            0 -> radioAdcOverflow = (c1 and 0x01) != 0
+            1 -> {
+                radioTemp = (c1 shl 8) or c2
+                radioFwdPower = (c3 shl 8) or c4
+            }
+            2 -> {
+                radioRevPower = (c1 shl 8) or c2
+                radioPaCurrent = (c3 shl 8) or c4
+            }
         }
     }
 
@@ -448,6 +545,8 @@ class HermesNetworkManager : NetworkAudioRig {
                     statNs = next
                     ep2SentInterval = 0
                     txIqUnderrunInterval = 0
+                    ep6RecvInterval = 0
+                    ep6GapInterval = 0
                 }
                 val now = System.nanoTime()
                 if (next < now - 40_000_000L) {
@@ -464,10 +563,15 @@ class HermesNetworkManager : NetworkAudioRig {
                     Log.i(
                         TAG,
                         "TX health: ep2=${ep2SentInterval}/s iqRing=$ringLevel " +
-                            "underrun=${txIqUnderrunInterval} drive=$txDrive freq=$freqHz"
+                            "underrun=${txIqUnderrunInterval} drive=$txDrive freq=$freqHz " +
+                            "| radio: ep6=${ep6RecvInterval}/s gaps=${ep6GapInterval} " +
+                            "fwd=$radioFwdPower rev=$radioRevPower paI=$radioPaCurrent " +
+                            "temp=$radioTemp ovf=${if (radioAdcOverflow) 1 else 0}"
                     )
                     ep2SentInterval = 0
                     txIqUnderrunInterval = 0
+                    ep6RecvInterval = 0
+                    ep6GapInterval = 0
                 }
                 delay(2)
             } else {

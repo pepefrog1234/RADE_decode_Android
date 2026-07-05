@@ -52,7 +52,7 @@ class TransceiverViewModel(application: Application) : AndroidViewModel(applicat
     val icomNetworkState: StateFlow<IcomNetworkManager.State> = icomNetwork.state
 
     /* ── Hermes-Lite 2 direct network control (openHPSDR protocol 1) ─── */
-    private val hermesNetwork = HermesNetworkManager()
+    private val hermesNetwork = HermesNetworkManager(application)
     val hermesState: StateFlow<HermesNetworkManager.State> = hermesNetwork.state
 
     data class UiState(

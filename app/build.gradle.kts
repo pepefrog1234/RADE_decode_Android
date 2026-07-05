@@ -11,8 +11,8 @@ android {
         applicationId = "yakumo2683.RADEdecode"
         minSdk = 26
         targetSdk = 35
-        versionCode = 10557
-        versionName = "1.5.57-hl2-tx-pacer"
+        versionCode = 10558
+        versionName = "1.5.58-hl2-wifi-lock"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 
