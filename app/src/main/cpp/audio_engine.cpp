@@ -25,6 +25,12 @@
 // real speech via the prefill anyway).
 constexpr int TX_FADE_IN_SAMPLES = 160;
 
+static inline int64_t nowNs() {
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return (int64_t)ts.tv_sec * 1000000000LL + ts.tv_nsec;
+}
+
 /* ── RX Oboe callbacks ──────────────────────────────────────── */
 
 oboe::DataCallbackResult InputCallback::onAudioReady(
@@ -971,47 +977,36 @@ bool AudioEngine::startTx(int inputDeviceId, int outputDeviceId, bool keepRxAliv
     // is known, while the input callback is still idle.
     designTxDecimFilter();
 
-    // Pre-fill ring buffer with silence-encoded modem frames to prevent
-    // underruns at startup and absorb input jitter during TX.
-    // Generate 3 frames (~360ms buffer) of silence through the encoder.
+    // Pre-fill the ring with silence-encoded modem frames (~240 ms) so the
+    // output never underruns before the mic path is up; the filler thread
+    // below keeps it topped up however long the mic takes.
     {
-        std::vector<int16_t> silence(TX_SPEECH_FRAME, 0);
-        float features[NB_TOTAL_FEATURES];
         int fadeIn = 0;
-        for (int prefill = 0; prefill < 3; prefill++) {
-            for (int f = 0; f < txFeaturesPerTx_; f++) {
-                lpcnet_compute_single_frame_features(lpcnetEnc_, silence.data(), features, 0);
-                int offset = f * NB_TOTAL_FEATURES;
-                memcpy(txFeatureAccum_.data() + offset, features, NB_TOTAL_FEATURES * sizeof(float));
-            }
-            int nTxOut = rade_n_tx_out(rade_);
-            std::vector<RADE_COMP> txOut(nTxOut);
-            int produced = rade_tx(rade_, txOut.data(), txFeatureAccum_.data());
-            for (int i = 0; i < produced; i++) {
-                float sample = std::clamp(txOut[i].real, -0.999f, 0.999f);
-                if (fadeIn < TX_FADE_IN_SAMPLES) {
-                    sample *= 0.5f * (1.0f - cosf((float)M_PI * (float)fadeIn / (float)TX_FADE_IN_SAMPLES));
-                    fadeIn++;
-                }
-                int16_t s16 = (int16_t)(sample * 32767.0f);
-                txPlaybackRing_.write(&s16, 1);
-            }
-        }
+        for (int prefill = 0; prefill < 2; prefill++) encodeTxSilenceFrame(&fadeIn);
         LOGI("TX: pre-filled ring buffer with %d samples", txPlaybackRing_.availableToRead());
     }
 
+    // Gap-free start: the mic (especially a Bluetooth/LC3 route) can take well
+    // over the prefill length to deliver its first frames. Without a filler the
+    // ring drains mid-air — the far end sees a burst of waveform, a silence
+    // gap, then the waveform again (the reported two-stage spectrum / "ザッ"
+    // at PTT-on, present since Bluetooth routing landed in v1.5.22). Keep
+    // encoding silence until real mic data flows so the carrier is continuous.
+    startTxFiller();
+
     if (!openTxOutputStream()) {
         txRunning_.store(false);
+        stopTxFiller();
         txInputStream_->stop(); txInputStream_->close(); txInputStream_.reset();
         releaseTxModem(); return false;
     }
 
     // Everything is initialized — only now is it safe to start the mic callback.
-    // The ~360 ms prefill covers the brief gap until the first mic frames land.
     auto startRes = txInputStream_->requestStart();
     if (startRes != oboe::Result::OK) {
         LOGE("TX: failed to start input: %s", oboe::convertToText(startRes));
         txRunning_.store(false);
+        stopTxFiller();
         txInputStream_->close(); txInputStream_.reset();
         if (txOutputStream_) { txOutputStream_->stop(); txOutputStream_->close(); txOutputStream_.reset(); }
         releaseTxModem(); return false;
@@ -1027,6 +1022,10 @@ void AudioEngine::stopTx(bool drainEoo) {
 
     // Stop accepting new mic input
     if (txInputStream_) { txInputStream_->stop(); txInputStream_->close(); txInputStream_.reset(); }
+
+    // Join the silence filler (no-op if it already handed off) so the encoder
+    // is exclusively ours before the EOO is generated below.
+    stopTxFiller();
 
     if (txKeepRxAlive_) {
         // Mic-only local TX: no modem/output/ring was opened, and the RX output
@@ -1270,6 +1269,15 @@ void AudioEngine::processTxInputFrames(const float *data, int32_t numFrames, int
         return;
     }
 
+    // Encoder handoff from the silence filler: flag the mic as alive, then
+    // discard input until the filler thread has actually exited (≤ ~20 ms) so
+    // the LPCNet/RADE encoder is never driven from two threads at once.
+    if (!txMicSeen_.load()) {
+        txMicSeen_.store(true);
+        LOGI("TX: first mic frames %.0f ms after startTx", (nowNs() - txStartNs_) / 1e6);
+    }
+    if (!txFillerDone_.load()) return;
+
     // TX mic gain: Android mic capture runs well below full scale (the RX side
     // compensates the very same mic with inputGain_), so without this the
     // decoded speech at the far end is under-modulated. Applied before the
@@ -1335,6 +1343,69 @@ void AudioEngine::processTxFeatureFrame() {
         generateTxOutput();
         txFeatureFrames_ = 0;
     }
+}
+
+/** Encode one frame of silence through the LPCNet/RADE chain into the TX
+ *  ring. fadeIn: running onset-ramp sample counter, or nullptr for no ramp.
+ *  Caller must guarantee exclusive encoder access (see txFillerDone_). */
+void AudioEngine::encodeTxSilenceFrame(int *fadeIn) {
+    if (!lpcnetEnc_ || !rade_) return;
+    std::vector<int16_t> silence(TX_SPEECH_FRAME, 0);
+    float features[NB_TOTAL_FEATURES];
+    for (int f = 0; f < txFeaturesPerTx_; f++) {
+        lpcnet_compute_single_frame_features(lpcnetEnc_, silence.data(), features, 0);
+        int offset = f * NB_TOTAL_FEATURES;
+        memcpy(txFeatureAccum_.data() + offset, features, NB_TOTAL_FEATURES * sizeof(float));
+    }
+    int nTxOut = rade_n_tx_out(rade_);
+    std::vector<RADE_COMP> txOut(nTxOut);
+    int produced = rade_tx(rade_, txOut.data(), txFeatureAccum_.data());
+    for (int i = 0; i < produced; i++) {
+        float sample = std::clamp(txOut[i].real, -0.999f, 0.999f);
+        if (fadeIn && *fadeIn < TX_FADE_IN_SAMPLES) {
+            sample *= 0.5f * (1.0f - cosf((float)M_PI * (float)(*fadeIn) / (float)TX_FADE_IN_SAMPLES));
+            (*fadeIn)++;
+        }
+        int16_t s16 = (int16_t)(sample * 32767.0f);
+        txPlaybackRing_.write(&s16, 1);
+    }
+}
+
+void AudioEngine::startTxFiller() {
+    txMicSeen_.store(false);
+    txFillerStop_.store(false);
+    txFillerDone_.store(false);
+    txStartNs_ = nowNs();
+    txFillerThread_ = std::thread([this] { txFillerLoop(); });
+}
+
+void AudioEngine::stopTxFiller() {
+    txFillerStop_.store(true);
+    if (txFillerThread_.joinable()) txFillerThread_.join();
+    txFillerDone_.store(true);
+}
+
+void AudioEngine::txFillerLoop() {
+    // Keep at least ~200 ms queued; each silence frame adds 120 ms. Give up
+    // after 5 s — a mic that never starts is a separate failure, and the ring
+    // then just drains (the pre-filler behaviour).
+    const int lowWater = MODEM_SAMPLE_RATE / 5;
+    int filled = 0;
+    while (txRunning_.load() && !txFillerStop_.load() && !txMicSeen_.load()) {
+        if (nowNs() - txStartNs_ > 5000000000LL) {
+            LOGE("TX filler: mic never delivered within 5 s — giving up");
+            break;
+        }
+        if (txPlaybackRing_.availableToRead() < lowWater) {
+            encodeTxSilenceFrame(nullptr);
+            filled++;
+        } else {
+            usleep(20000);  // 20 ms
+        }
+    }
+    LOGI("TX filler: exit after %d silence frames, %.0f ms (micSeen=%d)",
+         filled, (nowNs() - txStartNs_) / 1e6, txMicSeen_.load() ? 1 : 0);
+    txFillerDone_.store(true);
 }
 
 void AudioEngine::generateTxOutput() {
@@ -1545,38 +1616,26 @@ bool AudioEngine::startNetTx(int inputDeviceId, int netRate) {
     // mid-over — an underrun forces zero-padding that corrupts the continuous
     // RADE waveform and makes the far end unable to decode.
     {
-        std::vector<int16_t> silence(TX_SPEECH_FRAME, 0);
-        float features[NB_TOTAL_FEATURES];
         const int prefillTarget = MODEM_SAMPLE_RATE / 5;  // ~200 ms @ 8 kHz
         int prefillGuard = 0;
         int fadeIn = 0;
         while (txPlaybackRing_.availableToRead() < prefillTarget && prefillGuard++ < 64) {
-            for (int f = 0; f < txFeaturesPerTx_; f++) {
-                lpcnet_compute_single_frame_features(lpcnetEnc_, silence.data(), features, 0);
-                int offset = f * NB_TOTAL_FEATURES;
-                memcpy(txFeatureAccum_.data() + offset, features, NB_TOTAL_FEATURES * sizeof(float));
-            }
-            int nTxOut = rade_n_tx_out(rade_);
-            std::vector<RADE_COMP> txOut(nTxOut);
-            int produced = rade_tx(rade_, txOut.data(), txFeatureAccum_.data());
-            for (int i = 0; i < produced; i++) {
-                float sample = std::clamp(txOut[i].real, -0.999f, 0.999f);
-                if (fadeIn < TX_FADE_IN_SAMPLES) {
-                    sample *= 0.5f * (1.0f - cosf((float)M_PI * (float)fadeIn / (float)TX_FADE_IN_SAMPLES));
-                    fadeIn++;
-                }
-                int16_t s16 = (int16_t)(sample * 32767.0f);
-                txPlaybackRing_.write(&s16, 1);
-            }
+            encodeTxSilenceFrame(&fadeIn);
         }
         LOGI("Net TX: pre-filled ring with %d samples", txPlaybackRing_.availableToRead());
     }
+
+    // Gap-free start: keep encoding silence until the mic delivers, so the
+    // UDP waveform never breaks however slow the mic route comes up (same
+    // fix as the USB path — the far end can't decode a discontinuous over).
+    startTxFiller();
 
     // Everything is initialized — only now is it safe to start the mic callback.
     auto startRes = txInputStream_->requestStart();
     if (startRes != oboe::Result::OK) {
         LOGE("Net TX: failed to start input: %s", oboe::convertToText(startRes));
         txRunning_.store(false); txNetMode_ = false;
+        stopTxFiller();
         txInputStream_->close(); txInputStream_.reset();
         releaseTxModem(); return false;
     }

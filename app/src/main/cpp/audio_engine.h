@@ -13,6 +13,7 @@
 #include <atomic>
 #include <memory>
 #include <mutex>
+#include <thread>
 #include <vector>
 #include <cstdio>
 
@@ -314,6 +315,17 @@ private:
 
     std::atomic<float> txInputLevelDb_{-100.0f};
 
+    /* Gap-free TX start: a filler thread keeps the ring topped up with
+     * silence-encoded modem frames until the mic actually delivers, so the
+     * transmitted waveform is continuous however long the mic (BT/LC3 route)
+     * takes to spin up. Encoder handoff is lock-free: the mic callback
+     * discards its input until the filler has exited (txFillerDone_). */
+    std::thread txFillerThread_;
+    std::atomic<bool> txFillerStop_{false};
+    std::atomic<bool> txFillerDone_{true};
+    std::atomic<bool> txMicSeen_{false};
+    int64_t txStartNs_ = 0;
+
     bool initTxModem();
     void releaseTxModem();
     bool openTxInputStream();   // opens but does NOT start; caller starts it last
@@ -325,6 +337,10 @@ private:
     void sendTxEoo();
     void renderTxOutput(float *data, int32_t numFrames);
     void designTxInterpFilter(int inputRate, int outputRate);
+    void encodeTxSilenceFrame(int *fadeIn);  // one silence frame → ring (fadeIn: onset ramp counter or nullptr)
+    void startTxFiller();
+    void stopTxFiller();
+    void txFillerLoop();
 };
 
 class InputCallback : public oboe::AudioStreamDataCallback,
