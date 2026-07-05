@@ -71,6 +71,13 @@ class HermesNetworkManager(private val appContext: Context? = null) : NetworkAud
         private const val SSB_CENTER = 1500.0
         private const val SSB_HALF_BW = 1200.0                      // 300..2700 Hz
 
+        // HL2 addr 0x17: radio-side TX FIFO priming depth + PTT hang. The
+        // gateware default latency is only ~10 ms — any phone-side scheduling
+        // hiccup longer than that underruns the radio's FIFO mid-over
+        // (choppy/unstable RF). 40 ms matches common PC hosts (Quisk).
+        private const val TX_BUFFER_LATENCY_MS = 40
+        private const val PTT_HANG_MS = 4
+
         private const val DECIM_TAPS = 144                          // 24 per phase × 6
         private const val ANALYTIC_TAPS = 129
         private const val INTERP_TAPS_PER_PHASE = 24
@@ -233,7 +240,8 @@ class HermesNetworkManager(private val appContext: Context? = null) : NetworkAud
             val scope = CoroutineScope(Dispatchers.IO + SupervisorJob())
             connScope = scope
             scope.launch { readerLoop(sock) }
-            scope.launch { fallbackPacer() }
+            startPacer()
+            Log.i(TAG, "TX FIFO config: latency=${TX_BUFFER_LATENCY_MS}ms hang=${PTT_HANG_MS}ms")
             true
         } catch (e: Exception) {
             Log.w(TAG, "connect failed", e)
@@ -265,6 +273,7 @@ class HermesNetworkManager(private val appContext: Context? = null) : NetworkAud
             }
             try { t.join(300) } catch (_: InterruptedException) {}
         }
+        stopPacer()
         connScope?.cancel()
         connScope = null
         releaseWifiLock()
@@ -503,12 +512,17 @@ class HermesNetworkManager(private val appContext: Context? = null) : NetworkAud
                 buf[off] = ((0x09 shl 1) or moxBit).toByte()
                 buf[off + 1] = txDrive.toByte()
             }
-            else -> {  // addr 0x0A: HL2 LNA gain (bit6 = manual, value = dB + 12)
+            4 -> {  // addr 0x0A: HL2 LNA gain (bit6 = manual, value = dB + 12)
                 buf[off] = ((0x0A shl 1) or moxBit).toByte()
                 buf[off + 4] = (0x40 or ((lnaDb + 12) and 0x3F)).toByte()
             }
+            else -> {  // addr 0x17: HL2 PTT hang (C3) + TX buffer latency (C4)
+                buf[off] = ((0x17 shl 1) or moxBit).toByte()
+                buf[off + 3] = PTT_HANG_MS.toByte()
+                buf[off + 4] = TX_BUFFER_LATENCY_MS.toByte()
+            }
         }
-        ccRotation = (ccRotation + 1) % 5
+        ccRotation = (ccRotation + 1) % 6
     }
 
     private fun putFreq(buf: ByteArray, off: Int, hz: Long) {
@@ -518,26 +532,53 @@ class HermesNetworkManager(private val appContext: Context? = null) : NetworkAud
         buf[off + 3] = hz.toByte()
     }
 
+    /* ── EP2 pacer thread ───────────────────────────────────── */
+
+    private var pacerThread: Thread? = null
+    @Volatile private var pacerRun = false
+
+    private fun startPacer() {
+        pacerRun = true
+        pacerThread = kotlin.concurrent.thread(name = "hl2-pacer") {
+            // Coroutine delay() on Dispatchers.IO jitters by many ms under
+            // load; a dedicated audio-priority thread with parkNanos keeps the
+            // 2.625 ms packet cadence tight enough for the radio's TX FIFO.
+            try {
+                android.os.Process.setThreadPriority(
+                    android.os.Process.THREAD_PRIORITY_URGENT_AUDIO
+                )
+            } catch (_: Exception) {}
+            pacerLoop()
+        }
+    }
+
+    private fun stopPacer() {
+        pacerRun = false
+        pacerThread?.interrupt()
+        try { pacerThread?.join(300) } catch (_: InterruptedException) {}
+        pacerThread = null
+    }
+
     /**
-     * EP2 pacer. While keyed (MOX) it self-clocks EP2 at exactly 48 kHz with
-     * absolute deadlines — TX must never depend on the radio's RX stream,
-     * which some gateware stops while transmitting; a >40 ms slip (coarse
-     * phone timers, GC) resyncs instead of firing a catch-up burst that would
-     * overflow the radio's small TX FIFO. While idle it is only a safety net:
-     * the reader loop paces EP2 1:1 off EP6, and this loop just keeps C&C
-     * alive when the stream is not flowing (pre-stream, stall).
+     * While keyed (MOX) this self-clocks EP2 at exactly 48 kHz with absolute
+     * deadlines — TX must never depend on the radio's RX stream, which some
+     * gateware stops while transmitting. On a stall it CATCHES UP (refilling
+     * exactly what the radio's FIFO drained — safe now that addr 0x17 primes
+     * a 40 ms radio-side buffer) and only resyncs beyond 100 ms, where the
+     * over is audibly broken anyway. While idle it is only a safety net: the
+     * reader loop paces EP2 1:1 off EP6, and this thread just keeps C&C alive
+     * when the stream is not flowing (pre-stream, stall).
      *
-     * Once per second while keyed it logs TX health — packets sent, I/Q ring
-     * level, underrun samples (keyed but ring empty → zeros sent), drive and
-     * frequency — so a single in-app log capture pinpoints whether missing RF
-     * is "no I/Q produced", "drive at zero", or "packets not reaching the
-     * radio".
+     * Once per second while keyed it logs TX health — app side (packets sent,
+     * I/Q ring level, underruns, drive, frequency) and radio side (EP6 rate,
+     * sequence gaps, forward/reverse power, PA current, ADC overflow) — so a
+     * single in-app log capture pinpoints where a TX failure lives.
      */
-    private suspend fun fallbackPacer() {
+    private fun pacerLoop() {
         var next = System.nanoTime()
         var wasMox = false
         var statNs = System.nanoTime()
-        while (currentScope()?.isActive == true) {
+        while (pacerRun) {
             if (mox) {
                 if (!wasMox) {
                     wasMox = true
@@ -549,7 +590,7 @@ class HermesNetworkManager(private val appContext: Context? = null) : NetworkAud
                     ep6GapInterval = 0
                 }
                 val now = System.nanoTime()
-                if (next < now - 40_000_000L) {
+                if (next < now - 100_000_000L) {
                     Log.w(TAG, "TX pacer resync (fell ${(now - next) / 1_000_000} ms behind)")
                     next = now
                 }
@@ -573,7 +614,10 @@ class HermesNetworkManager(private val appContext: Context? = null) : NetworkAud
                     ep6RecvInterval = 0
                     ep6GapInterval = 0
                 }
-                delay(2)
+                val sleepNs = next - System.nanoTime()
+                if (sleepNs > 0) {
+                    java.util.concurrent.locks.LockSupport.parkNanos(sleepNs)
+                }
             } else {
                 wasMox = false
                 if (System.nanoTime() - lastEp6Nanos > 100_000_000L &&
@@ -581,7 +625,7 @@ class HermesNetworkManager(private val appContext: Context? = null) : NetworkAud
                 ) {
                     sendEp2()
                 }
-                delay(20)
+                java.util.concurrent.locks.LockSupport.parkNanos(20_000_000L)
             }
         }
     }
