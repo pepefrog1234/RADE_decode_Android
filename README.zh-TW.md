@@ -11,6 +11,7 @@
 （包含神經網路聲碼器），並可與 PC 上執行 FreeDV（freedv-gui 2.x）RADE V1 模式的電台互通。
 
 只要用 USB 音訊把手機接上 HF SSB 收發機，或搭配 Icom IC-705 走 Wi-Fi 完全無線連接，
+也可以直連**區域網路上的 Hermes-Lite 2**（openHPSDR 直接連線——手機本身就是 SDR 主機），
 就擁有一台口袋裡的 RADE 電台——內建 CAT 電台控制、FreeDV Reporter 通報、
 即時電台地圖與自動接收日誌。
 
@@ -40,22 +41,29 @@
   （`SEARCH → CANDIDATE → SYNC`）
 - 解碼到的呼號顯示在畫面與通知列上
 - 透過前景服務在背景持續解碼——螢幕關閉或切到其他 App 都不中斷
+- 解碼語音可由手機喇叭、有線耳機，或**藍牙／LE Audio（LC3）**耳機、喇叭播放
 - 每次同步的接收都自動錄成 WAV（解碼後語音），可在 App 內回放與分享
 
 **發射**
-- 完整 TX：麥克風 → RADE OFDM 波形 → 電台，呼號自動嵌入 EOO 訊框
+- 完整 TX：麥克風 → RADE OFDM 波形 → 電台，呼號自動嵌入 EOO 訊框；
+  發射載波從鍵控那一刻起就連續不中斷
 - 通聯中一鍵切換 TX/RX；已連接電台時自動透過 CAT 控制 PTT
+- TX 麥克風可選——內建麥克風、USB／有線麥克風，或（實驗性）藍牙耳機麥克風——
+  並可調整 TX 麥克風增益
 - TX 推動電平可調，介面內建 ALC 調整指引
 
 **電台控制（CAT）**
 - 內建 **Hamlib 4.5.5 `rigctld`**（arm64 原生執行檔）——支援 340+ 種電台型號，不需電腦
-- 三種連線模式：
+- 四種連線模式：
   - **Serial（本機）：** USB CAT 線（OTG）——支援 CDC-ACM、CP210x、FTDI、Prolific、
     CH340/CH341 晶片，可控制 DTR/RTS
   - **TCP（rigctld）：** 連線到任何相容 rigctld 的遠端伺服器，並提供
     **Hermes-Lite 2** 設定檔（Thetis / Quisk / SparkSDR / piHPSDR）
   - **Wi-Fi（IC-705）：** Icom 原生網路協定（RS-BA1）——CAT 控制**與** TX/RX 音訊
     都走 Wi-Fi，完全不需接線
+  - **HL2（區域網路）：** 直接以 **openHPSDR（protocol 1）** 控制 Hermes-Lite 2——
+    探索、頻率、PTT、發射驅動、LNA 增益**與** 48 kHz I/Q 串流全部走 UDP，
+    SSB 調變／解調在 App 內完成，完全不需電腦
 - 即時頻率／模式／PTT／S 表顯示；輸入頻率時自動選擇正確邊帶與資料模式
   （USB/LSB、PKTUSB/PKTLSB）
 
@@ -82,8 +90,8 @@
 | Android | 8.0（API 26）以上 |
 | CPU | 64 位元 ARM（**僅支援 arm64-v8a**——不支援 x86 或 32 位元） |
 | 效能 | FARGAN 神經聲碼器以 CPU 運算；約 2018 年後的中階手機即可。很弱的裝置請開啟 **設定 → 效能節約模式**。 |
-| 電台 | 任何 HF SSB 收發機。想單一 USB 線搞定，選有內建 USB 音效卡 + CAT 的機種（如 IC-7300、IC-705 等）；否則在手機與電台間加一個 USB 音訊介面／數位介面（DigiRig 等）。 |
-| 配件 | USB-OTG 轉接頭（USB 音訊／USB serial 用）。IC-705 Wi-Fi 模式什麼都不用。 |
+| 電台 | 任何 HF SSB 收發機。想單一 USB 線搞定，選有內建 USB 音效卡 + CAT 的機種（如 IC-7300、IC-705 等）；否則在手機與電台間加一個 USB 音訊介面／數位介面（DigiRig 等）。**Hermes-Lite 2** 則完全不需音訊介面——App 直接透過區域網路與它通訊。 |
+| 配件 | USB-OTG 轉接頭（USB 音訊／USB serial 用）。IC-705 Wi-Fi 或 HL2（區域網路）模式什麼都不用。 |
 
 > 純收聽不需要接電台：用麥克風靠近喇叭（聲學耦合）或接 USB 音效卡即可。
 
@@ -102,6 +110,8 @@ App 未上架 Play 商店，更新都以 GitHub Release 發佈。
    - *USB 音訊：* 用 OTG 轉接頭把電台（或音訊介面）接上手機，
      到 **設定 → 音訊裝置 → 輸入** 選取該裝置。
    - *IC-705 Wi-Fi：* 見下方 [Wi-Fi（IC-705）](#wi-fiic-705)——音訊直接走網路，免接線。
+   - *Hermes-Lite 2：* 見下方 [Hermes-Lite 2（區域網路）](#hermes-lite-2區域網路)——
+     走區域網路的 I/Q 串流完全取代音效卡。
    - *麥克風：* 手機靠近電台喇叭也行，但 USB 音訊穩定得多。
 2. **電台調到** RADE 活動頻率，例如 20 m FreeDV 呼叫頻率 **14.236 MHz USB** 附近。
    **Stations** 分頁與 [qso.freedv.org](https://qso.freedv.org) 可即時看到誰在哪個頻率上。
@@ -120,7 +130,7 @@ App 未上架 Play 商店，更新都以 GitHub Release 發佈。
 
 1. **設定 → TX 呼號：** 輸入你的呼號（最多 8 字元）——每段通話都會編入 EOO 訊框。
 2. **設定 → 音訊裝置 → 輸出：** 選擇接到電台的 USB 音訊裝置
-   （IC-705 Wi-Fi 模式免設，TX 音訊走網路）。
+   （IC-705 Wi-Fi 與 HL2（區域網路）模式免設，TX 音訊走網路）。
 3. 按 **START**，再點 **TX**，對著手機麥克風講話。點 **BACK TO RX** 結束通話
    （此時會同時送出 EOO 呼號訊框）。
 4. **調整電平**——目標是電台的 *ALC 幾乎不擺動*：
@@ -132,7 +142,7 @@ App 未上架 Play 商店，更新都以 GitHub Release 發佈。
 
 ## 電台控制（CAT）
 
-開啟 **Rig** 分頁，從三種連線模式擇一。連線後即可看到即時頻率、模式、S 表，
+開啟 **Rig** 分頁，從四種連線模式擇一。連線後即可看到即時頻率、模式、S 表，
 並可直接輸入頻率——輸入頻率時會自動選擇正確的邊帶與資料模式
 （10 MHz 以下 LSB/PKTLSB、以上 USB/PKTUSB；不支援資料模式的機種自動退回一般 USB/LSB）。
 
@@ -156,7 +166,8 @@ Xiegu 機種（G90、X6100、X5105、X108G）會自動套用較短的 CI-V 逾�
 
 連到任何相容 `rigctld` 的 TCP 伺服器（預設埠 4532）：跑 `rigctld` 的電腦、FLRig
 或 SDR 軟體。選擇 **Hermes-Lite 2** 設定檔可連 Thetis、Quisk、SparkSDR、piHPSDR
-的 rigctl 伺服器——注意音訊仍走 Android 音訊裝置（不支援 OpenHPSDR I/Q 串流）。
+的 rigctl 伺服器——此設定檔的音訊仍走 Android 音訊裝置。想完全不經電腦直接連線，
+請改用 [Hermes-Lite 2（區域網路）](#hermes-lite-2區域網路) 模式。
 
 ### Wi-Fi（IC-705）
 
@@ -168,6 +179,25 @@ Xiegu 機種（G90、X6100、X5105、X108G）會自動套用較短的 CI-V 逾�
    點 **CONNECT**。
 3. CAT 控制**與** 48 kHz TX/RX 音訊都走 Wi-Fi——「Audio (Wi-Fi)」指示燈轉綠。
    不需 USB 線，也不需音訊介面。
+
+### Hermes-Lite 2（區域網路）
+
+直接以 **openHPSDR（protocol 1）** 連線區域網路上的 Hermes-Lite 2——手機本身就是
+SDR 主機，中間完全不經電腦：
+
+1. 讓 HL2 與手機在同一個區域網路（乙太網路接到你的路由器／AP）。
+2. 在 **Rig** 分頁選 **HL2（區域網路）**。**主機**欄留空即以廣播自動探索
+   （或直接輸入電台 IP），然後點 **CONNECT**。
+3. 頻率、PTT（MOX）、**發射驅動**與**接收 LNA 增益**全部由 App 控制。
+   48 kHz I/Q 串流雙向走 UDP 埠 1024，SSB 調變／解調由 App 內部完成——
+   頻率面板直接調諧電台的 NCO。
+
+注意事項：
+- 此模式**不使用**「音訊裝置」的輸入／輸出設定——RX 與 TX 音訊都走網路。
+- 若電台有鍵控動作（聽得到 TX 繼電器聲）卻沒有射頻輸出，請先檢查
+  **發射驅動**滑桿——設為 0 時電台會鍵控但零輸出。
+- 連線時出現「Radio is busy」表示已有其他主機（Thetis、Quisk、SparkSDR…）
+  正在從 HL2 串流——請先關閉它再重新連線。
 
 ## FreeDV Reporter、電台列表與地圖
 
@@ -211,6 +241,9 @@ Xiegu 機種（G90、X6100、X5105、X108G）會自動套用較短的 CI-V 逾�
 | 輸入增益 → 數位增益 | 4.0×（12 dB） | 0.1–30× 軟體增益，補償過小的 USB 輸入；目標峰值 −15…−5 dBFS |
 | RX 輸出 → 音量 | 100 % | 解碼語音音量；同時影響 TX 輸出 |
 | TX 輸出 → USB TX 電平 | 20 % | RADE 波形送入電台 USB 音訊輸入的推動量 |
+| TX 麥克風 → 麥克風選擇 | 內建麥克風 | 以內建麥克風或 USB／有線麥克風擷取發射語音 |
+| TX 麥克風 → TX 麥克風增益 | 4.0×（12 dB） | 0.5–15× 增益送入 RADE 編碼器；發射電平表顯示增益後的數值 |
+| 藍牙麥克風（TX） | 關 | 實驗性：以藍牙耳機麥克風擷取發射語音（SCO／LE Audio） |
 | TX 呼號 → Callsign (EOO) | — | 最多 8 字元，每段通話結束時隨 EOO 訊框送出 |
 | FreeDV Reporter → 啟用 Reporter | 開 | 與 qso.freedv.org 保持連線 |
 | FreeDV Reporter → 網格座標 | 由 GPS 取得 | 6 字元 Maidenhead 網格；有定位權限時自動填入 |
@@ -234,8 +267,15 @@ Xiegu 機種（G90、X6100、X5105、X108G）會自動套用較短的 CI-V 逾�
   並允許 Android 的 USB 權限對話框。
 - **IC-705 Wi-Fi 連不上** —— Network Control 必須為 ON，帳號密碼要與電台
   Network User 設定一致，手機也要連得到電台 IP（同一網路或電台 AP 模式）。
+- **HL2（區域網路）：「Radio not found」** —— 廣播自動探索需要手機與 Hermes-Lite 2
+  在同一個區域網路／子網段；否則請在**主機**欄輸入電台 IP。
+  「Radio is busy」表示已有其他 SDR 主機連線中。
+- **HL2（區域網路）：繼電器有鍵控聲卻沒有射頻輸出** —— 檢查 Rig 分頁的
+  **發射驅動**滑桿；設為 0 時電台會鍵控但零輸出。
 - **Reporter 顯示「Not connected」** —— 到設定填入呼號並開啟
   **啟用 Reporter**；Stations 分頁會顯示確切原因。
+- **難以追查的音訊／CAT 問題** —— **設定 → 診斷** 可在手機上直接擷取 App
+  自身最近的音訊與 CAT 日誌（不需 adb），方便貼進 GitHub issue。
 
 ## 權限說明
 
@@ -252,17 +292,18 @@ Xiegu 機種（G90、X6100、X5105、X108G）會自動套用較短的 CI-V 逾�
 ## 架構（開發者）
 
 ```
-RX：USB／麥克風／IC-705 Wi-Fi（48 kHz）
-     → Oboe 擷取
-     → 多相 FIR 降取樣（→ 8 kHz）
+RX：USB／麥克風／IC-705 Wi-Fi（48 kHz）         HL2：I/Q 走 UDP（48 kHz）
+     → Oboe 擷取                                  → 複數降取樣 ÷6
+     → 多相 FIR 降取樣（→ 8 kHz）                 → 解析訊號 USB 解調（→ 8 kHz）
      → RADE V1 OFDM 解調（+ EOO 呼號解碼）
      → FARGAN 神經聲碼器（→ 16 kHz 語音）
      → Oboe 播放（+ WAV 錄音）
 
 TX：麥克風（48 kHz）
      → 特徵擷取 → RADE OFDM 調變（8 kHz）
-     → 多相內插（→ 48 kHz）
-     → USB 音訊／IC-705 Wi-Fi → 電台（CAT 控制 PTT）
+     → 多相內插（→ 48 kHz）→ USB 音訊／IC-705 Wi-Fi → 電台
+       或 解析濾波器 + ×6 內插 → 16-bit I/Q → 經 UDP 送往 HL2
+     （CAT／MOX 控制 PTT）
 ```
 
 | 層級 | 位置 | 說明 |
@@ -272,7 +313,7 @@ TX：麥克風（48 kHz）
 | 服務 | `service/AudioService` | 前景服務（麥克風 + 媒體播放類型）；接收紀錄生命週期、訊號快照、錄音 |
 | JNI 橋接 | `AudioBridge`、`RADEWrapper` | Oboe 引擎控制／RADE + FARGAN 處理 |
 | 原生層 | `app/src/main/cpp/` | `audio_engine.cpp`（Oboe 串流、降取樣、訊框分派）、`rade_jni.cpp`、`radae/`（RADE 數據機，unity build）、`opus/`（FARGAN）、`eoo/`（呼號編解碼） |
-| 電台控制 | `network/`、`usb/` | 內建 Hamlib 4.5.5 `rigctld`（arm64）+ 原生 USB-serial→pty 橋接；Kotlin 實作的 Icom RS-BA1 UDP 客戶端 |
+| 電台控制 | `network/`、`usb/` | 內建 Hamlib 4.5.5 `rigctld`（arm64）+ 原生 USB-serial→pty 橋接；Kotlin 實作的 Icom RS-BA1 UDP 客戶端與 openHPSDR protocol-1 客戶端（Hermes-Lite 2，含 App 內 SSB 數據機） |
 | 資料 | `data/` | 原生 SQLite（不用 Room）：接收紀錄、訊號快照、同步事件、呼號事件 |
 | Reporter | `network/FreeDVReporter` | 以 OkHttp 實作 Socket.IO v4 over WebSocket |
 

@@ -12,9 +12,10 @@ Autoencoder) waveform in real time, entirely on-device — neural vocoder includ
 and interoperates with stations running RADE V1 in FreeDV (freedv-gui 2.x) on PC.
 
 Connect your phone to an HF SSB transceiver over USB audio, or go fully wireless
-with an Icom IC-705 over Wi-Fi, and you have a pocket-sized RADE station with CAT
-rig control, FreeDV Reporter spotting, a live station map, and automatic reception
-logging.
+with an Icom IC-705 over Wi-Fi or a **Hermes-Lite 2 on your LAN** (direct
+openHPSDR connection — the phone is the SDR host), and you have a pocket-sized
+RADE station with CAT rig control, FreeDV Reporter spotting, a live station map,
+and automatic reception logging.
 
 ---
 
@@ -46,25 +47,32 @@ This app runs the full RADE V1 signal chain natively on the phone:
 - Decoded callsigns shown on screen and in the notification
 - Background decoding via a foreground service — keeps decoding with the screen
   off or while you use other apps
+- Decoded speech on the phone speaker, wired headphones, or a **Bluetooth /
+  LE Audio (LC3)** headset or speaker
 - Every synced session is automatically recorded to WAV (decoded speech) with
   in-app playback and sharing
 
 **Transmit**
 - Full TX: microphone → RADE OFDM waveform → rig, with your callsign embedded in
-  the EOO frame
+  the EOO frame; the transmitted carrier is continuous from the moment it keys
 - One-tap TX/RX switching mid-session; PTT keyed automatically through CAT when a
   rig is connected
+- TX microphone selection — built-in mic, a USB/wired mic, or (experimental) a
+  Bluetooth headset mic — with an adjustable TX mic gain
 - Adjustable TX drive level with ALC setup guidance built into the UI
 
 **Rig control (CAT)**
 - Bundled **Hamlib 4.5.5 `rigctld`** (arm64 binary) — 340+ rig models, no PC needed
-- Three connection modes:
+- Four connection modes:
   - **Serial (local):** USB CAT cable via OTG — CDC-ACM, CP210x, FTDI, Prolific,
     CH340/CH341 chips supported, with DTR/RTS control
   - **TCP (rigctld):** any remote rigctld-compatible server, including a
     **Hermes-Lite 2** profile for Thetis / Quisk / SparkSDR / piHPSDR
   - **Wi-Fi (IC-705):** Icom's native network protocol (RS-BA1) — CAT *and* TX/RX
     audio over Wi-Fi, no cable at all
+  - **HL2 (LAN):** direct **openHPSDR (protocol 1)** control of a Hermes-Lite 2 —
+    discovery, frequency, PTT, TX drive, LNA gain *and* the 48 kHz I/Q stream all
+    over UDP, with SSB (de)modulation done in the app. No PC required.
 - Live frequency / mode / PTT / S-meter display, frequency entry with automatic
   sideband and data-mode selection (USB/LSB, PKTUSB/PKTLSB)
 
@@ -95,8 +103,8 @@ This app runs the full RADE V1 signal chain natively on the phone:
 | Android | 8.0 (API 26) or newer |
 | CPU | 64-bit ARM (**arm64-v8a only** — no x86 or 32-bit support) |
 | Performance | The FARGAN neural vocoder runs on the CPU; mid-range phones from ~2018 on are fine. On very weak devices enable **Settings → Power Save Mode**. |
-| Radio | Any HF SSB transceiver. For single-cable operation use a rig with a built-in USB audio codec + CAT (e.g. IC-7300, IC-705, many recent rigs); otherwise a USB audio interface / digital interface (DigiRig etc.) between phone and rig. |
-| Accessories | USB-OTG adapter for USB audio / USB serial. Nothing at all for IC-705 Wi-Fi mode. |
+| Radio | Any HF SSB transceiver. For single-cable operation use a rig with a built-in USB audio codec + CAT (e.g. IC-7300, IC-705, many recent rigs); otherwise a USB audio interface / digital interface (DigiRig etc.) between phone and rig. A **Hermes-Lite 2** needs no audio interface at all — the app talks to it directly over the LAN. |
+| Accessories | USB-OTG adapter for USB audio / USB serial. Nothing at all for IC-705 Wi-Fi or HL2 (LAN) mode. |
 
 > Receive-only works fine without any rig connection: feed audio in through the
 > microphone (acoustic coupling) or a USB sound card and just listen.
@@ -119,6 +127,8 @@ The app is not on the Play Store; updates are published as GitHub releases.
      select it.
    - *IC-705 Wi-Fi:* see [Wi-Fi (IC-705)](#wi-fi-ic-705) below — audio arrives over
      the network, no cable.
+   - *Hermes-Lite 2:* see [Hermes-Lite 2 (LAN)](#hermes-lite-2-lan) below — the
+     I/Q stream over the LAN replaces the sound card entirely.
    - *Microphone:* hold the phone near the rig's speaker. Works, but USB audio is
      far more reliable.
 2. **Tune the rig** to RADE activity, e.g. around the 20 m FreeDV calling
@@ -142,7 +152,7 @@ A session is created automatically whenever sync is acquired, logged to the
 1. **Settings → TX Callsign:** enter your callsign (max 8 characters) — it is
    encoded into the EOO frame on every over.
 2. **Settings → Audio Devices → Output:** select the USB audio device that feeds
-   the rig (skip for IC-705 Wi-Fi — TX audio goes over the network).
+   the rig (skip for IC-705 Wi-Fi and HL2 (LAN) — TX audio goes over the network).
 3. Press **START**, then tap **TX**. Speak into the phone's microphone. Tap
    **BACK TO RX** to end the over (this also transmits the EOO callsign frame).
 4. **Set your levels** — the goal is *little to no ALC deflection* on the rig:
@@ -157,7 +167,7 @@ A session is created automatically whenever sync is acquired, logged to the
 
 ## Rig control (CAT)
 
-Open the **Rig** tab and pick one of three connection modes. Once connected you
+Open the **Rig** tab and pick one of four connection modes. Once connected you
 get a live frequency readout, mode, S-meter, and a frequency entry box — entering
 a frequency also selects the correct sideband and data mode automatically
 (LSB/PKTLSB below 10 MHz, USB/PKTUSB above; plain USB/LSB fallback for rigs
@@ -186,8 +196,9 @@ so PTT stays responsive.
 Point the app at any `rigctld`-compatible TCP server (default port 4532): a PC
 running `rigctld`, FLRig, or an SDR application. Choose the **Hermes-Lite 2**
 profile to connect to the rigctl server in Thetis, Quisk, SparkSDR, or piHPSDR —
-note that audio still flows through Android audio devices (no OpenHPSDR I/Q
-streaming).
+in this profile audio still flows through Android audio devices. For a direct
+connection with no PC at all, use the [Hermes-Lite 2 (LAN)](#hermes-lite-2-lan)
+mode instead.
 
 ### Wi-Fi (IC-705)
 
@@ -200,6 +211,27 @@ protocol, UDP ports 50001/50002/50003):
    radio's IP address, username, and password, then **CONNECT**.
 3. CAT control *and* 48 kHz TX/RX audio both run over Wi-Fi — the "Audio
    (Wi-Fi)" indicator turns green. No USB cable, no audio interface.
+
+### Hermes-Lite 2 (LAN)
+
+Direct **openHPSDR (protocol 1)** connection to a Hermes-Lite 2 on your
+network — the phone itself is the SDR host, no PC in between:
+
+1. Put the HL2 on the same LAN as the phone (Ethernet to your router / AP).
+2. On the **Rig** tab pick **HL2 (LAN)**. Leave **Host** empty for broadcast
+   auto-discovery (or enter the radio's IP), then **CONNECT**.
+3. Frequency, PTT (MOX), **TX drive** and **RX LNA gain** are all controlled
+   from the app. The 48 kHz I/Q stream runs both ways on UDP port 1024 and the
+   app does the SSB (de)modulation internally — the frequency panel tunes the
+   radio's NCO directly.
+
+Notes:
+- The Audio-Devices input/output settings are **not used** in this mode — RX
+  and TX audio ride the network.
+- If the radio keys (TX relay clicks) but no RF comes out, check the
+  **TX drive** slider first — at 0 the radio keys with zero output.
+- "Radio is busy" during connect means another host (Thetis, Quisk, SparkSDR,
+  …) is already streaming from the HL2 — close it and reconnect.
 
 ## FreeDV Reporter, Stations & Map
 
@@ -248,6 +280,9 @@ Android share sheet.
 | Input Gain → Digital Gain | 4.0× (12 dB) | 0.1–30× software gain for weak USB inputs; aim for −15…−5 dBFS peaks |
 | RX Output → Volume | 100 % | Decoded speech level; also scales TX output |
 | TX Output → USB TX level | 20 % | RADE waveform drive into the rig's USB audio input |
+| TX Mic → TX microphone | built-in mic | Capture TX voice from the built-in mic or a USB/wired mic |
+| TX Mic → TX Mic Gain | 4.0× (12 dB) | 0.5–15× gain into the RADE encoder; the TX meter reads post-gain |
+| Bluetooth Mic (TX) | off | Experimental: capture TX voice from a Bluetooth headset mic (SCO / LE Audio) |
 | TX Callsign → Callsign (EOO) | — | Up to 8 characters, sent in the EOO frame on every over |
 | FreeDV Reporter → Enable Reporter | on | Live connection to qso.freedv.org |
 | FreeDV Reporter → Grid Square | from GPS | 6-character Maidenhead locator; auto-filled if location permission granted |
@@ -275,8 +310,16 @@ Android share sheet.
 - **IC-705 Wi-Fi won't connect** — Network Control must be ON, the username and
   password must match the radio's Network User settings, and the phone must reach
   the radio's IP (same network / radio AP mode).
+- **HL2 (LAN): "Radio not found"** — the phone must be on the same LAN/subnet as
+  the Hermes-Lite 2 for broadcast discovery; otherwise enter the radio's IP in
+  **Host**. "Radio is busy" means another SDR host is already connected.
+- **HL2 (LAN): relay keys but no RF** — check the **TX drive** slider on the Rig
+  tab; at 0 the radio keys with zero output.
 - **Reporter shows "Not connected"** — set a callsign in Settings and check
   **Enable Reporter**; the Stations tab shows the exact reason.
+- **Hard-to-pin-down audio/CAT problems** — **Settings → Diagnostics** can
+  capture the app's own recent audio and CAT logs on the phone (no adb needed),
+  ready to paste into a GitHub issue.
 
 ## Permissions
 
@@ -294,17 +337,18 @@ exported via the share sheet.
 ## Architecture (for developers)
 
 ```
-RX:  USB / mic / IC-705 Wi-Fi (48 kHz)
-      → Oboe capture
-      → polyphase FIR decimation (→ 8 kHz)
+RX:  USB / mic / IC-705 Wi-Fi (48 kHz)          HL2: I/Q over UDP (48 kHz)
+      → Oboe capture                              → complex decimation ÷6
+      → polyphase FIR decimation (→ 8 kHz)        → analytic USB demod (→ 8 kHz)
       → RADE V1 OFDM demodulation (+ EOO callsign decode)
       → FARGAN neural vocoder (→ 16 kHz speech)
       → Oboe playback (+ WAV session recording)
 
 TX:  microphone (48 kHz)
       → feature extraction → RADE OFDM modulation (8 kHz)
-      → polyphase interpolation (→ 48 kHz)
-      → USB audio / IC-705 Wi-Fi → rig (PTT via CAT)
+      → polyphase interpolation (→ 48 kHz) → USB audio / IC-705 Wi-Fi → rig
+        or analytic filter + ×6 interpolation → 16-bit I/Q → HL2 over UDP
+      (PTT via CAT / MOX)
 ```
 
 | Layer | Where | Notes |
@@ -314,7 +358,7 @@ TX:  microphone (48 kHz)
 | Service | `service/AudioService` | Foreground service (mic + media playback types); session lifecycle, snapshots, recording |
 | JNI bridge | `AudioBridge`, `RADEWrapper` | Oboe engine control / RADE + FARGAN processing |
 | Native | `app/src/main/cpp/` | `audio_engine.cpp` (Oboe streams, decimation, frame dispatch), `rade_jni.cpp`, `radae/` (RADE modem, unity build), `opus/` (FARGAN), `eoo/` (callsign codec) |
-| Rig control | `network/`, `usb/` | Bundled Hamlib 4.5.5 `rigctld` (arm64) + native USB-serial→pty bridge; Icom RS-BA1 UDP client in Kotlin |
+| Rig control | `network/`, `usb/` | Bundled Hamlib 4.5.5 `rigctld` (arm64) + native USB-serial→pty bridge; Icom RS-BA1 UDP client and openHPSDR protocol-1 client (Hermes-Lite 2, with in-app SSB modem) in Kotlin |
 | Data | `data/` | Raw SQLite (no Room): sessions, signal snapshots, sync events, callsign events |
 | Reporter | `network/FreeDVReporter` | Socket.IO v4 over WebSocket via OkHttp |
 
