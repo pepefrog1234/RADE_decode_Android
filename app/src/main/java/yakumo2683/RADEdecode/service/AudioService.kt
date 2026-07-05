@@ -49,7 +49,7 @@ class AudioService : LifecycleService() {
     /** Set by the ViewModel when rig control runs over the IC-705's Wi-Fi.
      *  When non-null and its audio stream is up, RX/TX audio rides UDP 50003
      *  instead of a USB sound card ("full wireless"). */
-    var icomNetwork: yakumo2683.RADEdecode.network.IcomNetworkManager? = null
+    var networkRig: yakumo2683.RADEdecode.network.NetworkAudioRig? = null
     private var audioBridge: AudioBridge? = null
     private var pollingJob: Job? = null
     private var notificationUpdateJob: Job? = null
@@ -289,7 +289,7 @@ class AudioService : LifecycleService() {
         stopNotificationUpdates()
 
         // Detach the network-audio feed before tearing down the engine.
-        icomNetwork?.onAudioPcm = null
+        networkRig?.onAudioPcm = null
         networkAudioMode = false
 
         // Stop native WAV recording
@@ -795,13 +795,14 @@ class AudioService : LifecycleService() {
     private var netTxPumpDone: java.util.concurrent.CountDownLatch? = null
 
     /**
-     * RX over Wi-Fi: decode audio arriving on UDP 50003 (via [icomNetwork]) and
-     * play the recovered speech on the selected RX output. No USB sound card involved.
+     * RX over the network: decode audio delivered by [networkRig] (Icom RS-BA1
+     * UDP audio, or a Hermes-Lite 2's demodulated I/Q stream) and play the
+     * recovered speech on the selected RX output. No USB sound card involved.
      */
     fun startNetworkDecoding(outputDeviceId: Int = RX_OUTPUT_AUTO) {
         if (_state.value.isRunning || _state.value.isTx) return
-        val net = icomNetwork ?: run {
-            Log.e("AudioService", "startNetworkDecoding: icomNetwork not set")
+        val net = networkRig ?: run {
+            Log.e("AudioService", "startNetworkDecoding: networkRig not set")
             return
         }
 
@@ -825,9 +826,9 @@ class AudioService : LifecycleService() {
             startForeground(NOTIFICATION_ID, notification)
         }
 
-        val audioUp = net.state.value.audioConnected
-        Log.i("AudioService", "startNetworkDecoding: audioStreamConnected=$audioUp " +
-            "(if false, no RX audio will arrive over Wi-Fi — check radio audio settings)")
+        val audioUp = net.audioLinkUp
+        Log.i("AudioService", "startNetworkDecoding: audioStreamConnected=$audioUp rate=${net.audioRate} " +
+            "(if false, no RX audio will arrive over the network — check radio audio settings)")
 
         val rxOutputDeviceId = resolveRxOutputDeviceId(bridge, outputDeviceId)
         val useJavaRxOutput = shouldUseJavaRxOutput(rxOutputDeviceId)
@@ -838,7 +839,7 @@ class AudioService : LifecycleService() {
                 "javaOutput=$useJavaRxOutput"
         )
         val nativeOutputDeviceId = if (useJavaRxOutput) -1 else rxOutputDeviceId
-        if (!bridge.startNetRx(nativeOutputDeviceId, yakumo2683.RADEdecode.network.IcomNetworkManager.NET_AUDIO_RATE)) {
+        if (!bridge.startNetRx(nativeOutputDeviceId, net.audioRate)) {
             Log.e("AudioService", "startNetRx failed")
             stopRxAudioTrackPump()
             stopSelf()
@@ -858,13 +859,13 @@ class AudioService : LifecycleService() {
     }
 
     /**
-     * TX over Wi-Fi: mic → RADE encoder → UDP 50003 audio frames to the radio.
+     * TX over the network: mic → RADE encoder → [networkRig] frames to the radio.
      * @param inputDeviceId built-in mic device id (USB audio is the rig's RX feed).
      */
     fun startNetworkTransmitting(inputDeviceId: Int, callsign: String) {
         if (_state.value.isTx) return
-        val net = icomNetwork ?: run {
-            Log.e("AudioService", "startNetworkTransmitting: icomNetwork not set")
+        val net = networkRig ?: run {
+            Log.e("AudioService", "startNetworkTransmitting: networkRig not set")
             return
         }
 
@@ -899,10 +900,10 @@ class AudioService : LifecycleService() {
 
         if (callsign.isNotEmpty()) bridge.setTxCallsign(callsign)
 
-        Log.i("AudioService", "startNetworkTransmitting: audioStreamConnected=${net.state.value.audioConnected} " +
-            "mic=$inputDeviceId (if audio stream down, TX modulation won't reach the radio)")
+        Log.i("AudioService", "startNetworkTransmitting: audioStreamConnected=${net.audioLinkUp} " +
+            "rate=${net.audioRate} mic=$inputDeviceId (if audio stream down, TX modulation won't reach the radio)")
 
-        if (!bridge.startNetTx(inputDeviceId, yakumo2683.RADEdecode.network.IcomNetworkManager.NET_AUDIO_RATE)) {
+        if (!bridge.startNetTx(inputDeviceId, net.audioRate)) {
             Log.e("AudioService", "startNetTx failed")
             bridge.release()
             audioBridge = null
@@ -920,9 +921,9 @@ class AudioService : LifecycleService() {
     /** Pull encoded modem audio every 20 ms and ship it to the radio over UDP. */
     private fun startNetTxPump(
         bridge: AudioBridge,
-        net: yakumo2683.RADEdecode.network.IcomNetworkManager
+        net: yakumo2683.RADEdecode.network.NetworkAudioRig
     ) {
-        val n = yakumo2683.RADEdecode.network.IcomNetworkManager.NET_AUDIO_FRAME_SAMPLES
+        val n = net.txFrameSamples
         val done = java.util.concurrent.CountDownLatch(1)
         netTxPumpDone = done
         netTxPumpJob = lifecycleScope.launch(Dispatchers.IO) {
@@ -935,7 +936,7 @@ class AudioService : LifecycleService() {
                 // sample stream is broken so the far end can't decode. Anchoring each
                 // send to an absolute deadline keeps the long-term rate at exactly
                 // 50 fps regardless of per-loop overhead.
-                val periodNs = 20_000_000L  // 20 ms
+                val periodNs = n * 1_000_000_000L / net.audioRate  // 20 ms
                 var nextDeadline = System.nanoTime() + periodNs
                 // Keep pumping after TX stops until the ring is empty — the tail
                 // is the EOO (callsign) frame queued by stopTx().
@@ -1450,13 +1451,15 @@ class AudioService : LifecycleService() {
             try {
                 if (awaitRoutedDevice) {
                     // Feed silence until the track is actually routed to the
-                    // requested device (or 500 ms worst case), then unmute. The
+                    // requested device (or 250 ms worst case), then unmute. The
                     // modem prefill stays queued in the native ring meanwhile,
-                    // so the rig loses nothing.
+                    // so the rig loses nothing. Capped low: on devices where
+                    // routedDevice never reports the requested id this is a
+                    // flat per-PTT cost, and the JA tester wants TX up in ~1 s.
                     val zeros = ShortArray(160)  // 20 ms @ 8 kHz per tick
                     var waitedMs = 0
                     var routedOk = false
-                    while (isActive && waitedMs < 500) {
+                    while (isActive && waitedMs < 250) {
                         val routed = try { track.routedDevice } catch (_: Exception) { null }
                         if (routed != null && routed.id == outputDeviceId) {
                             routedOk = true

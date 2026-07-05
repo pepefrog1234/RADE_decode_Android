@@ -167,6 +167,11 @@
     <string name="rig_network_hint">使用 IC-705 內建伺服器透過 Wi-Fi 連線。請在電台上設定：Set ▸ Network ▸ Network Control = ON，並設定網路使用者名稱與密碼。在此輸入電台的 IP 位址。控制與音訊皆透過 Wi-Fi 傳輸，無需 USB 線。</string>
     <string name="rig_net_audio_on">音訊 (Wi-Fi)：已連線</string>
     <string name="rig_net_audio_off">音訊 (Wi-Fi)：未連線</string>
+    <string name="rig_hl2_network_mode">HL2 (區域網路)</string>
+    <string name="rig_hl2_network_hint">透過 openHPSDR（協議 1）直接控制區域網路上的 Hermes-Lite 2：探索、頻率、PTT 與 I/Q 串流全部走 UDP 連接埠 1024，無需電腦。主機留空則以廣播自動探索。SSB 調變/解調在應用程式內完成。</string>
+    <string name="rig_hl2_host_auto">自動探索（廣播）</string>
+    <string name="rig_hl2_drive">發射驅動</string>
+    <string name="rig_hl2_lna">接收 LNA 增益</string>
     <string name="rig_host">主機</string>
     <string name="rig_port">埠號</string>
     <string name="rig_device">裝置</string>

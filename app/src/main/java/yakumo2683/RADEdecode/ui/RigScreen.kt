@@ -258,6 +258,7 @@ fun RigScreen(viewModel: TransceiverViewModel = viewModel()) {
     val rigState by viewModel.rigState.collectAsState()
     val usbState by viewModel.usbSerialState.collectAsState()
     val icomState by viewModel.icomNetworkState.collectAsState()
+    val hl2State by viewModel.hermesState.collectAsState()
     val connecting by viewModel.rigConnecting.collectAsState()
     val focusManager = LocalFocusManager.current
 
@@ -276,6 +277,10 @@ fun RigScreen(viewModel: TransceiverViewModel = viewModel()) {
     var icomPortInput by remember { mutableStateOf(rigPrefs.getString("icom_port", "50001") ?: "50001") }
     var icomUser by remember { mutableStateOf(rigPrefs.getString("icom_user", "") ?: "") }
     var icomPass by remember { mutableStateOf(rigPrefs.getString("icom_pass", "") ?: "") }
+    // Hermes-Lite 2 direct (openHPSDR protocol 1) mode fields
+    var hl2HostInput by remember { mutableStateOf(rigPrefs.getString("hl2_host", "") ?: "") }
+    var hl2Drive by remember { mutableFloatStateOf(viewModel.getSavedHl2Drive().toFloat()) }
+    var hl2Lna by remember { mutableFloatStateOf(viewModel.getSavedHl2LnaDb().toFloat()) }
     // Serial mode fields
     var serialSpeed by remember { mutableStateOf(rigPrefs.getString("baud", "19200") ?: "19200") }
     var selectedRigIndex by remember { mutableIntStateOf(rigPrefs.getInt("rig_index", 0).coerceIn(0, rigModels.size - 1)) }
@@ -294,10 +299,13 @@ fun RigScreen(viewModel: TransceiverViewModel = viewModel()) {
     var selectedMfg by remember { mutableStateOf(rigPrefs.getString("mfg_filter", "All") ?: "All") }
     var mfgExpanded by remember { mutableStateOf(false) }
 
+    val anyRigConnected = rigState.connected || hl2State.connected
+
     // Sync freq display when rig updates (show as kHz)
-    LaunchedEffect(rigState.freqHz) {
-        if (rigState.freqHz > 0) {
-            val khz = rigState.freqHz / 1000.0
+    LaunchedEffect(rigState.freqHz, hl2State.freqHz, hl2State.connected) {
+        val hz = if (hl2State.connected) hl2State.freqHz else rigState.freqHz
+        if (hz > 0) {
+            val khz = hz / 1000.0
             freqInput = if (khz == khz.toLong().toDouble()) khz.toLong().toString()
                         else String.format("%.1f", khz)
         }
@@ -313,37 +321,40 @@ fun RigScreen(viewModel: TransceiverViewModel = viewModel()) {
         // ── Connection mode selector ──
         SectionLabel(stringResource(R.string.header_connection))
 
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.spacedBy(8.dp)
-        ) {
-            listOf(
-                stringResource(R.string.rig_tcp_mode) to 0,
-                stringResource(R.string.rig_serial_mode) to 1,
-                stringResource(R.string.rig_network_mode) to 2
-            ).forEach { (label, idx) ->
-                val selected = connMode == idx
-                Surface(
-                    onClick = { if (!rigState.connected) connMode = idx },
-                    modifier = Modifier
-                        .weight(1f)
-                        .border(
-                            1.5f.dp,
-                            if (selected) Cyan400 else MaterialTheme.colorScheme.outline,
-                            RoundedCornerShape(10.dp)
-                        ),
-                    shape = RoundedCornerShape(10.dp),
-                    color = if (selected) Cyan600.copy(alpha = 0.2f) else SurfaceCard,
-                ) {
-                    Text(
-                        text = label,
-                        modifier = Modifier.padding(vertical = 10.dp),
-                        textAlign = TextAlign.Center,
-                        fontWeight = FontWeight.Bold,
-                        fontFamily = FontFamily.Monospace,
-                        fontSize = 13.sp,
-                        color = if (selected) Cyan400 else OnSurfaceDim
-                    )
+        listOf(
+            stringResource(R.string.rig_tcp_mode) to 0,
+            stringResource(R.string.rig_serial_mode) to 1,
+            stringResource(R.string.rig_network_mode) to 2,
+            stringResource(R.string.rig_hl2_network_mode) to 3
+        ).chunked(2).forEach { rowModes ->
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                rowModes.forEach { (label, idx) ->
+                    val selected = connMode == idx
+                    Surface(
+                        onClick = { if (!anyRigConnected) connMode = idx },
+                        modifier = Modifier
+                            .weight(1f)
+                            .border(
+                                1.5f.dp,
+                                if (selected) Cyan400 else MaterialTheme.colorScheme.outline,
+                                RoundedCornerShape(10.dp)
+                            ),
+                        shape = RoundedCornerShape(10.dp),
+                        color = if (selected) Cyan600.copy(alpha = 0.2f) else SurfaceCard,
+                    ) {
+                        Text(
+                            text = label,
+                            modifier = Modifier.padding(vertical = 10.dp),
+                            textAlign = TextAlign.Center,
+                            fontWeight = FontWeight.Bold,
+                            fontFamily = FontFamily.Monospace,
+                            fontSize = 13.sp,
+                            color = if (selected) Cyan400 else OnSurfaceDim
+                        )
+                    }
                 }
             }
         }
@@ -521,6 +532,56 @@ fun RigScreen(viewModel: TransceiverViewModel = viewModel()) {
                         modifier = Modifier.fillMaxWidth(),
                         textStyle = androidx.compose.ui.text.TextStyle(fontFamily = FontFamily.Monospace, fontSize = 14.sp),
                         colors = OutlinedTextFieldDefaults.colors(focusedBorderColor = Cyan400, focusedLabelColor = Cyan400, cursorColor = Cyan400)
+                    )
+                } else if (connMode == 3) {
+                    // Hermes-Lite 2 direct — openHPSDR protocol 1 on the LAN
+                    Text(
+                        stringResource(R.string.rig_hl2_network_hint),
+                        color = OnSurfaceDim,
+                        fontSize = 11.sp
+                    )
+                    OutlinedTextField(
+                        value = hl2HostInput,
+                        onValueChange = { hl2HostInput = it },
+                        label = { Text(stringResource(R.string.rig_host)) },
+                        placeholder = { Text(stringResource(R.string.rig_hl2_host_auto)) },
+                        singleLine = true,
+                        enabled = !hl2State.connected,
+                        modifier = Modifier.fillMaxWidth(),
+                        textStyle = androidx.compose.ui.text.TextStyle(fontFamily = FontFamily.Monospace, fontSize = 14.sp),
+                        colors = OutlinedTextFieldDefaults.colors(focusedBorderColor = Cyan400, focusedLabelColor = Cyan400, cursorColor = Cyan400)
+                    )
+                    if (hl2State.connected && hl2State.deviceName.isNotEmpty()) {
+                        Text(
+                            hl2State.deviceName,
+                            color = GreenBright,
+                            fontSize = 12.sp,
+                            fontFamily = FontFamily.Monospace
+                        )
+                    }
+                    Text(
+                        stringResource(R.string.rig_hl2_drive) + ": ${hl2Drive.toInt()} / 255",
+                        color = OnSurfaceDim,
+                        fontSize = 12.sp,
+                        fontFamily = FontFamily.Monospace
+                    )
+                    Slider(
+                        value = hl2Drive,
+                        onValueChange = { hl2Drive = it; viewModel.hl2SetDrive(it.toInt()) },
+                        valueRange = 0f..255f,
+                        colors = SliderDefaults.colors(thumbColor = Cyan400, activeTrackColor = Cyan600)
+                    )
+                    Text(
+                        stringResource(R.string.rig_hl2_lna) + ": ${hl2Lna.toInt()} dB",
+                        color = OnSurfaceDim,
+                        fontSize = 12.sp,
+                        fontFamily = FontFamily.Monospace
+                    )
+                    Slider(
+                        value = hl2Lna,
+                        onValueChange = { hl2Lna = it; viewModel.hl2SetLnaDb(it.toInt()) },
+                        valueRange = -12f..48f,
+                        colors = SliderDefaults.colors(thumbColor = Cyan400, activeTrackColor = Cyan600)
                     )
                 } else {
                     // Serial mode — manufacturer + model dropdowns
@@ -788,7 +849,7 @@ fun RigScreen(viewModel: TransceiverViewModel = viewModel()) {
                 Button(
                     onClick = {
                         focusManager.clearFocus()
-                        if (rigState.connected) {
+                        if (anyRigConnected) {
                             viewModel.rigDisconnect()
                         } else {
                             // Persist settings on connect
@@ -805,6 +866,7 @@ fun RigScreen(viewModel: TransceiverViewModel = viewModel()) {
                                 .putString("icom_port", icomPortInput)
                                 .putString("icom_user", icomUser)
                                 .putString("icom_pass", icomPass)
+                                .putString("hl2_host", hl2HostInput)
                                 .apply()
 
                             if (connMode == 0) {
@@ -827,6 +889,8 @@ fun RigScreen(viewModel: TransceiverViewModel = viewModel()) {
                             } else if (connMode == 2) {
                                 val port = icomPortInput.toIntOrNull() ?: 50001
                                 viewModel.rigStartIcomNetwork(hostInput, port, icomUser, icomPass)
+                            } else if (connMode == 3) {
+                                viewModel.rigStartHermesNetwork(hl2HostInput)
                             } else {
                                 val rig = rigModels[selectedRigIndex]
                                 viewModel.rigMfg = rig.mfg
@@ -846,12 +910,12 @@ fun RigScreen(viewModel: TransceiverViewModel = viewModel()) {
                             }
                         }
                     },
-                    enabled = !connecting && (rigState.connected || connMode == 0 || connMode == 2 || usbState.devices.isNotEmpty()),
+                    enabled = !connecting && (anyRigConnected || connMode == 0 || connMode == 2 || connMode == 3 || usbState.devices.isNotEmpty()),
                     modifier = Modifier.fillMaxWidth().height(46.dp),
                     shape = RoundedCornerShape(10.dp),
                     colors = ButtonDefaults.buttonColors(
                         containerColor = when {
-                            rigState.connected -> Red400
+                            anyRigConnected -> Red400
                             connecting -> OnSurfaceDim
                             else -> Cyan600
                         }
@@ -871,13 +935,13 @@ fun RigScreen(viewModel: TransceiverViewModel = viewModel()) {
                         )
                     } else {
                         Icon(
-                            if (rigState.connected) Icons.Default.LinkOff else Icons.Default.Link,
+                            if (anyRigConnected) Icons.Default.LinkOff else Icons.Default.Link,
                             contentDescription = null,
                             modifier = Modifier.size(20.dp)
                         )
                         Spacer(Modifier.width(8.dp))
                         Text(
-                            if (rigState.connected) stringResource(R.string.btn_disconnect) else stringResource(R.string.btn_connect),
+                            if (anyRigConnected) stringResource(R.string.btn_disconnect) else stringResource(R.string.btn_connect),
                             fontWeight = FontWeight.Bold,
                             letterSpacing = 2.sp
                         )
@@ -893,6 +957,9 @@ fun RigScreen(viewModel: TransceiverViewModel = viewModel()) {
                 if (icomState.error.isNotEmpty() && connMode == 2) {
                     Text(icomState.error, color = Red400, fontSize = 12.sp)
                 }
+                if (hl2State.error.isNotEmpty() && connMode == 3) {
+                    Text(hl2State.error, color = Red400, fontSize = 12.sp)
+                }
             }
         }
 
@@ -902,20 +969,27 @@ fun RigScreen(viewModel: TransceiverViewModel = viewModel()) {
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(8.dp)
         ) {
+            val statusConnected = if (connMode == 3) hl2State.connected else rigState.connected
+            val statusPtt = if (connMode == 3) hl2State.ptt else rigState.ptt
             Box(
                 modifier = Modifier
                     .size(10.dp)
                     .clip(CircleShape)
-                    .background(if (rigState.connected) GreenBright else Red400)
+                    .background(if (statusConnected) GreenBright else Red400)
             )
             Text(
-                if (rigState.connected) stringResource(R.string.rig_connected_to, rigState.host, rigState.port) else stringResource(R.string.rig_not_connected),
+                when {
+                    connMode == 3 && hl2State.connected -> hl2State.deviceName
+                    connMode == 3 -> stringResource(R.string.rig_not_connected)
+                    rigState.connected -> stringResource(R.string.rig_connected_to, rigState.host, rigState.port)
+                    else -> stringResource(R.string.rig_not_connected)
+                },
                 fontSize = 12.sp,
-                color = if (rigState.connected) GreenBright else OnSurfaceDim,
+                color = if (statusConnected) GreenBright else OnSurfaceDim,
                 fontFamily = FontFamily.Monospace
             )
             Spacer(Modifier.weight(1f))
-            if (rigState.ptt) {
+            if (statusPtt) {
                 Text(
                     "TX",
                     color = Red400,
@@ -927,9 +1001,10 @@ fun RigScreen(viewModel: TransceiverViewModel = viewModel()) {
             }
         }
 
-        // Wi-Fi audio-stream status (full wireless). Only shown in network mode
-        // once control is up — tells the user whether RX/TX audio rides Wi-Fi.
-        if (connMode == 2 && rigState.connected) {
+        // Network audio/IQ stream status (full wireless). Only shown once
+        // control is up — tells the user whether RX/TX audio rides the network.
+        if ((connMode == 2 && rigState.connected) || (connMode == 3 && hl2State.connected)) {
+            val netAudioUp = if (connMode == 3) hl2State.streaming else icomState.audioConnected
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 verticalAlignment = Alignment.CenterVertically,
@@ -939,13 +1014,13 @@ fun RigScreen(viewModel: TransceiverViewModel = viewModel()) {
                     modifier = Modifier
                         .size(10.dp)
                         .clip(CircleShape)
-                        .background(if (icomState.audioConnected) GreenBright else Red400)
+                        .background(if (netAudioUp) GreenBright else Red400)
                 )
                 Text(
-                    if (icomState.audioConnected) stringResource(R.string.rig_net_audio_on)
+                    if (netAudioUp) stringResource(R.string.rig_net_audio_on)
                     else stringResource(R.string.rig_net_audio_off),
                     fontSize = 12.sp,
-                    color = if (icomState.audioConnected) GreenBright else Red400,
+                    color = if (netAudioUp) GreenBright else Red400,
                     fontFamily = FontFamily.Monospace
                 )
             }
@@ -967,12 +1042,12 @@ fun RigScreen(viewModel: TransceiverViewModel = viewModel()) {
             ) {
                 // Frequency display
                 Text(
-                    text = formatFreq(rigState.freqHz),
+                    text = formatFreq(if (hl2State.connected) hl2State.freqHz else rigState.freqHz),
                     fontSize = 36.sp,
                     fontWeight = FontWeight.Bold,
                     fontFamily = FontFamily.Monospace,
                     letterSpacing = 1.sp,
-                    color = if (rigState.connected) Cyan400 else OnSurfaceDim,
+                    color = if (anyRigConnected) Cyan400 else OnSurfaceDim,
                     textAlign = TextAlign.Center,
                     modifier = Modifier.fillMaxWidth()
                 )
@@ -990,7 +1065,7 @@ fun RigScreen(viewModel: TransceiverViewModel = viewModel()) {
                         onValueChange = { freqInput = it.filter { c -> c.isDigit() || c == '.' } },
                         label = { Text(stringResource(R.string.rig_freq_khz)) },
                         singleLine = true,
-                        enabled = rigState.connected,
+                        enabled = anyRigConnected,
                         modifier = Modifier.weight(1f),
                         keyboardOptions = KeyboardOptions(
                             keyboardType = KeyboardType.Number,
@@ -1016,7 +1091,7 @@ fun RigScreen(viewModel: TransceiverViewModel = viewModel()) {
                             freqInput.toDoubleOrNull()?.let { viewModel.rigSetFreq((it * 1000).toLong()) }
                             focusManager.clearFocus()
                         },
-                        enabled = rigState.connected,
+                        enabled = anyRigConnected,
                         shape = RoundedCornerShape(10.dp),
                         colors = ButtonDefaults.buttonColors(containerColor = Cyan600)
                     ) {

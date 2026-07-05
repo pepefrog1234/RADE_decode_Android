@@ -31,7 +31,7 @@ import java.net.SocketTimeoutException
  * The radio must have "Network control" enabled and a Network User name/password
  * configured in its menu (Set > Network).
  */
-class IcomNetworkManager {
+class IcomNetworkManager : NetworkAudioRig {
 
     companion object {
         private const val TAG = "IcomNetwork"
@@ -116,11 +116,14 @@ class IcomNetworkManager {
 
     /** Callback for received, in-order audio PCM (int16 mono at [NET_AUDIO_RATE]).
      *  Set by AudioService; invoked on the audio stream's consume coroutine. */
-    @Volatile var onAudioPcm: ((ShortArray) -> Unit)? = null
+    @Volatile override var onAudioPcm: ((ShortArray) -> Unit)? = null
 
     private val _state = MutableStateFlow(State())
     val state: StateFlow<State> = _state.asStateFlow()
-    val isConnected: Boolean get() = _state.value.connected
+    override val isConnected: Boolean get() = _state.value.connected
+    override val audioLinkUp: Boolean get() = _state.value.audioConnected
+    override val audioRate: Int get() = NET_AUDIO_RATE
+    override val txFrameSamples: Int get() = NET_AUDIO_FRAME_SAMPLES
 
     private var connScope: CoroutineScope? = null
 
@@ -406,7 +409,7 @@ class IcomNetworkManager {
      * Send one 20 ms TX audio frame (960 int16 samples @ 48 kHz) to the radio,
      * fragmented into the two packet sizes the radio expects (1364 B + 556 B).
      */
-    fun sendAudioFrame(pcm: ShortArray) {
+    override fun sendAudioFrame(pcm: ShortArray) {
         val aud = audio ?: return
         val bytes = ByteArray(pcm.size * 2)
         var bi = 0

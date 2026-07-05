@@ -20,6 +20,7 @@ import yakumo2683.RADEdecode.AudioBridge
 import yakumo2683.RADEdecode.RxOutputTester
 import yakumo2683.RADEdecode.location.LocationTracker
 import yakumo2683.RADEdecode.network.FreeDVReporter
+import yakumo2683.RADEdecode.network.HermesNetworkManager
 import yakumo2683.RADEdecode.network.IcomNetworkManager
 import yakumo2683.RADEdecode.network.RigController
 import yakumo2683.RADEdecode.network.RigctldProcess
@@ -49,6 +50,10 @@ class TransceiverViewModel(application: Application) : AndroidViewModel(applicat
     /* ── Icom network rig control (RS-BA1 WLAN, e.g. IC-705) ─── */
     private val icomNetwork = IcomNetworkManager()
     val icomNetworkState: StateFlow<IcomNetworkManager.State> = icomNetwork.state
+
+    /* ── Hermes-Lite 2 direct network control (openHPSDR protocol 1) ─── */
+    private val hermesNetwork = HermesNetworkManager()
+    val hermesState: StateFlow<HermesNetworkManager.State> = hermesNetwork.state
 
     data class UiState(
         val isRunning: Boolean = false,    // RX is active
@@ -106,7 +111,10 @@ class TransceiverViewModel(application: Application) : AndroidViewModel(applicat
             val service = (binder as AudioService.LocalBinder).service
             audioService = service
             service.reporter = reporter
-            service.icomNetwork = icomNetwork   // enables full-wireless audio when IC-705 Wi-Fi is up
+            // Enables full-wireless audio when a network rig is up (IC-705
+            // Wi-Fi or a Hermes-Lite 2 on the LAN).
+            service.networkRig =
+                if (hermesNetwork.isConnected) hermesNetwork else icomNetwork
             // Restore persisted audio settings
             service.setInputGain(prefs.getFloat("input_gain", 4.0f))
             service.setTxMicGain(prefs.getFloat("tx_mic_gain", 4.0f))
@@ -198,6 +206,21 @@ class TransceiverViewModel(application: Application) : AndroidViewModel(applicat
             }
         }
 
+        // Hermes-Lite 2 state → forward frequency changes like the rigctld path.
+        viewModelScope.launch {
+            var lastFreq = 0L
+            hermesNetwork.state.collect { hs ->
+                if (!hs.connected) { lastFreq = 0L; return@collect }
+                val engineActive = _uiState.value.isRunning || _uiState.value.isTx
+                if (engineActive && hs.freqHz > 0 && hs.freqHz != lastFreq &&
+                    reporter.connected.value
+                ) {
+                    lastFreq = hs.freqHz
+                    reporter.reportFreqChange(hs.freqHz)
+                }
+            }
+        }
+
         // Engine start → push current freq immediately so web UI pins our station.
         // Engine stop → just stop sending rx_report; we rely on each viewer's own
         // client-side timeout to clear our "receiving" indicator. Reconnecting to
@@ -208,8 +231,12 @@ class TransceiverViewModel(application: Application) : AndroidViewModel(applicat
                 .map { it.isRunning || it.isTx }
                 .distinctUntilChanged()
                 .collect { active ->
-                    if (active && rigController.isConnected && reporter.connected.value) {
-                        val freq = rigController.state.value.freqHz
+                    if (active && reporter.connected.value) {
+                        val freq = when {
+                            rigController.isConnected -> rigController.state.value.freqHz
+                            hermesNetwork.isConnected -> hermesNetwork.state.value.freqHz
+                            else -> 0L
+                        }
                         if (freq > 0) reporter.reportFreqChange(freq)
                     }
                 }
@@ -219,9 +246,13 @@ class TransceiverViewModel(application: Application) : AndroidViewModel(applicat
         viewModelScope.launch {
             reporter.connected.collect { connected ->
                 if (connected) {
-                    val freq = rigController.state.value.freqHz
+                    val freq = when {
+                        rigController.isConnected -> rigController.state.value.freqHz
+                        hermesNetwork.isConnected -> hermesNetwork.state.value.freqHz
+                        else -> 0L
+                    }
                     val engineActive = _uiState.value.isRunning || _uiState.value.isTx
-                    if (rigController.isConnected && engineActive && freq > 0) {
+                    if (engineActive && freq > 0) {
                         reporter.reportFreqChange(freq)
                     }
                     if (_uiState.value.isTx) reporter.reportTx(true)
@@ -272,7 +303,8 @@ class TransceiverViewModel(application: Application) : AndroidViewModel(applicat
      *  routing on the deterministic control-connected flag (not the racy
      *  audioConnected flag) is what makes Start actually pick the wireless path.
      *  The audioConnected flag is surfaced separately in the UI for status. */
-    private fun useNetworkAudio(): Boolean = icomNetwork.isConnected
+    private fun useNetworkAudio(): Boolean =
+        icomNetwork.isConnected || hermesNetwork.isConnected
 
     fun startReceiving() {
         val app = getApplication<Application>()
@@ -449,6 +481,10 @@ class TransceiverViewModel(application: Application) : AndroidViewModel(applicat
         if (rigController.isConnected) {
             pttKeyedByApp = true
             viewModelScope.launch { rigController.setPtt(true) }
+        } else if (hermesNetwork.isConnected) {
+            // HL2 direct: the MOX bit rides the protocol-1 C&C stream.
+            pttKeyedByApp = true
+            hermesNetwork.setPtt(true)
         }
         if (useNetworkAudio()) {
             // Full wireless: mic → encoder → UDP 50003. No USB audio devices.
@@ -555,6 +591,13 @@ class TransceiverViewModel(application: Application) : AndroidViewModel(applicat
         // socket timeout, so retry with backoff until rigctld acknowledges.
         if (pttKeyedByApp) {
             delay(TX_PTT_TAIL_MS)
+            if (hermesNetwork.isConnected && !rigController.isConnected) {
+                // HL2 direct: MOX=0 rides every subsequent C&C frame — no ack
+                // round-trip to lose, so no retry loop is needed.
+                hermesNetwork.setPtt(false)
+                pttKeyedByApp = false
+                return
+            }
             var unkeyed = false
             for (attempt in 1..5) {
                 try {
@@ -843,7 +886,49 @@ class TransceiverViewModel(application: Application) : AndroidViewModel(applicat
         rigctldProcess.stop()
         usbSerialManager.close()
         icomNetwork.disconnect()
+        hermesNetwork.disconnect()
     }
+
+    /**
+     * Connect straight to a Hermes-Lite 2 over openHPSDR protocol 1 (UDP 1024):
+     * discovery (broadcast when [host] is blank), C&C for frequency/PTT/drive,
+     * and the 48 kHz I/Q stream that the manager translates to/from the 8 kHz
+     * modem audio. No rigctld and no PC host involved.
+     */
+    fun rigStartHermesNetwork(host: String) {
+        if (_rigConnecting.value || rigController.isConnected || hermesNetwork.isConnected) return
+        _rigConnecting.value = true
+        rigMfg = "OpenHPSDR"
+
+        viewModelScope.launch(Dispatchers.IO) {
+            try {
+                rigctldProcess.stop()
+                // Apply persisted controls before connect so the first C&C
+                // frames already carry them.
+                hermesNetwork.setFrequency(prefs.getLong("hl2_freq", 14_236_000L))
+                hermesNetwork.setDrive(prefs.getInt("hl2_drive", 128))
+                hermesNetwork.setLnaDb(prefs.getInt("hl2_lna", 19))
+                if (hermesNetwork.connect(host)) {
+                    audioService?.networkRig = hermesNetwork
+                }
+            } finally {
+                _rigConnecting.value = false
+            }
+        }
+    }
+
+    fun hl2SetDrive(v: Int) {
+        prefs.edit().putInt("hl2_drive", v).apply()
+        hermesNetwork.setDrive(v)
+    }
+
+    fun hl2SetLnaDb(v: Int) {
+        prefs.edit().putInt("hl2_lna", v).apply()
+        hermesNetwork.setLnaDb(v)
+    }
+
+    fun getSavedHl2Drive(): Int = prefs.getInt("hl2_drive", 128)
+    fun getSavedHl2LnaDb(): Int = prefs.getInt("hl2_lna", 19)
 
     /**
      * Start rig control over the radio's own Wi-Fi (Icom RS-BA1 network protocol,
@@ -861,6 +946,7 @@ class TransceiverViewModel(application: Application) : AndroidViewModel(applicat
                 rigctldProcess.stop()
                 val ptyPath = icomNetwork.connect(host, controlPort, username, password)
                 if (ptyPath.isEmpty()) return@launch   // icomNetwork.state carries the error
+                audioService?.networkRig = icomNetwork
 
                 val ok = rigctldProcess.startWithPty(
                     model = 3085,          // IC-705
@@ -995,6 +1081,13 @@ class TransceiverViewModel(application: Application) : AndroidViewModel(applicat
     private val noDataModeMfgs = setOf("Xiegu", "Alinco", "Drake", "AOR", "JRC")
 
     fun rigSetFreq(hz: Long) {
+        if (hermesNetwork.isConnected) {
+            // HL2 direct: NCO frequency rides the C&C stream; SSB "mode" is
+            // implicit in the app's own demodulator (USB passband).
+            hermesNetwork.setFrequency(hz)
+            prefs.edit().putLong("hl2_freq", hz).apply()
+            return
+        }
         viewModelScope.launch {
             rigController.setFreq(hz)
             // Auto-pick data mode for the band. RigController.setMode preserves the
@@ -1066,6 +1159,7 @@ class TransceiverViewModel(application: Application) : AndroidViewModel(applicat
         rigctldProcess.destroy()
         usbSerialManager.destroy()
         icomNetwork.disconnect()
+        hermesNetwork.disconnect()
         try {
             getApplication<Application>().unbindService(serviceConnection)
         } catch (_: Exception) { }
