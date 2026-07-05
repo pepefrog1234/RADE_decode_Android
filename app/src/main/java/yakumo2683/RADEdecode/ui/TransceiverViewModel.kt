@@ -747,7 +747,7 @@ class TransceiverViewModel(application: Application) : AndroidViewModel(applicat
             arrayOf(
                 "logcat", "-d", "-v", "time",
                 "RigController:V", "RigctldProcess:V",
-                "UsbPtyBridge:V", "UsbSerialManager:V", "*:S"
+                "UsbPtyBridge:V", "UsbSerialManager:V", "HermesNet:V", "*:S"
             )
         )
         val out = proc.inputStream.bufferedReader().use { it.readText() }
@@ -772,7 +772,8 @@ class TransceiverViewModel(application: Application) : AndroidViewModel(applicat
         val proc = Runtime.getRuntime().exec(
             arrayOf(
                 "logcat", "-d", "-v", "time",
-                "AudioService:V", "AudioBridge:V", "AudioEngine:V", "RADE_JNI:V", "*:S"
+                "AudioService:V", "AudioBridge:V", "AudioEngine:V", "RADE_JNI:V",
+                "HermesNet:V", "*:S"
             )
         )
         val out = proc.inputStream.bufferedReader().use { it.readText() }

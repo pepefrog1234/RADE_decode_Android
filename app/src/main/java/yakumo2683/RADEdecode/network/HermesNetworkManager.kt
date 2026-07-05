@@ -107,6 +107,10 @@ class HermesNetworkManager : NetworkAudioRig {
     @Volatile private var lastEp6Nanos = 0L
     @Volatile private var lastEp2Nanos = 0L
 
+    /* TX health counters (reset each 1 s stats interval by the pacer) */
+    @Volatile private var ep2SentInterval = 0
+    @Volatile private var txIqUnderrunInterval = 0
+
     /* ── Radio control state (C&C) ──────────────────────────── */
 
     @Volatile private var mox = false
@@ -216,6 +220,7 @@ class HermesNetworkManager : NetworkAudioRig {
     fun setFrequency(hz: Long) {
         freqHz = hz.coerceIn(10_000L, 60_000_000L)
         _state.value = _state.value.copy(freqHz = freqHz)
+        Log.i(TAG, "Frequency set: $freqHz Hz")
     }
 
     /** Key/unkey. The MOX bit rides every EP2 frame; I/Q is zero when idle. */
@@ -227,11 +232,17 @@ class HermesNetworkManager : NetworkAudioRig {
         Log.i(TAG, "PTT ${if (on) "ON" else "OFF"}")
     }
 
-    /** Hardware TX drive level 0..255 (addr 0x09). */
-    fun setDrive(v: Int) { txDrive = v.coerceIn(0, 255) }
+    /** Hardware TX drive level 0..255 (addr 0x09). Zero = keyed but no RF. */
+    fun setDrive(v: Int) {
+        txDrive = v.coerceIn(0, 255)
+        Log.i(TAG, "TX drive set: $txDrive/255")
+    }
 
     /** RX LNA gain in dB, -12..+48 (HL2 addr 0x0A). */
-    fun setLnaDb(v: Int) { lnaDb = v.coerceIn(-12, 48) }
+    fun setLnaDb(v: Int) {
+        lnaDb = v.coerceIn(-12, 48)
+        Log.i(TAG, "RX LNA gain set: $lnaDb dB")
+    }
 
     /* ── Protocol: control packets ──────────────────────────── */
 
@@ -283,8 +294,11 @@ class HermesNetworkManager : NetworkAudioRig {
                 }
                 parseUsbFrame(buf, 8)
                 parseUsbFrame(buf, 520)
-                // Radio-clocked 1:1 pacing: one EP2 per EP6.
-                sendEp2()
+                // Radio-clocked 1:1 pacing while idle: one EP2 per EP6. During
+                // MOX the pacer loop self-clocks EP2 instead — some gateware
+                // stops the RX stream while transmitting, and TX I/Q must not
+                // die with it.
+                if (!mox) sendEp2()
             }
         }
     }
@@ -330,6 +344,7 @@ class HermesNetworkManager : NetworkAudioRig {
             try {
                 sock.send(DatagramPacket(ep2Buf, ep2Buf.size, addr))
                 lastEp2Nanos = System.nanoTime()
+                ep2SentInterval++
             } catch (e: Exception) {
                 Log.w(TAG, "EP2 send failed", e)
             }
@@ -347,14 +362,18 @@ class HermesNetworkManager : NetworkAudioRig {
             var i16 = 0
             var q16 = 0
             if (keyed) {
+                var underrun = false
                 synchronized(txIqLock) {
                     if (txIqCount >= 2) {
                         i16 = txIqRing[txIqRead].toInt()
                         q16 = txIqRing[txIqRead + 1].toInt()
                         txIqRead = (txIqRead + 2) % txIqRing.size
                         txIqCount -= 2
+                    } else {
+                        underrun = true
                     }
                 }
+                if (underrun) txIqUnderrunInterval++
             }
             buf[p + 4] = (i16 shr 8).toByte(); buf[p + 5] = i16.toByte()
             buf[p + 6] = (q16 shr 8).toByte(); buf[p + 7] = q16.toByte()
@@ -403,21 +422,62 @@ class HermesNetworkManager : NetworkAudioRig {
     }
 
     /**
-     * Safety net when EP6 is not flowing (pre-stream, or an RX stall): keep
-     * C&C alive when idle, and self-pace TX I/Q at the true 48 kHz rate when
-     * keyed so an over never dies with the RX stream.
+     * EP2 pacer. While keyed (MOX) it self-clocks EP2 at exactly 48 kHz with
+     * absolute deadlines — TX must never depend on the radio's RX stream,
+     * which some gateware stops while transmitting; a >40 ms slip (coarse
+     * phone timers, GC) resyncs instead of firing a catch-up burst that would
+     * overflow the radio's small TX FIFO. While idle it is only a safety net:
+     * the reader loop paces EP2 1:1 off EP6, and this loop just keeps C&C
+     * alive when the stream is not flowing (pre-stream, stall).
+     *
+     * Once per second while keyed it logs TX health — packets sent, I/Q ring
+     * level, underrun samples (keyed but ring empty → zeros sent), drive and
+     * frequency — so a single in-app log capture pinpoints whether missing RF
+     * is "no I/Q produced", "drive at zero", or "packets not reaching the
+     * radio".
      */
     private suspend fun fallbackPacer() {
         var next = System.nanoTime()
+        var wasMox = false
+        var statNs = System.nanoTime()
         while (currentScope()?.isActive == true) {
-            delay(5)
-            val stale = System.nanoTime() - lastEp6Nanos > 100_000_000L
-            if (!stale) { next = System.nanoTime() + PACKET_NS; continue }
             if (mox) {
+                if (!wasMox) {
+                    wasMox = true
+                    next = System.nanoTime()
+                    statNs = next
+                    ep2SentInterval = 0
+                    txIqUnderrunInterval = 0
+                }
                 val now = System.nanoTime()
-                while (next <= now) { sendEp2(); next += PACKET_NS }
-            } else if (System.nanoTime() - lastEp2Nanos > 200_000_000L) {
-                sendEp2()
+                if (next < now - 40_000_000L) {
+                    Log.w(TAG, "TX pacer resync (fell ${(now - next) / 1_000_000} ms behind)")
+                    next = now
+                }
+                while (next <= System.nanoTime()) {
+                    sendEp2()
+                    next += PACKET_NS
+                }
+                if (System.nanoTime() - statNs >= 1_000_000_000L) {
+                    statNs = System.nanoTime()
+                    val ringLevel = synchronized(txIqLock) { txIqCount }
+                    Log.i(
+                        TAG,
+                        "TX health: ep2=${ep2SentInterval}/s iqRing=$ringLevel " +
+                            "underrun=${txIqUnderrunInterval} drive=$txDrive freq=$freqHz"
+                    )
+                    ep2SentInterval = 0
+                    txIqUnderrunInterval = 0
+                }
+                delay(2)
+            } else {
+                wasMox = false
+                if (System.nanoTime() - lastEp6Nanos > 100_000_000L &&
+                    System.nanoTime() - lastEp2Nanos > 200_000_000L
+                ) {
+                    sendEp2()
+                }
+                delay(20)
             }
         }
     }
