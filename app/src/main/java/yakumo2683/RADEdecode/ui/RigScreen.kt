@@ -281,6 +281,7 @@ fun RigScreen(viewModel: TransceiverViewModel = viewModel()) {
     var hl2HostInput by remember { mutableStateOf(rigPrefs.getString("hl2_host", "") ?: "") }
     var hl2Drive by remember { mutableFloatStateOf(viewModel.getSavedHl2Drive().toFloat()) }
     var hl2Lna by remember { mutableFloatStateOf(viewModel.getSavedHl2LnaDb().toFloat()) }
+    var hl2Pa by remember { mutableStateOf(viewModel.getSavedHl2PaEnabled()) }
     // Serial mode fields
     var serialSpeed by remember { mutableStateOf(rigPrefs.getString("baud", "19200") ?: "19200") }
     var selectedRigIndex by remember { mutableIntStateOf(rigPrefs.getInt("rig_index", 0).coerceIn(0, rigModels.size - 1)) }
@@ -557,6 +558,28 @@ fun RigScreen(viewModel: TransceiverViewModel = viewModel()) {
                             color = GreenBright,
                             fontSize = 12.sp,
                             fontFamily = FontFamily.Monospace
+                        )
+                    }
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Column(Modifier.weight(1f)) {
+                            Text(
+                                stringResource(R.string.rig_hl2_pa),
+                                fontSize = 13.sp,
+                                fontFamily = FontFamily.Monospace
+                            )
+                            Text(
+                                stringResource(R.string.rig_hl2_pa_hint),
+                                color = OnSurfaceDim,
+                                fontSize = 11.sp
+                            )
+                        }
+                        Switch(
+                            checked = hl2Pa,
+                            onCheckedChange = { hl2Pa = it; viewModel.hl2SetPaEnabled(it) },
+                            colors = SwitchDefaults.colors(checkedTrackColor = Cyan600)
                         )
                     }
                     Text(

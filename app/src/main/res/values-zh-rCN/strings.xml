@@ -172,6 +172,8 @@
     <string name="rig_hl2_host_auto">自动发现（广播）</string>
     <string name="rig_hl2_drive">发射驱动</string>
     <string name="rig_hl2_lna">接收 LNA 增益</string>
+    <string name="rig_hl2_pa">PA（5 W 输出）</string>
+    <string name="rig_hl2_pa_hint">开 = 经功率放大器从主天线接口输出。关 = 从低功率（约 10 mW）接口输出，主天线接口保持接收。</string>
     <string name="rig_host">主机</string>
     <string name="rig_port">端口</string>
     <string name="rig_device">设备</string>

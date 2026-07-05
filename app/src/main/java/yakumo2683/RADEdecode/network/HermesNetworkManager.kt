@@ -72,11 +72,12 @@ class HermesNetworkManager(private val appContext: Context? = null) : NetworkAud
         private const val SSB_HALF_BW = 1200.0                      // 300..2700 Hz
 
         // HL2 addr 0x17: radio-side TX FIFO priming depth + PTT hang. The
-        // gateware default latency is only ~10 ms — any phone-side scheduling
+        // gateware default latency is only ~20 ms — any phone-side scheduling
         // hiccup longer than that underruns the radio's FIFO mid-over
         // (choppy/unstable RF). 40 ms matches common PC hosts (Quisk).
+        // Hang stays at the gateware default (12 ms).
         private const val TX_BUFFER_LATENCY_MS = 40
-        private const val PTT_HANG_MS = 4
+        private const val PTT_HANG_MS = 12
 
         private const val DECIM_TAPS = 144                          // 24 per phase × 6
         private const val ANALYTIC_TAPS = 129
@@ -168,6 +169,7 @@ class HermesNetworkManager(private val appContext: Context? = null) : NetworkAud
     @Volatile private var freqHz = 14_236_000L
     @Volatile private var txDrive = 128                             // 0..255
     @Volatile private var lnaDb = 19                                // -12..+48
+    @Volatile private var paEnabled = true                          // 5W PA vs low-power out
     private var ccRotation = 0
     private var ep2Seq = 0L
 
@@ -314,6 +316,18 @@ class HermesNetworkManager(private val appContext: Context? = null) : NetworkAud
     fun setLnaDb(v: Int) {
         lnaDb = v.coerceIn(-12, 48)
         Log.i(TAG, "RX LNA gain set: $lnaDb dB")
+    }
+
+    /**
+     * Select the 5 W power-amplifier output (addr 0x09 bit 19). The HL2 has
+     * TWO RF connectors: with the PA off (gateware default) TX leaves the
+     * low-power (~10 mW) jack — "keys but no power on the antenna". Off keeps
+     * the low-power path and additionally parks the T/R relay on RX (bit 18)
+     * so the main antenna keeps receiving.
+     */
+    fun setPaEnabled(v: Boolean) {
+        paEnabled = v
+        Log.i(TAG, "PA ${if (v) "ENABLED (5W output)" else "disabled (low-power output)"}")
     }
 
     /* ── Protocol: control packets ──────────────────────────── */
@@ -495,9 +509,14 @@ class HermesNetworkManager(private val appContext: Context? = null) : NetworkAud
         val moxBit = if (mox) 1 else 0
         buf[off + 1] = 0; buf[off + 2] = 0; buf[off + 3] = 0; buf[off + 4] = 0
         when (ccRotation) {
-            0 -> {  // addr 0x00: speed 48 kHz, 1 receiver, duplex on
+            0 -> {  // addr 0x00: speed 48 kHz, filter-board OC bits, duplex on
                 buf[off] = moxBit.toByte()
                 buf[off + 1] = 0x00                     // 48 kHz
+                // OC outputs C2[7:1]: the gateware forwards these to the
+                // N2ADR filter board over I2C (bits 6:0 of the data byte).
+                // Without them no low-pass filter is selected and the TX
+                // path through the board is open — keys but no RF.
+                buf[off + 2] = (filterOcBits(freqHz) shl 1).toByte()
                 buf[off + 4] = 0x04                     // duplex — RX runs through TX
             }
             1 -> {  // addr 0x01: TX NCO frequency
@@ -508,9 +527,14 @@ class HermesNetworkManager(private val appContext: Context? = null) : NetworkAud
                 buf[off] = ((0x02 shl 1) or moxBit).toByte()
                 putFreq(buf, off + 1, freqHz)
             }
-            3 -> {  // addr 0x09: TX drive level
+            3 -> {  // addr 0x09: TX drive level + PA routing
                 buf[off] = ((0x09 shl 1) or moxBit).toByte()
                 buf[off + 1] = txDrive.toByte()
+                // bit19 (C2[3]): PA on → TX leaves the 5 W antenna jack.
+                // With the PA off, bit18 (C2[2]) parks the T/R relay on RX so
+                // the main antenna keeps receiving while the low-power jack
+                // carries TX.
+                buf[off + 2] = if (paEnabled) 0x08 else 0x04
             }
             4 -> {  // addr 0x0A: HL2 LNA gain (bit6 = manual, value = dB + 12)
                 buf[off] = ((0x0A shl 1) or moxBit).toByte()
@@ -523,6 +547,24 @@ class HermesNetworkManager(private val appContext: Context? = null) : NetworkAud
             }
         }
         ccRotation = (ccRotation + 1) % 6
+    }
+
+    /**
+     * N2ADR filter-board byte (one-hot, per the board's MCP23008 mapping):
+     * bits 0..5 = 160 / 80 / 60-40 / 30-20 / 17-15 / 12-10 m low-pass
+     * filters, bit 6 = 3 MHz receive high-pass (used on every band except
+     * 160 m; the board hardware switches it out on TX automatically).
+     */
+    private fun filterOcBits(hz: Long): Int {
+        val lpf = when {
+            hz <= 2_300_000L -> 0x01
+            hz <= 4_700_000L -> 0x02
+            hz <= 7_800_000L -> 0x04
+            hz <= 15_000_000L -> 0x08
+            hz <= 22_000_000L -> 0x10
+            else -> 0x20
+        }
+        return if (lpf == 0x01) lpf else lpf or 0x40
     }
 
     private fun putFreq(buf: ByteArray, off: Int, hz: Long) {
@@ -605,6 +647,8 @@ class HermesNetworkManager(private val appContext: Context? = null) : NetworkAud
                         TAG,
                         "TX health: ep2=${ep2SentInterval}/s iqRing=$ringLevel " +
                             "underrun=${txIqUnderrunInterval} drive=$txDrive freq=$freqHz " +
+                            "pa=${if (paEnabled) 1 else 0} " +
+                            "oc=0x%02X ".format(filterOcBits(freqHz)) +
                             "| radio: ep6=${ep6RecvInterval}/s gaps=${ep6GapInterval} " +
                             "fwd=$radioFwdPower rev=$radioRevPower paI=$radioPaCurrent " +
                             "temp=$radioTemp ovf=${if (radioAdcOverflow) 1 else 0}"

@@ -172,6 +172,8 @@
     <string name="rig_hl2_host_auto">自動探索（廣播）</string>
     <string name="rig_hl2_drive">發射驅動</string>
     <string name="rig_hl2_lna">接收 LNA 增益</string>
+    <string name="rig_hl2_pa">PA（5 W 輸出）</string>
+    <string name="rig_hl2_pa_hint">開 = 經功率放大器從主天線接頭輸出。關 = 從低功率（約 10 mW）接頭輸出，主天線接頭維持接收。</string>
     <string name="rig_host">主機</string>
     <string name="rig_port">埠號</string>
     <string name="rig_device">裝置</string>

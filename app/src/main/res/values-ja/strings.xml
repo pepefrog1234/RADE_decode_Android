@@ -173,6 +173,8 @@
     <string name="rig_hl2_host_auto">自動検出（ブロードキャスト）</string>
     <string name="rig_hl2_drive">送信ドライブ</string>
     <string name="rig_hl2_lna">受信 LNA ゲイン</string>
+    <string name="rig_hl2_pa">PA（5 W 出力）</string>
+    <string name="rig_hl2_pa_hint">ON = パワーアンプ経由でメインのアンテナ端子から出力。OFF = 低出力（約 10 mW）端子から出力し、アンテナ端子は受信のまま保持します。</string>
     <string name="rig_host">ホスト</string>
     <string name="rig_port">ポート</string>
     <string name="rig_device">デバイス</string>

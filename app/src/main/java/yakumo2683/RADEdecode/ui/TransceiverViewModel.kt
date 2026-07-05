@@ -909,6 +909,7 @@ class TransceiverViewModel(application: Application) : AndroidViewModel(applicat
                 hermesNetwork.setFrequency(prefs.getLong("hl2_freq", 14_236_000L))
                 hermesNetwork.setDrive(prefs.getInt("hl2_drive", 128))
                 hermesNetwork.setLnaDb(prefs.getInt("hl2_lna", 19))
+                hermesNetwork.setPaEnabled(prefs.getBoolean("hl2_pa", true))
                 if (hermesNetwork.connect(host)) {
                     audioService?.networkRig = hermesNetwork
                 }
@@ -928,8 +929,14 @@ class TransceiverViewModel(application: Application) : AndroidViewModel(applicat
         hermesNetwork.setLnaDb(v)
     }
 
+    fun hl2SetPaEnabled(v: Boolean) {
+        prefs.edit().putBoolean("hl2_pa", v).apply()
+        hermesNetwork.setPaEnabled(v)
+    }
+
     fun getSavedHl2Drive(): Int = prefs.getInt("hl2_drive", 128)
     fun getSavedHl2LnaDb(): Int = prefs.getInt("hl2_lna", 19)
+    fun getSavedHl2PaEnabled(): Boolean = prefs.getBoolean("hl2_pa", true)
 
     /**
      * Start rig control over the radio's own Wi-Fi (Icom RS-BA1 network protocol,
