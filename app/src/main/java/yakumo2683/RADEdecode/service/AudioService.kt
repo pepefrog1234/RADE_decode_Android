@@ -860,7 +860,8 @@ class AudioService : LifecycleService() {
 
     /**
      * TX over the network: mic → RADE encoder → [networkRig] frames to the radio.
-     * @param inputDeviceId built-in mic device id (USB audio is the rig's RX feed).
+     * @param inputDeviceId the selected TX mic (built-in unless the user chose a
+     *   USB/wired mic in Settings → TX Mic).
      */
     fun startNetworkTransmitting(inputDeviceId: Int, callsign: String) {
         if (_state.value.isTx) return

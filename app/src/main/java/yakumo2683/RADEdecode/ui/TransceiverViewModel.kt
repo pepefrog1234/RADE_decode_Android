@@ -487,10 +487,16 @@ class TransceiverViewModel(application: Application) : AndroidViewModel(applicat
             hermesNetwork.setPtt(true)
         }
         if (useNetworkAudio()) {
-            // Full wireless: mic → encoder → UDP 50003. No USB audio devices.
-            Log.i("TransceiverVM", "switchToTx (network): micId=${_uiState.value.builtInMicId}")
+            // Full wireless: mic → encoder → network (Icom UDP / HL2 I/Q).
+            // The TX MIC picker applies here too — "no USB devices" only ever
+            // held for the Icom full-wireless case, and a USB headset mic
+            // alongside an HL2 (LAN) session is a normal setup (reported:
+            // picker showed the USB headset but the built-in mic captured).
+            refreshDevices()
+            val micId = resolveTxMicId()
+            Log.i("TransceiverVM", "switchToTx (network): micId=$micId")
             audioService?.startNetworkTransmitting(
-                inputDeviceId = _uiState.value.builtInMicId,
+                inputDeviceId = micId,
                 callsign = _uiState.value.txCallsign
             )
             return
