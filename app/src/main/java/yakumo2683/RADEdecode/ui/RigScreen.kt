@@ -259,6 +259,7 @@ fun RigScreen(viewModel: TransceiverViewModel = viewModel()) {
     val usbState by viewModel.usbSerialState.collectAsState()
     val icomState by viewModel.icomNetworkState.collectAsState()
     val hl2State by viewModel.hermesState.collectAsState()
+    val vbanState by viewModel.vbanState.collectAsState()
     val connecting by viewModel.rigConnecting.collectAsState()
     val focusManager = LocalFocusManager.current
 
@@ -282,6 +283,10 @@ fun RigScreen(viewModel: TransceiverViewModel = viewModel()) {
     var hl2Drive by remember { mutableFloatStateOf(viewModel.getSavedHl2Drive().toFloat()) }
     var hl2Lna by remember { mutableFloatStateOf(viewModel.getSavedHl2LnaDb().toFloat()) }
     var hl2Pa by remember { mutableStateOf(viewModel.getSavedHl2PaEnabled()) }
+    // Thetis (VBAN) network-audio mode fields
+    var vbanHostInput by remember { mutableStateOf(rigPrefs.getString("vban_host", "") ?: "") }
+    var vbanPortInput by remember { mutableStateOf(rigPrefs.getString("vban_port", "6980") ?: "6980") }
+    var vbanCatPortInput by remember { mutableStateOf(rigPrefs.getString("vban_cat_port", "13013") ?: "13013") }
     // Serial mode fields
     var serialSpeed by remember { mutableStateOf(rigPrefs.getString("baud", "19200") ?: "19200") }
     var selectedRigIndex by remember { mutableIntStateOf(rigPrefs.getInt("rig_index", 0).coerceIn(0, rigModels.size - 1)) }
@@ -300,7 +305,7 @@ fun RigScreen(viewModel: TransceiverViewModel = viewModel()) {
     var selectedMfg by remember { mutableStateOf(rigPrefs.getString("mfg_filter", "All") ?: "All") }
     var mfgExpanded by remember { mutableStateOf(false) }
 
-    val anyRigConnected = rigState.connected || hl2State.connected
+    val anyRigConnected = rigState.connected || hl2State.connected || vbanState.connected
 
     // Sync freq display when rig updates (show as kHz)
     LaunchedEffect(rigState.freqHz, hl2State.freqHz, hl2State.connected) {
@@ -326,7 +331,8 @@ fun RigScreen(viewModel: TransceiverViewModel = viewModel()) {
             stringResource(R.string.rig_tcp_mode) to 0,
             stringResource(R.string.rig_serial_mode) to 1,
             stringResource(R.string.rig_network_mode) to 2,
-            stringResource(R.string.rig_hl2_network_mode) to 3
+            stringResource(R.string.rig_hl2_network_mode) to 3,
+            stringResource(R.string.rig_vban_mode) to 4
         ).chunked(2).forEach { rowModes ->
             Row(
                 modifier = Modifier.fillMaxWidth(),
@@ -606,6 +612,92 @@ fun RigScreen(viewModel: TransceiverViewModel = viewModel()) {
                         valueRange = -12f..48f,
                         colors = SliderDefaults.colors(thumbColor = Cyan400, activeTrackColor = Cyan600)
                     )
+                } else if (connMode == 4) {
+                    // Thetis (VBAN) — network audio to Voicemeeter + optional CAT
+                    Text(
+                        stringResource(R.string.rig_vban_hint),
+                        color = OnSurfaceDim,
+                        fontSize = 11.sp
+                    )
+                    OutlinedTextField(
+                        value = vbanHostInput,
+                        onValueChange = { vbanHostInput = it },
+                        label = { Text(stringResource(R.string.rig_host)) },
+                        singleLine = true,
+                        enabled = !vbanState.connected,
+                        modifier = Modifier.fillMaxWidth(),
+                        textStyle = androidx.compose.ui.text.TextStyle(fontFamily = FontFamily.Monospace, fontSize = 14.sp),
+                        colors = OutlinedTextFieldDefaults.colors(focusedBorderColor = Cyan400, focusedLabelColor = Cyan400, cursorColor = Cyan400)
+                    )
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(10.dp)
+                    ) {
+                        OutlinedTextField(
+                            value = vbanPortInput,
+                            onValueChange = { vbanPortInput = it.filter { c -> c.isDigit() }.take(5) },
+                            label = { Text(stringResource(R.string.rig_vban_port)) },
+                            singleLine = true,
+                            enabled = !vbanState.connected,
+                            modifier = Modifier.weight(1f),
+                            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                            textStyle = androidx.compose.ui.text.TextStyle(fontFamily = FontFamily.Monospace, fontSize = 14.sp),
+                            colors = OutlinedTextFieldDefaults.colors(focusedBorderColor = Cyan400, focusedLabelColor = Cyan400, cursorColor = Cyan400)
+                        )
+                        OutlinedTextField(
+                            value = vbanCatPortInput,
+                            onValueChange = { vbanCatPortInput = it.filter { c -> c.isDigit() }.take(5) },
+                            label = { Text(stringResource(R.string.rig_vban_cat_port)) },
+                            singleLine = true,
+                            enabled = !vbanState.connected,
+                            modifier = Modifier.weight(1f),
+                            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                            textStyle = androidx.compose.ui.text.TextStyle(fontFamily = FontFamily.Monospace, fontSize = 14.sp),
+                            colors = OutlinedTextFieldDefaults.colors(focusedBorderColor = Cyan400, focusedLabelColor = Cyan400, cursorColor = Cyan400)
+                        )
+                    }
+                    // CAT dialect of the PC SDR (same backends as the TCP HL2 profile)
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        listOf(
+                            "Thetis" to HL2_BACKEND_THETIS,
+                            "piHPSDR" to HL2_BACKEND_PIHPSDR,
+                            "Spark/Quisk" to HL2_BACKEND_NETRIGCTL
+                        ).forEach { (label, key) ->
+                            val selected = hl2Backend == key
+                            Surface(
+                                onClick = { if (!vbanState.connected) hl2Backend = key },
+                                modifier = Modifier
+                                    .weight(1f)
+                                    .border(
+                                        1.dp,
+                                        if (selected) Cyan400 else MaterialTheme.colorScheme.outline,
+                                        RoundedCornerShape(8.dp)
+                                    ),
+                                shape = RoundedCornerShape(8.dp),
+                                color = if (selected) Cyan600.copy(alpha = 0.2f) else SurfaceCard,
+                            ) {
+                                Text(
+                                    text = label,
+                                    modifier = Modifier.padding(vertical = 8.dp),
+                                    textAlign = TextAlign.Center,
+                                    fontFamily = FontFamily.Monospace,
+                                    fontSize = 12.sp,
+                                    color = if (selected) Cyan400 else OnSurfaceDim
+                                )
+                            }
+                        }
+                    }
+                    if (vbanState.connected && vbanState.deviceName.isNotEmpty()) {
+                        Text(
+                            stringResource(R.string.rig_vban_rx_stream, vbanState.deviceName),
+                            color = GreenBright,
+                            fontSize = 12.sp,
+                            fontFamily = FontFamily.Monospace
+                        )
+                    }
                 } else {
                     // Serial mode — manufacturer + model dropdowns
                     val mfgFilteredModels = remember(selectedMfg) {
@@ -890,6 +982,9 @@ fun RigScreen(viewModel: TransceiverViewModel = viewModel()) {
                                 .putString("icom_user", icomUser)
                                 .putString("icom_pass", icomPass)
                                 .putString("hl2_host", hl2HostInput)
+                                .putString("vban_host", vbanHostInput)
+                                .putString("vban_port", vbanPortInput)
+                                .putString("vban_cat_port", vbanCatPortInput)
                                 .apply()
 
                             if (connMode == 0) {
@@ -914,6 +1009,14 @@ fun RigScreen(viewModel: TransceiverViewModel = viewModel()) {
                                 viewModel.rigStartIcomNetwork(hostInput, port, icomUser, icomPass)
                             } else if (connMode == 3) {
                                 viewModel.rigStartHermesNetwork(hl2HostInput)
+                            } else if (connMode == 4) {
+                                viewModel.rigMfg = "OpenHPSDR"
+                                viewModel.rigStartThetisVban(
+                                    host = vbanHostInput,
+                                    vbanPort = vbanPortInput.toIntOrNull() ?: 6980,
+                                    catModel = hl2BackendModel(hl2Backend),
+                                    catPort = vbanCatPortInput.toIntOrNull() ?: 0
+                                )
                             } else {
                                 val rig = rigModels[selectedRigIndex]
                                 viewModel.rigMfg = rig.mfg
@@ -933,7 +1036,7 @@ fun RigScreen(viewModel: TransceiverViewModel = viewModel()) {
                             }
                         }
                     },
-                    enabled = !connecting && (anyRigConnected || connMode == 0 || connMode == 2 || connMode == 3 || usbState.devices.isNotEmpty()),
+                    enabled = !connecting && (anyRigConnected || connMode == 0 || connMode == 2 || connMode == 3 || connMode == 4 || usbState.devices.isNotEmpty()),
                     modifier = Modifier.fillMaxWidth().height(46.dp),
                     shape = RoundedCornerShape(10.dp),
                     colors = ButtonDefaults.buttonColors(
@@ -983,6 +1086,9 @@ fun RigScreen(viewModel: TransceiverViewModel = viewModel()) {
                 if (hl2State.error.isNotEmpty() && connMode == 3) {
                     Text(hl2State.error, color = Red400, fontSize = 12.sp)
                 }
+                if (vbanState.error.isNotEmpty() && connMode == 4) {
+                    Text(vbanState.error, color = Red400, fontSize = 12.sp)
+                }
             }
         }
 
@@ -1026,8 +1132,14 @@ fun RigScreen(viewModel: TransceiverViewModel = viewModel()) {
 
         // Network audio/IQ stream status (full wireless). Only shown once
         // control is up — tells the user whether RX/TX audio rides the network.
-        if ((connMode == 2 && rigState.connected) || (connMode == 3 && hl2State.connected)) {
-            val netAudioUp = if (connMode == 3) hl2State.streaming else icomState.audioConnected
+        if ((connMode == 2 && rigState.connected) || (connMode == 3 && hl2State.connected) ||
+            (connMode == 4 && vbanState.connected)
+        ) {
+            val netAudioUp = when (connMode) {
+                3 -> hl2State.streaming
+                4 -> vbanState.streaming
+                else -> icomState.audioConnected
+            }
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 verticalAlignment = Alignment.CenterVertically,

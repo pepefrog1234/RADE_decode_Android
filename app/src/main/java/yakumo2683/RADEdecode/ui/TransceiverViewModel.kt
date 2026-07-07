@@ -24,6 +24,7 @@ import yakumo2683.RADEdecode.network.HermesNetworkManager
 import yakumo2683.RADEdecode.network.IcomNetworkManager
 import yakumo2683.RADEdecode.network.RigController
 import yakumo2683.RADEdecode.network.RigctldProcess
+import yakumo2683.RADEdecode.network.VbanNetworkManager
 import yakumo2683.RADEdecode.service.AudioService
 import yakumo2683.RADEdecode.usb.UsbSerialManager
 
@@ -54,6 +55,10 @@ class TransceiverViewModel(application: Application) : AndroidViewModel(applicat
     /* ── Hermes-Lite 2 direct network control (openHPSDR protocol 1) ─── */
     private val hermesNetwork = HermesNetworkManager(application)
     val hermesState: StateFlow<HermesNetworkManager.State> = hermesNetwork.state
+
+    /* ── VBAN network audio (Voicemeeter → Thetis VAC, keeps PureSignal) ─── */
+    private val vbanNetwork = VbanNetworkManager(application)
+    val vbanState: StateFlow<VbanNetworkManager.State> = vbanNetwork.state
 
     data class UiState(
         val isRunning: Boolean = false,    // RX is active
@@ -113,8 +118,11 @@ class TransceiverViewModel(application: Application) : AndroidViewModel(applicat
             service.reporter = reporter
             // Enables full-wireless audio when a network rig is up (IC-705
             // Wi-Fi or a Hermes-Lite 2 on the LAN).
-            service.networkRig =
-                if (hermesNetwork.isConnected) hermesNetwork else icomNetwork
+            service.networkRig = when {
+                hermesNetwork.isConnected -> hermesNetwork
+                vbanNetwork.isConnected -> vbanNetwork
+                else -> icomNetwork
+            }
             // Restore persisted audio settings
             service.setInputGain(prefs.getFloat("input_gain", 4.0f))
             service.setTxMicGain(prefs.getFloat("tx_mic_gain", 4.0f))
@@ -304,7 +312,7 @@ class TransceiverViewModel(application: Application) : AndroidViewModel(applicat
      *  audioConnected flag) is what makes Start actually pick the wireless path.
      *  The audioConnected flag is surfaced separately in the UI for status. */
     private fun useNetworkAudio(): Boolean =
-        icomNetwork.isConnected || hermesNetwork.isConnected
+        icomNetwork.isConnected || hermesNetwork.isConnected || vbanNetwork.isConnected
 
     fun startReceiving() {
         val app = getApplication<Application>()
@@ -894,6 +902,46 @@ class TransceiverViewModel(application: Application) : AndroidViewModel(applicat
         usbSerialManager.close()
         icomNetwork.disconnect()
         hermesNetwork.disconnect()
+        vbanNetwork.disconnect()
+    }
+
+    /**
+     * VBAN mode: the phone's RX/TX audio rides Wi-Fi to Voicemeeter on a PC,
+     * whose virtual cables are the SDR host's (Thetis) VAC — PC-side features
+     * like PureSignal keep working, with no sound card or cables between the
+     * phone and PC. CAT/PTT optionally bridges to the SDR's CAT server through
+     * the bundled rigctld ([catModel] as in the TCP Hermes-Lite 2 profile;
+     * [catPort] 0 = no CAT).
+     */
+    fun rigStartThetisVban(host: String, vbanPort: Int, catModel: Int, catPort: Int) {
+        if (_rigConnecting.value || rigController.isConnected || vbanNetwork.isConnected) return
+        _rigConnecting.value = true
+        rigMfg = "OpenHPSDR"
+
+        viewModelScope.launch(Dispatchers.IO) {
+            try {
+                rigctldProcess.stop()
+                if (!vbanNetwork.connect(host, vbanPort)) return@launch  // vbanState carries the error
+                audioService?.networkRig = vbanNetwork
+
+                if (catPort > 0) {
+                    val ok = rigctldProcess.start(model = catModel, device = "$host:$catPort", speed = 0)
+                    if (ok) {
+                        var connected = false
+                        for (attempt in 1..10) {
+                            delay(1000)
+                            rigController.connect("127.0.0.1", 4532)
+                            if (rigController.isConnected) { connected = true; break }
+                        }
+                        // CAT failure keeps the audio link up — the user can
+                        // still operate with VOX / PC-side PTT.
+                        if (!connected) rigctldProcess.stop()
+                    }
+                }
+            } finally {
+                _rigConnecting.value = false
+            }
+        }
     }
 
     /**
@@ -1174,6 +1222,7 @@ class TransceiverViewModel(application: Application) : AndroidViewModel(applicat
         usbSerialManager.destroy()
         icomNetwork.disconnect()
         hermesNetwork.disconnect()
+        vbanNetwork.disconnect()
         try {
             getApplication<Application>().unbindService(serviceConnection)
         } catch (_: Exception) { }

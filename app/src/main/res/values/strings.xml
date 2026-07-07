@@ -176,6 +176,11 @@
     <string name="rig_hl2_lna">RX LNA gain</string>
     <string name="rig_hl2_pa">PA (5 W output)</string>
     <string name="rig_hl2_pa_hint">On = power amplifier + main antenna jack. Off = low-power (~10 mW) jack; the antenna jack stays on receive.</string>
+    <string name="rig_vban_mode">Thetis (VBAN)</string>
+    <string name="rig_vban_hint">RX/TX audio rides Wi-Fi to Voicemeeter on your PC (VBAN protocol) whose virtual cables are the SDR\'s VAC — PureSignal etc. keep working, no sound card or cables between phone and PC. Set a Voicemeeter OUTGOING stream (48 kHz, PCM16) to this phone\'s IP, and select incoming stream "RADE-TX" for the TX direction. CAT port = the SDR\'s CAT server (blank/0 = no CAT, use VOX).</string>
+    <string name="rig_vban_port">VBAN port</string>
+    <string name="rig_vban_cat_port">CAT port</string>
+    <string name="rig_vban_rx_stream">Receiving stream: %1$s</string>
     <string name="rig_host">Host</string>
     <string name="rig_port">Port</string>
     <string name="rig_device">Device</string>
