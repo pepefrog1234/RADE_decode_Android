@@ -22,6 +22,7 @@ import java.net.SocketTimeoutException
 import kotlin.math.PI
 import kotlin.math.abs
 import kotlin.math.cos
+import kotlin.math.log10
 import kotlin.math.sin
 import kotlin.math.sqrt
 
@@ -63,9 +64,24 @@ class HermesNetworkManager(private val appContext: Context? = null) : NetworkAud
 
         private const val IQ_RATE = 48000
         private const val INTERP = IQ_RATE / AUDIO_RATE            // 6
-        private const val SAMPLES_PER_FRAME = 63                    // per 512-byte USB frame
+
+        /** Receivers: RX1 = the receive path, RX2 = PureSignal TX feedback
+         *  (the gateware routes the PA sample into a receiver during MOX when
+         *  the PS bit — addr 0x0A bit 22 — is set). */
+        private const val NUM_RX = 2
+        /** EP6 sample group: 6 bytes I/Q per receiver + 2 bytes mic. */
+        private const val RX_GROUP_BYTES = 6 * NUM_RX + 2
+        private const val RX_SAMPLES_PER_FRAME = 504 / RX_GROUP_BYTES   // 36 with 2 RX
+
+        /** EP2 (host→radio) frames always carry 63 TX samples regardless of NRX. */
+        private const val SAMPLES_PER_FRAME = 63
         private const val SAMPLES_PER_PACKET = 2 * SAMPLES_PER_FRAME
         private const val PACKET_NS = SAMPLES_PER_PACKET * 1_000_000_000L / IQ_RATE  // 2.625 ms
+
+        /** LNA gain applied during TX (addr 0x0E) — sets the PureSignal
+         *  feedback level into the ADC. Phase-1 default; tuned via the
+         *  fb1/fb2 TX-health readings. */
+        private const val TX_FB_LNA_DB = 0
 
         // SSB passband (Hz above the suppressed carrier / NCO)
         private const val SSB_CENTER = 1500.0
@@ -122,6 +138,7 @@ class HermesNetworkManager(private val appContext: Context? = null) : NetworkAud
     private val sendLock = Any()
     @Volatile private var lastEp6Nanos = 0L
     @Volatile private var lastEp2Nanos = 0L
+    private var ep6Toggle = false
 
     /* TX health counters (reset each 1 s stats interval by the pacer) */
     @Volatile private var ep2SentInterval = 0
@@ -136,6 +153,16 @@ class HermesNetworkManager(private val appContext: Context? = null) : NetworkAud
     @Volatile private var radioPaCurrent = 0
     @Volatile private var radioTemp = 0
     @Volatile private var radioAdcOverflow = false
+
+    /* PureSignal phase 1: per-receiver level accumulators during MOX, to
+     * identify and calibrate the TX feedback path. Reader thread writes,
+     * pacer stats block reads+resets. */
+    private val fbStatsLock = Any()
+    private var fbSumSq1 = 0.0
+    private var fbSumSq2 = 0.0
+    private var fbPeak1 = 0f
+    private var fbPeak2 = 0f
+    private var fbCount = 0
 
     private var wifiLock: WifiManager.WifiLock? = null
 
@@ -230,9 +257,9 @@ class HermesNetworkManager(private val appContext: Context? = null) : NetworkAud
 
             sock.soTimeout = 400
 
-            // Prime every C&C address (speed/duplex, freqs, drive, LNA)
-            // before starting the stream, then start EP6.
-            repeat(3) { sendEp2() }
+            // Prime every C&C address (speed/duplex/NRX, freqs, drive, LNA,
+            // PS + TX-feedback gain, FIFO config) before starting the stream.
+            repeat(4) { sendEp2() }
             sendStartStop(start = true)
 
             _state.value = State(
@@ -389,34 +416,57 @@ class HermesNetworkManager(private val appContext: Context? = null) : NetworkAud
                 ep6LastSeq = seq
                 parseUsbFrame(buf, 8)
                 parseUsbFrame(buf, 520)
-                // Radio-clocked 1:1 pacing while idle: one EP2 per EP6. During
-                // MOX the pacer loop self-clocks EP2 instead — some gateware
-                // stops the RX stream while transmitting, and TX I/Q must not
-                // die with it.
-                if (!mox) sendEp2()
+                // Radio-clocked pacing while idle. With 2 receivers EP6 runs
+                // at ~667 pkt/s — answering every second packet keeps the
+                // idle upstream at the 1-RX level while still refreshing C&C
+                // hundreds of times per second. During MOX the pacer loop
+                // self-clocks EP2 instead.
+                if (!mox) {
+                    ep6Toggle = !ep6Toggle
+                    if (ep6Toggle) sendEp2()
+                }
             }
         }
     }
 
     private fun currentScope(): CoroutineScope? = connScope
 
+    private fun s24(buf: ByteArray, p: Int): Float {
+        val v = ((buf[p].toInt() and 0xFF) shl 16) or
+            ((buf[p + 1].toInt() and 0xFF) shl 8) or
+            (buf[p + 2].toInt() and 0xFF)
+        return (if (v >= 0x800000) v - 0x1000000 else v) / 8388608.0f
+    }
+
     private fun parseUsbFrame(buf: ByteArray, off: Int) {
         if (buf[off] != 0x7F.toByte() || buf[off + 1] != 0x7F.toByte() ||
             buf[off + 2] != 0x7F.toByte()
         ) return
         parseRadioCc(buf, off + 3)
+        val keyed = mox
         var p = off + 8
-        for (s in 0 until SAMPLES_PER_FRAME) {
-            val i24 = ((buf[p].toInt() and 0xFF) shl 16) or
-                ((buf[p + 1].toInt() and 0xFF) shl 8) or
-                (buf[p + 2].toInt() and 0xFF)
-            val q24 = ((buf[p + 3].toInt() and 0xFF) shl 16) or
-                ((buf[p + 4].toInt() and 0xFF) shl 8) or
-                (buf[p + 5].toInt() and 0xFF)
-            val fi = (if (i24 >= 0x800000) i24 - 0x1000000 else i24) / 8388608.0f
-            val fq = (if (q24 >= 0x800000) q24 - 0x1000000 else q24) / 8388608.0f
-            demodPush(fi, fq)
-            p += 8
+        for (s in 0 until RX_SAMPLES_PER_FRAME) {
+            val i1 = s24(buf, p)
+            val q1 = s24(buf, p + 3)
+            val i2 = s24(buf, p + 6)
+            val q2 = s24(buf, p + 9)
+            if (keyed) {
+                // PureSignal phase 1: while transmitting, measure BOTH
+                // receivers to identify which one the gateware feeds with the
+                // TX sample (the demod chain is idle — RX is torn down in TX).
+                synchronized(fbStatsLock) {
+                    fbSumSq1 += (i1 * i1 + q1 * q1).toDouble()
+                    fbSumSq2 += (i2 * i2 + q2 * q2).toDouble()
+                    val m1 = maxOf(abs(i1), abs(q1))
+                    val m2 = maxOf(abs(i2), abs(q2))
+                    if (m1 > fbPeak1) fbPeak1 = m1
+                    if (m2 > fbPeak2) fbPeak2 = m2
+                    fbCount++
+                }
+            } else {
+                demodPush(i1, q1)
+            }
+            p += RX_GROUP_BYTES
         }
     }
 
@@ -509,7 +559,7 @@ class HermesNetworkManager(private val appContext: Context? = null) : NetworkAud
         val moxBit = if (mox) 1 else 0
         buf[off + 1] = 0; buf[off + 2] = 0; buf[off + 3] = 0; buf[off + 4] = 0
         when (ccRotation) {
-            0 -> {  // addr 0x00: speed 48 kHz, filter-board OC bits, duplex on
+            0 -> {  // addr 0x00: speed 48 kHz, filter-board OC bits, duplex, NRX
                 buf[off] = moxBit.toByte()
                 buf[off + 1] = 0x00                     // 48 kHz
                 // OC outputs C2[7:1]: the gateware forwards these to the
@@ -517,7 +567,8 @@ class HermesNetworkManager(private val appContext: Context? = null) : NetworkAud
                 // Without them no low-pass filter is selected and the TX
                 // path through the board is open — keys but no RF.
                 buf[off + 2] = (filterOcBits(freqHz) shl 1).toByte()
-                buf[off + 4] = 0x04                     // duplex — RX runs through TX
+                // bit2 duplex + bits[6:3] = NRX-1 (RX2 = PureSignal feedback)
+                buf[off + 4] = (0x04 or ((NUM_RX - 1) shl 3)).toByte()
             }
             1 -> {  // addr 0x01: TX NCO frequency
                 buf[off] = ((0x01 shl 1) or moxBit).toByte()
@@ -527,7 +578,12 @@ class HermesNetworkManager(private val appContext: Context? = null) : NetworkAud
                 buf[off] = ((0x02 shl 1) or moxBit).toByte()
                 putFreq(buf, off + 1, freqHz)
             }
-            3 -> {  // addr 0x09: TX drive level + PA routing
+            3 -> {  // addr 0x03: RX2 NCO frequency — the PureSignal feedback
+                    // receiver tracks the TX frequency
+                buf[off] = ((0x03 shl 1) or moxBit).toByte()
+                putFreq(buf, off + 1, freqHz)
+            }
+            4 -> {  // addr 0x09: TX drive level + PA routing
                 buf[off] = ((0x09 shl 1) or moxBit).toByte()
                 buf[off + 1] = txDrive.toByte()
                 // bit19 (C2[3]): PA on → TX leaves the 5 W antenna jack.
@@ -536,9 +592,14 @@ class HermesNetworkManager(private val appContext: Context? = null) : NetworkAud
                 // carries TX.
                 buf[off + 2] = if (paEnabled) 0x08 else 0x04
             }
-            4 -> {  // addr 0x0A: HL2 LNA gain (bit6 = manual, value = dB + 12)
+            5 -> {  // addr 0x0A: PS enable (bit22 = C2[6]) + HL2 LNA gain
                 buf[off] = ((0x0A shl 1) or moxBit).toByte()
+                buf[off + 2] = 0x40                     // PureSignal feedback routing on
                 buf[off + 4] = (0x40 or ((lnaDb + 12) and 0x3F)).toByte()
+            }
+            6 -> {  // addr 0x0E: LNA gain during TX (feedback level), bit15 enables
+                buf[off] = ((0x0E shl 1) or moxBit).toByte()
+                buf[off + 3] = (0x80 or ((TX_FB_LNA_DB + 12) and 0x3F)).toByte()
             }
             else -> {  // addr 0x17: HL2 PTT hang (C3) + TX buffer latency (C4)
                 buf[off] = ((0x17 shl 1) or moxBit).toByte()
@@ -546,7 +607,7 @@ class HermesNetworkManager(private val appContext: Context? = null) : NetworkAud
                 buf[off + 4] = TX_BUFFER_LATENCY_MS.toByte()
             }
         }
-        ccRotation = (ccRotation + 1) % 6
+        ccRotation = (ccRotation + 1) % 8
     }
 
     /**
@@ -643,6 +704,23 @@ class HermesNetworkManager(private val appContext: Context? = null) : NetworkAud
                 if (System.nanoTime() - statNs >= 1_000_000_000L) {
                     statNs = System.nanoTime()
                     val ringLevel = synchronized(txIqLock) { txIqCount }
+                    // PureSignal feedback levels (dBFS) per receiver — which
+                    // one carries the TX sample identifies the feedback path.
+                    var fb1 = -120.0
+                    var fb2 = -120.0
+                    var fbPk1 = -120.0
+                    var fbPk2 = -120.0
+                    synchronized(fbStatsLock) {
+                        if (fbCount > 0) {
+                            fb1 = 10.0 * log10(fbSumSq1 / fbCount + 1e-12)
+                            fb2 = 10.0 * log10(fbSumSq2 / fbCount + 1e-12)
+                            fbPk1 = 20.0 * log10(fbPeak1 + 1e-6)
+                            fbPk2 = 20.0 * log10(fbPeak2 + 1e-6)
+                        }
+                        fbSumSq1 = 0.0; fbSumSq2 = 0.0
+                        fbPeak1 = 0f; fbPeak2 = 0f
+                        fbCount = 0
+                    }
                     Log.i(
                         TAG,
                         "TX health: ep2=${ep2SentInterval}/s iqRing=$ringLevel " +
@@ -651,7 +729,9 @@ class HermesNetworkManager(private val appContext: Context? = null) : NetworkAud
                             "oc=0x%02X ".format(filterOcBits(freqHz)) +
                             "| radio: ep6=${ep6RecvInterval}/s gaps=${ep6GapInterval} " +
                             "fwd=$radioFwdPower rev=$radioRevPower paI=$radioPaCurrent " +
-                            "temp=$radioTemp ovf=${if (radioAdcOverflow) 1 else 0}"
+                            "temp=$radioTemp ovf=${if (radioAdcOverflow) 1 else 0} " +
+                            "| PS: fbLna=${TX_FB_LNA_DB}dB " +
+                            "fb1=%.1f/%.1f fb2=%.1f/%.1f dBFS".format(fb1, fbPk1, fb2, fbPk2)
                     )
                     ep2SentInterval = 0
                     txIqUnderrunInterval = 0
