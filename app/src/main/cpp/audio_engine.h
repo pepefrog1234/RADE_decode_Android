@@ -123,7 +123,7 @@ public:
      *       (reuses the existing txUseJavaOutput_ path; no Oboe output) */
     bool startNetRx(int outputDeviceId, int netRate);
     void feedNetRx(const int16_t *pcm, int count);
-    bool startNetTx(int inputDeviceId, int netRate);
+    bool startNetTx(int inputDeviceId, int netRate, bool voiceCommunicationInput = false);
     /** Read one TX frame upsampled to the network rate (zero-padded on underrun). */
     int fillNetTxFrame(int16_t *out, int numSamples);
     bool isNetRx() const { return netRxRunning_.load(); }

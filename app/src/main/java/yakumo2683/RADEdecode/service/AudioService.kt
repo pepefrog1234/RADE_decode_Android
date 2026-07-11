@@ -862,12 +862,48 @@ class AudioService : LifecycleService() {
      * TX over the network: mic → RADE encoder → [networkRig] frames to the radio.
      * @param inputDeviceId the selected TX mic (built-in unless the user chose a
      *   USB/wired mic in Settings → TX Mic).
+     * @param useBluetoothMic capture from a Bluetooth headset mic instead (the
+     *   experimental toggle) — LE Audio (LC3) preferred, classic SCO fallback,
+     *   same as the USB-rig TX path.
      */
-    fun startNetworkTransmitting(inputDeviceId: Int, callsign: String) {
+    fun startNetworkTransmitting(
+        inputDeviceId: Int,
+        callsign: String,
+        useBluetoothMic: Boolean = false
+    ) {
         if (_state.value.isTx) return
         val net = networkRig ?: run {
             Log.e("AudioService", "startNetworkTransmitting: networkRig not set")
             return
+        }
+
+        // Bluetooth TX mic: bring the communication route up BEFORE the RX
+        // teardown so the SCO/BLE link negotiates in parallel (same rationale
+        // as the USB-rig path in startTransmitting).
+        var effectiveInputDeviceId = inputDeviceId
+        var bluetoothMicEngaged = false
+        var bleCommMicCapture = false
+        var scoLinkRequested = false
+        if (useBluetoothMic) {
+            val bleRoute = activateBleAudioCommunicationRoute()
+            if (bleRoute != null) {
+                effectiveInputDeviceId = bleRoute.inputDeviceId
+                bluetoothMicEngaged = true
+                bleCommMicCapture = true
+                Log.i(
+                    "AudioService",
+                    "Net TX Bluetooth mic: using LE Audio (LC3) input id=${bleRoute.inputDeviceId}"
+                )
+            } else {
+                scoLinkRequested = activateBluetoothScoRoute()
+                if (!scoLinkRequested) {
+                    Log.w(
+                        "AudioService",
+                        "Net TX Bluetooth mic requested but the SCO route failed to activate; " +
+                            "falling back to mic id=$inputDeviceId"
+                    )
+                }
+            }
         }
 
         // Stop network RX (mute + tear down the RX engine), keep foreground.
@@ -880,7 +916,9 @@ class AudioService : LifecycleService() {
             audioBridge?.stop()
             audioBridge?.release()
             audioBridge = null
-            clearBluetoothCommunicationRouteIfNeeded()
+            if (!bluetoothMicEngaged && !scoLinkRequested) {
+                clearBluetoothCommunicationRouteIfNeeded()
+            }
         }
 
         val bridge = AudioBridge(applicationContext)
@@ -901,15 +939,41 @@ class AudioService : LifecycleService() {
 
         if (callsign.isNotEmpty()) bridge.setTxCallsign(callsign)
 
-        Log.i("AudioService", "startNetworkTransmitting: audioStreamConnected=${net.audioLinkUp} " +
-            "rate=${net.audioRate} mic=$inputDeviceId (if audio stream down, TX modulation won't reach the radio)")
+        // Resolve the SCO mic input now — the link has been negotiating since
+        // before the RX teardown, so this usually returns without polling.
+        if (scoLinkRequested && !bluetoothMicEngaged) {
+            val scoInput = resolveBluetoothScoInputId()
+            if (scoInput > 0) {
+                effectiveInputDeviceId = scoInput
+                bluetoothMicEngaged = true
+                Log.i("AudioService", "Net TX Bluetooth mic: no LE Audio; using classic SCO input id=$scoInput")
+            } else {
+                Log.w(
+                    "AudioService",
+                    "Net TX Bluetooth mic requested but no SCO input appeared; " +
+                        "falling back to mic id=$inputDeviceId"
+                )
+                clearBluetoothCommunicationRouteIfNeeded()
+            }
+        }
 
-        if (!bridge.startNetTx(inputDeviceId, net.audioRate)) {
+        Log.i("AudioService", "startNetworkTransmitting: audioStreamConnected=${net.audioLinkUp} " +
+            "rate=${net.audioRate} mic=$inputDeviceId effectiveMic=$effectiveInputDeviceId " +
+            "btMic=$bluetoothMicEngaged (if audio stream down, TX modulation won't reach the radio)")
+
+        if (!bridge.startNetTx(effectiveInputDeviceId, net.audioRate, bleCommMicCapture)) {
             Log.e("AudioService", "startNetTx failed")
             bridge.release()
             audioBridge = null
+            clearBluetoothCommunicationRouteIfNeeded()
             stopSelf()
             return
+        }
+
+        // Same NS/AGC/AEC disable as the USB-rig Bluetooth-mic path.
+        if (bluetoothMicEngaged) {
+            val report = bridge.disableInputEffects()
+            Log.i("AudioService", "Net TX Bluetooth mic effects: $report")
         }
 
         networkAudioMode = true
@@ -1358,7 +1422,9 @@ class AudioService : LifecycleService() {
             clearBluetoothCommunicationRouteIfNeeded()
         }
 
-        _state.value = ServiceState()
+        // Full reset — but the decoded-callsign display survives the TX→RX
+        // cycle; it is only replaced when a new station's EOO decodes.
+        _state.value = ServiceState(lastCallsign = _state.value.lastCallsign)
         stopForeground(STOP_FOREGROUND_REMOVE)
     }
 
@@ -1726,7 +1792,10 @@ class AudioService : LifecycleService() {
                     freqOffsetHz = freq,
                     inputLevelDb = inLvl,
                     outputLevelDb = outLvl,
-                    lastCallsign = cs,
+                    // Display sticks until a NEW callsign decodes: a fresh
+                    // engine (every TX→RX cycle) reports "" and must not blank
+                    // the station the operator is still reading.
+                    lastCallsign = cs.ifEmpty { it.lastCallsign },
                     spectrum = spec,
                     unprocessedRejected = rejected
                 ) }

@@ -645,9 +645,11 @@ JNI_AUDIO(nativeFeedNetRx)(JNIEnv *env, jobject /* this */, jshortArray pcm, jin
 }
 
 JNIEXPORT jboolean JNICALL
-JNI_AUDIO(nativeStartNetTx)(JNIEnv *env, jobject /* this */, jint inputDeviceId, jint netRate) {
+JNI_AUDIO(nativeStartNetTx)(JNIEnv *env, jobject /* this */, jint inputDeviceId, jint netRate,
+                            jboolean voiceCommunicationInput) {
     if (!g_audioEngine) return JNI_FALSE;
-    return g_audioEngine->startNetTx(inputDeviceId, netRate) ? JNI_TRUE : JNI_FALSE;
+    return g_audioEngine->startNetTx(inputDeviceId, netRate,
+                                     voiceCommunicationInput == JNI_TRUE) ? JNI_TRUE : JNI_FALSE;
 }
 
 /** Pull one frame of TX modem audio upsampled to netRate (zero-padded on underrun). */

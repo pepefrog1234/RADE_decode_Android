@@ -265,9 +265,14 @@ class AudioBridge(private val context: Context) {
     /** Push a received network audio chunk into the RX modem pipeline. */
     fun feedNetRx(pcm: ShortArray, count: Int) = nativeFeedNetRx(pcm, count)
 
-    /** Start network TX: mic → RADE encoder → modem PCM for UDP send. */
-    fun startNetTx(inputDeviceId: Int = -1, netRate: Int = 48000): Boolean =
-        nativeStartNetTx(inputDeviceId, netRate)
+    /** Start network TX: mic → RADE encoder → modem PCM for UDP send.
+     *  [voiceCommunicationInput] uses the VoiceCommunication capture preset —
+     *  required for a Bluetooth LE Audio (LC3) comm-route mic. */
+    fun startNetTx(
+        inputDeviceId: Int = -1,
+        netRate: Int = 48000,
+        voiceCommunicationInput: Boolean = false
+    ): Boolean = nativeStartNetTx(inputDeviceId, netRate, voiceCommunicationInput)
 
     /** Fill [outBuf] with one TX frame at netRate (returns samples written). */
     fun fillNetTxFrame(outBuf: ShortArray, numSamples: Int): Int =
@@ -407,7 +412,7 @@ class AudioBridge(private val context: Context) {
     /* Network audio (Icom RS-BA1 / IC-705 Wi-Fi) */
     external fun nativeStartNetRx(outputDeviceId: Int, netRate: Int): Boolean
     external fun nativeFeedNetRx(pcm: ShortArray, count: Int)
-    external fun nativeStartNetTx(inputDeviceId: Int, netRate: Int): Boolean
+    external fun nativeStartNetTx(inputDeviceId: Int, netRate: Int, voiceCommunicationInput: Boolean): Boolean
     external fun nativeFillNetTxFrame(outBuf: ShortArray, numSamples: Int): Int
 
     private val audioDeviceComparator = compareByDescending<AudioDevice> { it.isUsb }

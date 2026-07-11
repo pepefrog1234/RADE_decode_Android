@@ -11,8 +11,8 @@ android {
         applicationId = "yakumo2683.RADEdecode"
         minSdk = 26
         targetSdk = 35
-        versionCode = 10562
-        versionName = "1.5.62-thetis-vban"
+        versionCode = 10563
+        versionName = "1.5.63-callsign-btmic"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 

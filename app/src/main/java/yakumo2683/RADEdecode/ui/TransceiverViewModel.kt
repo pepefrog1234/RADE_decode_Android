@@ -502,10 +502,11 @@ class TransceiverViewModel(application: Application) : AndroidViewModel(applicat
             // picker showed the USB headset but the built-in mic captured).
             refreshDevices()
             val micId = resolveTxMicId()
-            Log.i("TransceiverVM", "switchToTx (network): micId=$micId")
+            Log.i("TransceiverVM", "switchToTx (network): micId=$micId btMic=${_uiState.value.bluetoothMicTx}")
             audioService?.startNetworkTransmitting(
                 inputDeviceId = micId,
-                callsign = _uiState.value.txCallsign
+                callsign = _uiState.value.txCallsign,
+                useBluetoothMic = _uiState.value.bluetoothMicTx
             )
             return
         }

@@ -1579,7 +1579,7 @@ void AudioEngine::feedNetRx(const int16_t *pcm, int count) {
         inputLevelDb_.store(10.0f * log10f(rmsSum / (float)count + 1e-10f));
 }
 
-bool AudioEngine::startNetTx(int inputDeviceId, int netRate) {
+bool AudioEngine::startNetTx(int inputDeviceId, int netRate, bool voiceCommunicationInput) {
     if (txRunning_.load()) return true;
     if (running_.load()) stop();  // stop RX first
 
@@ -1588,10 +1588,13 @@ bool AudioEngine::startNetTx(int inputDeviceId, int netRate) {
     txNetMode_ = true;
     txUseJavaOutput_ = true;     // reuse: no Oboe output stream, skip drain wait
     txKeepRxAlive_ = false;      // defensive: network TX is never mic-only keep-alive
-    txUseVoiceCommInput_ = false; // network TX always captures the requested mic directly
+    // VoiceCommunication preset is required for a Bluetooth LE Audio (LC3)
+    // comm-route mic, same as the USB-rig TX path; plain mics capture direct.
+    txUseVoiceCommInput_ = voiceCommunicationInput;
     txUseVoiceRecInput_ = false;
     txOutputRate_ = netRate;
-    LOGI("Net TX: startNetTx inputDev=%d netRate=%d", txInputDeviceId_, netRate);
+    LOGI("Net TX: startNetTx inputDev=%d netRate=%d voiceCommInput=%d",
+         txInputDeviceId_, netRate, voiceCommunicationInput ? 1 : 0);
 
     if (!initTxModem()) { txNetMode_ = false; return false; }
 
