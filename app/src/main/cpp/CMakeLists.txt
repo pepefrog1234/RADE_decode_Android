@@ -74,12 +74,27 @@ target_include_directories(eoo PRIVATE
 )
 
 # ─── JNI bridge + Audio Engine ───────────────────────────────
+# wdsp_ps/: vendored WDSP PureSignal engine (GPL-2.0-or-later, Warren Pratt
+# NR0V) — calcc/iqc/delay compiled as C, C++ facade in puresignal.cpp.
+# See docs/licenses/WDSP-NOTICE.md.
 add_library(rade_jni SHARED
     rade_jni.cpp
     audio_engine.cpp
     audio_ring_buffer.cpp
     usb_serial_helper.c
     icom_pty.c
+    wdsp_ps/calcc.c
+    wdsp_ps/iqc.c
+    wdsp_ps/delay.c
+    wdsp_ps/wdsp_utils.c
+    wdsp_ps/wdsp_port.c
+    wdsp_ps/puresignal.cpp
+)
+
+# calcc.c uses isnan() to reject broken calibration solutions; the global
+# -ffast-math implies -ffinite-math-only which would optimize isnan() away.
+set_source_files_properties(wdsp_ps/calcc.c PROPERTIES
+    COMPILE_OPTIONS "-fno-finite-math-only"
 )
 
 target_compile_features(rade_jni PRIVATE cxx_std_17)
@@ -93,6 +108,7 @@ target_include_directories(rade_jni PRIVATE
     ${CPP_DIR}/opus/include
     ${CPP_DIR}/opus
     ${CPP_DIR}/eoo
+    ${CPP_DIR}/wdsp_ps
 )
 
 target_compile_definitions(rade_jni PRIVATE

@@ -11,6 +11,7 @@
 #include <android/log.h>
 
 #include "audio_engine.h"
+#include "wdsp_ps/puresignal.h"
 
 extern "C" {
 #include "rade_api.h"
@@ -660,6 +661,67 @@ JNI_AUDIO(nativeFillNetTxFrame)(JNIEnv *env, jobject /* this */, jshortArray out
     int got = g_audioEngine->fillNetTxFrame(reinterpret_cast<int16_t*>(buf), numSamples);
     env->ReleaseShortArrayElements(outBuf, buf, 0);
     return got;
+}
+
+/* ── PureSignal (WDSP calcc/iqc) JNI methods ─────────────────
+ * Adaptive TX predistortion engine — dormant until Kotlin wires
+ * real audio through it. See wdsp_ps/puresignal.h for the contract. */
+
+JNIEXPORT jboolean JNICALL
+JNI_AUDIO(nativePsCreate)(JNIEnv *env, jobject /* this */, jint rate, jint blockSize) {
+    return psCreate((int)rate, (int)blockSize) ? JNI_TRUE : JNI_FALSE;
+}
+
+JNIEXPORT void JNICALL
+JNI_AUDIO(nativePsDestroy)(JNIEnv *env, jobject /* this */) {
+    psDestroy();
+}
+
+/** Feed TX-reference + RX-feedback blocks (interleaved I/Q float, n complex samples). */
+JNIEXPORT void JNICALL
+JNI_AUDIO(nativePsFeed)(JNIEnv *env, jobject /* this */,
+                        jfloatArray txRef, jfloatArray fb, jint n) {
+    if (!txRef || !fb || n <= 0) return;
+    jsize lenTx = env->GetArrayLength(txRef);
+    jsize lenFb = env->GetArrayLength(fb);
+    jint maxN = (jint)((lenTx < lenFb ? lenTx : lenFb) / 2);
+    if (n > maxN) n = maxN;
+    if (n <= 0) return;
+    jfloat *bufTx = env->GetFloatArrayElements(txRef, nullptr);
+    jfloat *bufFb = env->GetFloatArrayElements(fb, nullptr);
+    if (bufTx && bufFb) psFeed(bufTx, bufFb, n);
+    if (bufFb) env->ReleaseFloatArrayElements(fb, bufFb, JNI_ABORT);
+    if (bufTx) env->ReleaseFloatArrayElements(txRef, bufTx, JNI_ABORT);
+}
+
+/** Apply the current correction to TX I/Q in place (n complex samples, copied back). */
+JNIEXPORT void JNICALL
+JNI_AUDIO(nativePsApply)(JNIEnv *env, jobject /* this */, jfloatArray iq, jint n) {
+    if (!iq || n <= 0) return;
+    jint maxN = (jint)(env->GetArrayLength(iq) / 2);
+    if (n > maxN) n = maxN;
+    if (n <= 0) return;
+    jfloat *buf = env->GetFloatArrayElements(iq, nullptr);
+    if (!buf) return;
+    psApply(buf, n);
+    env->ReleaseFloatArrayElements(iq, buf, 0);
+}
+
+/** Copy the 16-int PS state vector (see puresignal.h for semantics). */
+JNIEXPORT void JNICALL
+JNI_AUDIO(nativePsGetInfo)(JNIEnv *env, jobject /* this */, jintArray out16) {
+    if (!out16) return;
+    int info[16];
+    psGetInfo(info);
+    jsize len = env->GetArrayLength(out16);
+    if (len > 16) len = 16;
+    static_assert(sizeof(jint) == sizeof(int), "jint/int size mismatch");
+    env->SetIntArrayRegion(out16, 0, len, reinterpret_cast<jint*>(info));
+}
+
+JNIEXPORT void JNICALL
+JNI_AUDIO(nativePsSetRun)(JNIEnv *env, jobject /* this */, jboolean run) {
+    psSetRun(run == JNI_TRUE);
 }
 
 } /* extern "C" */

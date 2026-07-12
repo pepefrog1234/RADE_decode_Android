@@ -278,6 +278,33 @@ class AudioBridge(private val context: Context) {
     fun fillNetTxFrame(outBuf: ShortArray, numSamples: Int): Int =
         nativeFillNetTxFrame(outBuf, numSamples)
 
+    /* ── PureSignal (WDSP adaptive TX predistortion) ─────────────
+     * Dormant engine (nothing calls these yet). Wraps WDSP's calcc
+     * (calibration computer) + iqc (TX I/Q corrector) — GPL, Warren
+     * Pratt NR0V. See cpp/wdsp_ps/puresignal.h for the full contract. */
+
+    /** Create the PureSignal engine for interleaved I/Q at [rate] Hz,
+     *  nominal [blockSize] complex samples per feed/apply call. */
+    fun psCreate(rate: Int = 48000, blockSize: Int = 1024): Boolean =
+        nativePsCreate(rate, blockSize)
+
+    /** Shut down and free the PureSignal engine. */
+    fun psDestroy() = nativePsDestroy()
+
+    /** Feed simultaneous TX-reference and RX-feedback blocks (interleaved
+     *  I/Q floats, [n] complex samples each) to the calibration computer. */
+    fun psFeed(txRef: FloatArray, feedback: FloatArray, n: Int) =
+        nativePsFeed(txRef, feedback, n)
+
+    /** Apply the current predistortion to TX I/Q in place ([n] complex samples). */
+    fun psApply(txIq: FloatArray, n: Int) = nativePsApply(txIq, n)
+
+    /** Copy the 16-int calibration state vector ([14]=correcting, [15]=state). */
+    fun psGetInfo(out16: IntArray) = nativePsGetInfo(out16)
+
+    /** Enable/disable automatic calibration (correction ramps in/out). */
+    fun psSetRun(run: Boolean) = nativePsSetRun(run)
+
     /* ── USB Audio Device Discovery ──────────────────────────── */
 
     data class AudioDevice(
@@ -414,6 +441,14 @@ class AudioBridge(private val context: Context) {
     external fun nativeFeedNetRx(pcm: ShortArray, count: Int)
     external fun nativeStartNetTx(inputDeviceId: Int, netRate: Int, voiceCommunicationInput: Boolean): Boolean
     external fun nativeFillNetTxFrame(outBuf: ShortArray, numSamples: Int): Int
+
+    /* PureSignal (WDSP calcc/iqc) */
+    private external fun nativePsCreate(rate: Int, blockSize: Int): Boolean
+    private external fun nativePsDestroy()
+    private external fun nativePsFeed(txRef: FloatArray, feedback: FloatArray, n: Int)
+    private external fun nativePsApply(txIq: FloatArray, n: Int)
+    private external fun nativePsGetInfo(out16: IntArray)
+    private external fun nativePsSetRun(run: Boolean)
 
     private val audioDeviceComparator = compareByDescending<AudioDevice> { it.isUsb }
         .thenByDescending { it.isBluetooth }

@@ -1,0 +1,76 @@
+/*  puresignal.h — C++ facade over the vendored WDSP PureSignal engine
+ *
+ *  [RADE] New file (not from WDSP). Wraps one calcc (calibration computer)
+ *  + iqc (TX I/Q correction applier) pair on a single fixed channel.
+ *
+ *  The underlying engine is GPL-2.0-or-later, Copyright (C) 2013-2019
+ *  Warren Pratt, NR0V — see docs/licenses/WDSP-NOTICE.md.
+ *
+ *  Threading contract:
+ *   - psCreate/psDestroy: any thread (exclusive; serialized against all calls)
+ *   - psApply:  audio/TX thread (holds the WDSP per-channel DSP lock while
+ *               correcting, mirroring WDSP's dsp-thread behavior)
+ *   - psFeed:   network/feedback thread (WDSP's own cs_update lock serializes
+ *               the calibration state machine; a facade mutex guards the
+ *               float->double scratch buffers)
+ *   - the calibration solver runs on its own detached pthread, spawned by
+ *     the engine (WDSP _beginthread shim) from within psFeed's state machine
+ *
+ *  IMPORTANT integration notes (Phase 3):
+ *   - While run==true, psApply must keep being called with TX samples:
+ *     after a successful calibration the solver thread busy-waits until the
+ *     new coefficients have been ramped in by psApply (WDSP SetTXAiqcStart /
+ *     SetTXAiqcSwap handshake, ~tup=5 ms of samples).
+ *   - psSetRun(false) takes effect through the calibration state machine,
+ *     i.e. on the NEXT psFeed calls; keep feeding/applying for a few blocks
+ *     so the correction ramps out cleanly (or just call psDestroy, which
+ *     force-shuts the engine down).
+ *   - The TX reference fed to psFeed is expected to peak at <= 1.0
+ *     (hardware peak fixed at 1.0; samples with |IQ| > 1.0 are ignored by
+ *     the calibration collector).
+ */
+
+#ifndef PURESIGNAL_H
+#define PURESIGNAL_H
+
+/** Create the engine (calcc + iqc) for interleaved I/Q at `rate` Hz.
+ *  `blockSize` is the nominal number of complex samples per psFeed/psApply
+ *  call (larger calls are processed in blockSize chunks). Recreates the
+ *  engine if one already exists. Returns false on bad arguments. */
+bool psCreate(int rate, int blockSize);
+
+/** Force-shutdown and free the engine. Safe to call when not created. */
+void psDestroy();
+
+/** Feed simultaneous TX-reference and RX-feedback blocks to the calibration
+ *  computer (WDSP pscc flow). Both buffers are interleaved I/Q float,
+ *  nSamples complex samples (2*nSamples floats), at the create rate. */
+void psFeed(const float* txRefIQ, const float* fbIQ, int nSamples);
+
+/** Apply the current predistortion to TX I/Q in place (WDSP xiqc).
+ *  Interleaved I/Q float, nSamples complex samples. Pass-through (buffer
+ *  untouched) when the engine is not created or no correction is active. */
+void psApply(float* txIQ, int nSamples);
+
+/** Copy the 16-int calibration state vector (WDSP GetPSInfo):
+ *   [0]  spline-fit result for the feedback scale (0 = OK, -1000 = no data)
+ *   [1..3] spline-fit results for the magnitude/cos/sin corrections (0 = OK)
+ *   [4]  feedback level indicator = (int)(256 * hw_scale / rx_scale)
+ *   [5]  count of attempted calibrations
+ *   [6]  solution sanity-check bitfield (scheck: 0 = OK)
+ *   [7]  feedback-fit sanity-check bitfield (rxscheck: 0 = OK)
+ *   [8..12] unused (0)
+ *   [13] iqc watchdog count (feedback stalled while TX flows if it climbs)
+ *   [14] 1 while a correction is being applied (iqc running)
+ *   [15] calibration state machine state (0 RESET, 1 WAIT, 2 MOXDELAY,
+ *        3 SETUP, 4 COLLECT, 5 MOXCHECK, 6 CALC, 7 DELAY, 8 STAYON, 9 TURNON)
+ *  Zeroed when the engine is not created. */
+void psGetInfo(int* info16);
+
+/** true: start auto-calibration (WDSP SetPSControl automode + SetPSMox(1)).
+ *  false: reset the calibration state machine and ramp the correction out
+ *  (WDSP SetPSControl reset + SetPSMox(0)) — see header note about feeding
+ *  a few more blocks. */
+void psSetRun(bool run);
+
+#endif // PURESIGNAL_H
