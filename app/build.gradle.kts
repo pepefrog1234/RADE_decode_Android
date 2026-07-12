@@ -11,8 +11,8 @@ android {
         applicationId = "yakumo2683.RADEdecode"
         minSdk = 26
         targetSdk = 35
-        versionCode = 10568
-        versionName = "1.5.68-ps-hl2-feedback-map-fix"
+        versionCode = 10569
+        versionName = "1.5.69-ps-feedback-stability-fix"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 

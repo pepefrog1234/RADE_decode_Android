@@ -558,6 +558,14 @@ void rxscheck (int rints, double* tvec, double* coef, int* info)
 void calc (CALCC a)
 {
 	int i;
+	/* [RADE] Report every solver launch, including feedback-fit failures.
+	 * Upstream incremented [5] only after that first fit succeeded, which made
+	 * the field look like a calibration count while hiding early rejections. */
+	memset(a->binfo, 0, 5 * sizeof(int));
+	a->binfo[6] = 0;
+	a->binfo[7] = 0;
+	a->binfo[10] = 0;
+	a->binfo[5]++;
 	int tsamps = a->nsamps + a->npsamps;
 	double *env_TX =	(double *)malloc0(a->nsamps * sizeof(double));
 	double *env_RX =	(double *)malloc0(a->nsamps * sizeof(double));
@@ -599,8 +607,6 @@ void calc (CALCC a)
 	}
 
 	a->binfo[4] = (int)(256.0 * (a->hw_scale / a->rx_scale));
-	a->binfo[5]++;
-
 	if (a->pin)	// regress
 	{
 		const double slope = 0.001;
@@ -741,6 +747,13 @@ void __cdecl doCalcCorrection (void *arg)
 			SetTXAiqcStart (a->channel, a->cm, a->cc, a->cs);
 		else
 			SetTXAiqcSwap  (a->channel, a->cm, a->cc, a->cs);
+		a->binfo[8]++;
+		a->binfo[10] = 1;
+	}
+	else
+	{
+		a->binfo[9]++;
+		a->binfo[10] = 2;
 	}
 	InterlockedBitTestAndSet (&a->ctrl.calcdone, 0);
 	_endthread();
@@ -997,7 +1010,7 @@ void pscc (int channel, int size, double* tx, double* rx)
 
 				if (InterlockedBitTestAndReset(&a->ctrl.calcdone, 0))
 				{
-					memcpy (a->info, a->binfo, 8 * sizeof (int));
+					memcpy (a->info, a->binfo, 13 * sizeof (int));
 					a->info[14] = _InterlockedAnd (&a->ctrl.running, 1);
 					a->ctrl.calcinprogress = 0;
 					if (a->ctrl.reset)
@@ -1009,6 +1022,11 @@ void pscc (int channel, int size, double* tx, double* rx)
 						a->ctrl.bs_count = 0;
 						a->ctrl.state = LDELAY;
 					}
+					/* [RADE] A manual calibration is a true one-shot. Upstream
+					 * silently launched a second collection after a rejected
+					 * result, which raced the app's bounded retry controller. */
+					else if (!a->ctrl.automode)
+						a->ctrl.state = LSTAYON;
 					else if (++(a->ctrl.bs_count) >= 2)
 						a->ctrl.state = LRESET;
 					else if (InterlockedAnd (&a->mox, 1) && InterlockedAnd (&a->solidmox, 1)) 

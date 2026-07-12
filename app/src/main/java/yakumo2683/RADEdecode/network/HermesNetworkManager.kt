@@ -3,6 +3,7 @@ package yakumo2683.RADEdecode.network
 import android.content.Context
 import android.net.wifi.WifiManager
 import android.os.Build
+import android.os.SystemClock
 import android.util.Log
 import yakumo2683.RADEdecode.PureSignalBridge
 import kotlinx.coroutines.CoroutineScope
@@ -20,6 +21,7 @@ import java.net.DatagramSocket
 import java.net.InetAddress
 import java.net.InetSocketAddress
 import java.net.SocketTimeoutException
+import java.util.concurrent.atomic.AtomicBoolean
 import kotlin.math.PI
 import kotlin.math.abs
 import kotlin.math.cos
@@ -78,13 +80,6 @@ class HermesNetworkManager(private val appContext: Context? = null) : NetworkAud
         private const val SAMPLES_PER_FRAME = 63
         private const val SAMPLES_PER_PACKET = 2 * SAMPLES_PER_FRAME
         private const val PACKET_NS = SAMPLES_PER_PACKET * 1_000_000_000L / IQ_RATE  // 2.625 ms
-
-        /** LNA gain applied during TX (addr 0x0E) — sets the RX1 PA-feedback
-         *  level into the physical ADC. At 0 dB the ADC overflow flag tripped
-         *  during TX on 40/20 m; -12 dB clears the overflow with ample 24-bit
-         *  SNR left for the calibration fit. RX2 is an internal DAC reference
-         *  and bypasses this ADC/LNA setting. */
-        private const val TX_FB_LNA_DB = -12
 
         // SSB passband (Hz above the suppressed carrier / NCO)
         private const val SSB_CENTER = 1500.0
@@ -166,6 +161,7 @@ class HermesNetworkManager(private val appContext: Context? = null) : NetworkAud
     private var socket: DatagramSocket? = null
     private var radioAddr: InetSocketAddress? = null
     private var connScope: CoroutineScope? = null
+    @Volatile private var connectionClosing = false
     private val sendLock = Any()
     @Volatile private var lastEp6Nanos = 0L
     @Volatile private var lastEp2Nanos = 0L
@@ -183,7 +179,8 @@ class HermesNetworkManager(private val appContext: Context? = null) : NetworkAud
     @Volatile private var radioRevPower = 0
     @Volatile private var radioPaCurrent = 0
     @Volatile private var radioTemp = 0
-    @Volatile private var radioAdcOverflow = false
+    /** OR-latch every clip report until the one-second PS controller tick. */
+    private val psAdcOverflowInterval = AtomicBoolean(false)
 
     /* PureSignal phase 1: per-receiver level accumulators during MOX, to
      * identify and calibrate the TX feedback path. Reader thread writes,
@@ -207,6 +204,12 @@ class HermesNetworkManager(private val appContext: Context? = null) : NetworkAud
     @Volatile private var psEnabledFlag = false
     /** Engine exists (psCreate succeeded); cleared by disable/disconnect. */
     @Volatile private var psEngineUp = false
+    private val psEngineLifecycleLock = Any()
+    private val psRestartInProgress = AtomicBoolean(false)
+    private val psControlLock = Any()
+    private var psFeedbackController = Hl2PureSignalFeedbackController()
+    @Volatile private var psFeedbackGainDb = psFeedbackController.gainDb
+    @Volatile private var psControlStatus = "IDLE"
 
     private val psBlockAssembler = Hl2PureSignalBlockAssembler(
         blockSamples = PS_BLOCK_SAMPLES,
@@ -222,6 +225,16 @@ class HermesNetworkManager(private val appContext: Context? = null) : NetworkAud
 
     /* Pacer-thread scratch for the 1 s diagnostics line. */
     private val psInfoScratch = IntArray(16)
+
+    private fun resetFeedbackStats() {
+        synchronized(fbStatsLock) {
+            fbSumSq1 = 0.0
+            fbSumSq2 = 0.0
+            fbPeak1 = 0f
+            fbPeak2 = 0f
+            fbCount = 0
+        }
+    }
 
     /** PureSignal enabled (UI switch state as applied to this manager). */
     val psEnabled: Boolean get() = psEnabledFlag
@@ -243,29 +256,90 @@ class HermesNetworkManager(private val appContext: Context? = null) : NetworkAud
         psEnabledFlag = v
         Log.i(TAG, "PureSignal ${if (v) "ENABLED" else "disabled"}")
         if (v) {
+            synchronized(psControlLock) {
+                psFeedbackController = Hl2PureSignalFeedbackController()
+                psFeedbackGainDb = psFeedbackController.gainDb
+                if (mox) {
+                    psFeedbackController.onPttStarted(SystemClock.elapsedRealtime())
+                    psControlStatus = "PREFLIGHT"
+                }
+            }
             if (_state.value.connected) psEngineCreate()
         } else {
+            synchronized(psControlLock) {
+                psFeedbackController.onPttStopped()
+                psControlStatus = "IDLE"
+            }
             psEngineDestroy()
         }
     }
 
     private fun psEngineCreate() {
-        psBlockAssembler.reset()
-        psEngineUp = PureSignalBridge.psCreate(
-            IQ_RATE,
-            PS_BLOCK_SAMPLES,
-            PS_HL2_TX_REF_PEAK
-        )
-        Log.i(TAG, "PureSignal engine create: ${if (psEngineUp) "OK" else "FAILED"} " +
-            "(rate=$IQ_RATE block=$PS_BLOCK_SAMPLES hwPeak=$PS_HL2_TX_REF_PEAK)")
+        synchronized(psEngineLifecycleLock) {
+            if (psEngineUp || !psEnabledFlag || connectionClosing ||
+                !_state.value.connected) return
+            psBlockAssembler.reset()
+            psEngineUp = PureSignalBridge.psCreate(
+                IQ_RATE,
+                PS_BLOCK_SAMPLES,
+                PS_HL2_TX_REF_PEAK
+            )
+            Log.i(TAG, "PureSignal engine create: ${if (psEngineUp) "OK" else "FAILED"} " +
+                "(rate=$IQ_RATE block=$PS_BLOCK_SAMPLES hwPeak=$PS_HL2_TX_REF_PEAK)")
+        }
     }
 
     private fun psEngineDestroy() {
-        if (!psEngineUp) return
+        synchronized(psEngineLifecycleLock) {
+            psEngineUp = false
+            psBlockAssembler.reset()
+            PureSignalBridge.psDestroy()   // force-clears any in-flight calibration
+            Log.i(TAG, "PureSignal engine destroyed")
+        }
+    }
+
+    /** A gain change invalidates samples already captured by CALCC. Destroying
+     * on a worker also prevents an in-flight detached solver from swapping a
+     * stale/clipped candidate after the controller has backed the ADC off. */
+    private fun restartPsEngine(reason: String) {
+        if (!psRestartInProgress.compareAndSet(false, true)) return
         psEngineUp = false
         psBlockAssembler.reset()
-        PureSignalBridge.psDestroy()   // force-clears any in-flight calibration
-        Log.i(TAG, "PureSignal engine destroyed")
+        resetFeedbackStats()
+        kotlin.concurrent.thread(name = "hl2-ps-restart") {
+            try {
+                synchronized(psEngineLifecycleLock) {
+                    PureSignalBridge.psDestroy()
+                    if (psEnabledFlag && !connectionClosing && _state.value.connected) {
+                        psEngineUp = PureSignalBridge.psCreate(
+                            IQ_RATE,
+                            PS_BLOCK_SAMPLES,
+                            PS_HL2_TX_REF_PEAK
+                        )
+                    }
+                }
+                Log.i(TAG, "PureSignal engine restarted ($reason): " +
+                    if (psEngineUp) "OK" else "left down")
+            } finally {
+                psRestartInProgress.set(false)
+            }
+        }
+    }
+
+    private fun invalidatePsOperatingPoint(reason: String) {
+        synchronized(psControlLock) {
+            psFeedbackController = Hl2PureSignalFeedbackController()
+            psFeedbackGainDb = psFeedbackController.gainDb
+            if (mox) {
+                psFeedbackController.onPttStarted(SystemClock.elapsedRealtime())
+                psControlStatus = "PREFLIGHT"
+            } else {
+                psControlStatus = "IDLE"
+            }
+        }
+        psAdcOverflowInterval.set(false)
+        resetFeedbackStats()
+        if (psEnabledFlag && _state.value.connected) restartPsEngine(reason)
     }
 
     private var wifiLock: WifiManager.WifiLock? = null
@@ -311,6 +385,7 @@ class HermesNetworkManager(private val appContext: Context? = null) : NetworkAud
      */
     suspend fun connect(host: String): Boolean = withContext(Dispatchers.IO) {
         if (_state.value.connected || _state.value.connecting) return@withContext false
+        connectionClosing = false
         _state.value = State(connecting = true, freqHz = freqHz)
         try {
             val sock = DatagramSocket().apply {
@@ -385,6 +460,7 @@ class HermesNetworkManager(private val appContext: Context? = null) : NetworkAud
     }
 
     private fun fail(msg: String): Boolean {
+        connectionClosing = true
         releaseWifiLock()
         try { socket?.close() } catch (_: Exception) {}
         socket = null
@@ -394,6 +470,7 @@ class HermesNetworkManager(private val appContext: Context? = null) : NetworkAud
     }
 
     fun disconnect() {
+        connectionClosing = true
         mox = false
         // The stop command must not run on the caller's thread — the
         // Disconnect button invokes this on MAIN, where a UDP send throws
@@ -412,6 +489,11 @@ class HermesNetworkManager(private val appContext: Context? = null) : NetworkAud
         connScope?.cancel()
         connScope = null
         psEngineDestroy()
+        synchronized(psControlLock) {
+            psFeedbackController = Hl2PureSignalFeedbackController()
+            psFeedbackGainDb = psFeedbackController.gainDb
+            psControlStatus = "IDLE"
+        }
         releaseWifiLock()
         try { socket?.close() } catch (_: Exception) {}
         socket = null
@@ -426,7 +508,10 @@ class HermesNetworkManager(private val appContext: Context? = null) : NetworkAud
     /* ── Control API ────────────────────────────────────────── */
 
     fun setFrequency(hz: Long) {
-        freqHz = hz.coerceIn(10_000L, 60_000_000L)
+        val next = hz.coerceIn(10_000L, 60_000_000L)
+        if (next == freqHz) return
+        freqHz = next
+        invalidatePsOperatingPoint("frequency changed")
         _state.value = _state.value.copy(freqHz = freqHz)
         Log.i(TAG, "Frequency set: $freqHz Hz")
     }
@@ -436,21 +521,31 @@ class HermesNetworkManager(private val appContext: Context? = null) : NetworkAud
         mox = on
         // Drop any stale TX waveform so the next over starts clean.
         synchronized(txIqLock) { txIqCount = 0; txIqRead = 0; txIqWrite = 0 }
-        if (psEnabledFlag && psEngineUp) {
+        if (psEnabledFlag) {
             if (on) {
                 // Drop a partial EP6 pair block from the previous over.
                 psBlockAssembler.reset()
-                // Calibration only runs while keyed: the WDSP solver expects
-                // psApply to keep flowing while run=true (coefficient-ramp
-                // handshake), and sendAudioFrame pumps throughout MOX.
-                PureSignalBridge.psSetRun(true)
+                resetFeedbackStats()
+                psAdcOverflowInterval.set(false)
+                synchronized(psControlLock) {
+                    psFeedbackController.onPttStarted(SystemClock.elapsedRealtime())
+                    psControlStatus = "PREFLIGHT"
+                }
+                // Hold native collection off for a full clean feedback
+                // interval. The controller starts one manual calibration.
+                if (psEngineUp) PureSignalBridge.psSetMox(false)
             } else {
                 // Keep an accepted correction across overs, as upstream WDSP
                 // clients do. Only MOX/calibration collection stops here.
                 // Resetting correction requires paired psFeed+psApply traffic;
                 // the former apply-only drain could never initiate ramp-out.
-                PureSignalBridge.psSetMox(false)
+                if (psEngineUp) PureSignalBridge.psSetMox(false)
                 psBlockAssembler.reset()
+                resetFeedbackStats()
+                synchronized(psControlLock) {
+                    psFeedbackController.onPttStopped()
+                    psControlStatus = "IDLE"
+                }
             }
         }
         _state.value = _state.value.copy(ptt = on)
@@ -459,7 +554,10 @@ class HermesNetworkManager(private val appContext: Context? = null) : NetworkAud
 
     /** Hardware TX drive level 0..255 (addr 0x09). Zero = keyed but no RF. */
     fun setDrive(v: Int) {
-        txDrive = v.coerceIn(0, 255)
+        val next = v.coerceIn(0, 255)
+        if (next == txDrive) return
+        txDrive = next
+        invalidatePsOperatingPoint("drive changed")
         Log.i(TAG, "TX drive set: $txDrive/255")
     }
 
@@ -477,7 +575,9 @@ class HermesNetworkManager(private val appContext: Context? = null) : NetworkAud
      * so the main antenna keeps receiving.
      */
     fun setPaEnabled(v: Boolean) {
+        if (paEnabled == v) return
         paEnabled = v
+        invalidatePsOperatingPoint("PA route changed")
         Log.i(TAG, "PA ${if (v) "ENABLED (5W output)" else "disabled (low-power output)"}")
     }
 
@@ -617,7 +717,12 @@ class HermesNetworkManager(private val appContext: Context? = null) : NetworkAud
         val c3 = buf[off + 3].toInt() and 0xFF
         val c4 = buf[off + 4].toInt() and 0xFF
         when (c0 shr 3) {
-            0 -> radioAdcOverflow = (c1 and 0x01) != 0
+            0 -> {
+                val clipped = (c1 and 0x01) != 0
+                if (clipped && mox && psEnabledFlag) {
+                    psAdcOverflowInterval.set(true)
+                }
+            }
             1 -> {
                 radioTemp = (c1 shl 8) or c2
                 radioFwdPower = (c3 shl 8) or c4
@@ -734,7 +839,10 @@ class HermesNetworkManager(private val appContext: Context? = null) : NetworkAud
             }
             6 -> {  // addr 0x0E: LNA gain during TX (feedback level), bit15 enables
                 buf[off] = ((0x0E shl 1) or moxBit).toByte()
-                buf[off + 3] = (0x80 or ((TX_FB_LNA_DB + 12) and 0x3F)).toByte()
+                // C3 bit7 enables TX feedback gain and bit6 selects the HL2
+                // extended -12..+48 dB code. Without bit6, code zero is the
+                // legacy gain code 32 (about +20 dB), not -12 dB.
+                buf[off + 3] = encodeHl2TxFeedbackGain(psFeedbackGainDb).toByte()
             }
             else -> {  // addr 0x17: HL2 PTT hang (C3) + TX buffer latency (C4)
                 buf[off] = ((0x17 shl 1) or moxBit).toByte()
@@ -812,6 +920,55 @@ class HermesNetworkManager(private val appContext: Context? = null) : NetworkAud
      * sequence gaps, forward/reverse power, PA current, ADC overflow) — so a
      * single in-app log capture pinpoints where a TX failure lives.
      */
+    private fun updatePureSignalController(
+        info: PsInfoSnapshot,
+        feedbackRatioDb: Double,
+        overflowSeen: Boolean
+    ) {
+        val decision = synchronized(psControlLock) {
+            psFeedbackController.onFeedbackInterval(
+                info = info,
+                feedbackRatioDb = feedbackRatioDb,
+                overflowSeen = overflowSeen,
+                nowMs = SystemClock.elapsedRealtime()
+            ).also {
+                psFeedbackGainDb = psFeedbackController.gainDb
+            }
+        }
+
+        when (decision) {
+            Hl2PureSignalFeedbackController.Decision.Wait -> Unit
+            Hl2PureSignalFeedbackController.Decision.StartSingleCalibration -> {
+                if (psEngineUp) {
+                    PureSignalBridge.psStartSingleCalibration()
+                    psControlStatus = "CALIBRATING"
+                    Log.i(TAG, "PureSignal controller: one-shot calibration started " +
+                        "gain=${psFeedbackGainDb}dB")
+                }
+            }
+            is Hl2PureSignalFeedbackController.Decision.ApplyGain -> {
+                psControlStatus = "PREFLIGHT"
+                Log.w(TAG, "PureSignal controller: ${decision.reason} -> " +
+                    "gain=${decision.gainDb}dB ceiling=${decision.ceilingDb}dB")
+                restartPsEngine("${decision.reason}, gain=${decision.gainDb}dB")
+            }
+            is Hl2PureSignalFeedbackController.Decision.Complete -> {
+                psControlStatus = "LOCKED"
+                if (psEngineUp) PureSignalBridge.psSetMox(false)
+                Log.i(TAG, "PureSignal controller: LOCKED (${decision.reason}) " +
+                    "gain=${psFeedbackGainDb}dB")
+            }
+            is Hl2PureSignalFeedbackController.Decision.StopRetry -> {
+                psControlStatus = "FAILED:${decision.reason}"
+                if (psEngineUp) PureSignalBridge.psSetMox(false)
+                // A timeout or unusable accepted candidate must not be able
+                // to remain active or swap in after the app stops retrying.
+                restartPsEngine("controller stopped: ${decision.reason}")
+                Log.w(TAG, "PureSignal controller stopped for this PTT: ${decision.reason}")
+            }
+        }
+    }
+
     private fun pacerLoop() {
         var next = System.nanoTime()
         var wasMox = false
@@ -845,8 +1002,10 @@ class HermesNetworkManager(private val appContext: Context? = null) : NetworkAud
                     var fb2 = -120.0
                     var fbPk1 = -120.0
                     var fbPk2 = -120.0
+                    var hadFbSamples = false
                     synchronized(fbStatsLock) {
                         if (fbCount > 0) {
+                            hadFbSamples = true
                             fb1 = 10.0 * log10(fbSumSq1 / fbCount + 1e-12)
                             fb2 = 10.0 * log10(fbSumSq2 / fbCount + 1e-12)
                             fbPk1 = 20.0 * log10(fbPeak1 + 1e-6)
@@ -856,17 +1015,34 @@ class HermesNetworkManager(private val appContext: Context? = null) : NetworkAud
                         fbPeak1 = 0f; fbPeak2 = 0f
                         fbCount = 0
                     }
-                    // WDSP calibration health while PureSignal is enabled:
-                    // cals=info[5] attempted calibrations, dog=info[13] iqc
-                    // envelope-bin watchdog (climbs when a correction runs
-                    // while the next collection cannot finish),
-                    // corr=info[14] correction applied, state=info[15] cal
-                    // state machine, fblvl=info[4] feedback level indicator.
+                    var overflowSeen = psAdcOverflowInterval.get()
+                    // WDSP calibration health while PureSignal is enabled.
                     val psDiag = if (psEnabledFlag) {
                         PureSignalBridge.psGetInfo(psInfoScratch)
-                        " ps=[cals=${psInfoScratch[5]} dog=${psInfoScratch[13]} " +
-                            "corr=${psInfoScratch[14]} state=${psInfoScratch[15]} " +
-                            "fblvl=${psInfoScratch[4]}]"
+                        val snapshot = PsInfoSnapshot.from(psInfoScratch)
+                        if (!psRestartInProgress.get() && psEngineUp) {
+                            // Consume clips only when the controller can act;
+                            // keep them latched throughout native restarts.
+                            overflowSeen = psAdcOverflowInterval.getAndSet(false)
+                            updatePureSignalController(
+                                info = snapshot,
+                                feedbackRatioDb = if (hadFbSamples) fb1 - fb2 else Double.NaN,
+                                overflowSeen = overflowSeen
+                            )
+                        }
+                        val ceiling = synchronized(psControlLock) {
+                            psFeedbackController.gainCeilingDb
+                        }
+                        " ps=[try=${snapshot.attemptCounter} ok=${snapshot.acceptedCounter} " +
+                            "rej=${snapshot.rejectedCounter} result=${snapshot.lastOutcome} " +
+                            "fit=${snapshot.feedbackScaleFit}/${snapshot.magnitudeFit}/" +
+                            "${snapshot.cosineFit}/${snapshot.sineFit} " +
+                            "sane=0x${snapshot.solutionSanity.toString(16)} " +
+                            "rxsane=0x${snapshot.feedbackFitSanity.toString(16)} " +
+                            "dog=${snapshot.dogCounter} " +
+                            "corr=${if (snapshot.correctionApplied) 1 else 0} " +
+                            "state=${snapshot.state} fblvl=${snapshot.feedbackLevel} " +
+                            "ctl=$psControlStatus ceil=${ceiling}dB]"
                     } else ""
                     Log.i(
                         TAG,
@@ -876,8 +1052,8 @@ class HermesNetworkManager(private val appContext: Context? = null) : NetworkAud
                             "oc=0x%02X ".format(filterOcBits(freqHz)) +
                             "| radio: ep6=${ep6RecvInterval}/s gaps=${ep6GapInterval} " +
                             "fwd=$radioFwdPower rev=$radioRevPower paI=$radioPaCurrent " +
-                            "temp=$radioTemp ovf=${if (radioAdcOverflow) 1 else 0} " +
-                            "| PS: fbLna=${TX_FB_LNA_DB}dB " +
+                            "temp=$radioTemp ovf=${if (overflowSeen) 1 else 0} " +
+                            "| PS: fbLna=${psFeedbackGainDb}dB " +
                             "rx1Fb=%.1f/%.1f rx2Ref=%.1f/%.1f dBFS".format(
                                 fb1, fbPk1, fb2, fbPk2
                             ) +

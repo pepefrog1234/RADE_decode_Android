@@ -40,12 +40,16 @@ object PureSignalBridge {
     /** Apply the current predistortion to TX I/Q in place ([n] complex samples). */
     fun psApply(txIq: FloatArray, n: Int) = nativePsApply(txIq, n)
 
-    /** Copy the 16-int calibration state vector ([5]=cal count, [13]=watchdog,
-     *  [14]=correcting, [15]=state machine state, [4]=feedback level). */
+    /** Copy the 16-int calibration state vector ([5]=attempts, [8]=accepted,
+     *  [9]=rejected, [10]=last outcome, [13]=watchdog, [14]=correcting,
+     *  [15]=state machine state, [4]=feedback level). */
     fun psGetInfo(out16: IntArray) = nativePsGetInfo(out16)
 
-    /** Enable/disable automatic calibration (correction ramps in/out). */
+    /** Start one calibration, or reset and ramp correction out. */
     fun psSetRun(run: Boolean) = nativePsSetRun(run)
+
+    /** Start one manual calibration; accepted correction remains active. */
+    fun psStartSingleCalibration() = nativePsStartSingleCalibration()
 
     /** Change only MOX state while preserving accepted correction coefficients. */
     fun psSetMox(mox: Boolean) = nativePsSetMox(mox)
@@ -56,5 +60,6 @@ object PureSignalBridge {
     private external fun nativePsApply(txIq: FloatArray, n: Int)
     private external fun nativePsGetInfo(out16: IntArray)
     private external fun nativePsSetRun(run: Boolean)
+    private external fun nativePsStartSingleCalibration()
     private external fun nativePsSetMox(mox: Boolean)
 }

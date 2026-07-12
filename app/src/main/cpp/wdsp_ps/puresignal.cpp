@@ -47,8 +47,9 @@ namespace {
 constexpr int kChannel = 0;         // the single WDSP channel we own
 constexpr int kInts = 16;           // envelope intervals (Thetis default)
 constexpr int kSpi = 256;           // samples per interval (Thetis default)
-constexpr double kMoxDelay = 0.1;   // s of TX to skip after keying (Thetis default)
+constexpr double kMoxDelay = 0.2;   // s of TX to skip after keying (piHPSDR default)
 constexpr double kLoopDelay = 0.0;  // s between auto-cals (Thetis default)
+constexpr double kTxDelay = 150e-9; // HL2 TX-reference alignment (piHPSDR default)
 constexpr double kPtol = 0.8;       // fit population tolerance (Thetis default)
 constexpr int kNpsamps = 256;       // pin-mode extension samples (Thetis default)
 constexpr double kAlpha = 0.9;      // stabilize-mode smoothing (Thetis default)
@@ -146,6 +147,7 @@ bool psCreate(int rate, int blockSize, double hardwarePeak)
         kNpsamps,           // pin samples
         kAlpha);            // alpha
     txa[kChannel].calcc.p = g_calcc;
+    SetPSTXDelay(kChannel, kTxDelay);
 
     g_iqBuf = (double*)malloc0((int)(blockSize * sizeof(complex)));
     g_iqc = create_iqc(
@@ -246,12 +248,23 @@ void psSetRun(bool run)
     if (g_created) {
         if (run) {
             SetPSMox(kChannel, 1);
-            SetPSControl(kChannel, 0, 0, 1, 0);   // automode on
+            SetPSControl(kChannel, 0, 1, 0, 0);   // one manual calibration
         } else {
             SetPSControl(kChannel, 1, 0, 0, 0);   // reset (ramps correction out)
             SetPSMox(kChannel, 0);
         }
         PS_LOGI("psSetRun(%d)", run ? 1 : 0);
+    }
+    pthread_rwlock_unlock(&g_psLock);
+}
+
+void psStartSingleCalibration()
+{
+    pthread_rwlock_rdlock(&g_psLock);
+    if (g_created) {
+        SetPSMox(kChannel, 1);
+        SetPSControl(kChannel, 0, 1, 0, 0);
+        PS_LOGI("PureSignal one-shot calibration started");
     }
     pthread_rwlock_unlock(&g_psLock);
 }

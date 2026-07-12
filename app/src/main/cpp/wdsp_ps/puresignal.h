@@ -58,10 +58,13 @@ void psApply(float* txIQ, int nSamples);
  *   [0]  spline-fit result for the feedback scale (0 = OK, -1000 = no data)
  *   [1..3] spline-fit results for the magnitude/cos/sin corrections (0 = OK)
  *   [4]  feedback level indicator = (int)(256 * hw_scale / rx_scale)
- *   [5]  count of attempted calibrations
+ *   [5]  count of solver attempts
  *   [6]  solution sanity-check bitfield (scheck: 0 = OK)
  *   [7]  feedback-fit sanity-check bitfield (rxscheck: 0 = OK)
- *   [8..12] unused (0)
+ *   [8]  count of accepted coefficient swaps
+ *   [9]  count of rejected solutions
+ *   [10] last solver result (0 none, 1 accepted, 2 rejected)
+ *   [11..12] unused (0)
  *   [13] iqc envelope-bin watchdog count (a collection that cannot finish
  *        while correction spans all bins is reset when this reaches 6)
  *   [14] 1 while a correction is being applied (iqc running)
@@ -70,11 +73,16 @@ void psApply(float* txIQ, int nSamples);
  *  Zeroed when the engine is not created. */
 void psGetInfo(int* info16);
 
-/** true: start auto-calibration (WDSP SetPSControl automode + SetPSMox(1)).
+/** true: start one manual calibration (WDSP mancal + SetPSMox(1)).
  *  false: reset the calibration state machine and ramp the correction out
  *  (WDSP SetPSControl reset + SetPSMox(0)) — see header note about feeding
  *  a few more blocks. */
 void psSetRun(bool run);
+
+/** Start exactly one manual calibration while keyed. Unlike automode this
+ *  stops in STAYON after accepting a solution instead of continuously
+ *  replacing coefficients. */
+void psStartSingleCalibration();
 
 /** Update only WDSP's MOX state, preserving accepted correction coefficients.
  *  Use this for normal PTT transitions; reset/destroy is reserved for turning

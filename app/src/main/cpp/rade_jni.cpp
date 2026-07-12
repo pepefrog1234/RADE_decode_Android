@@ -783,6 +783,16 @@ JNI_PS(nativePsSetRun)(JNIEnv *env, jobject /* this */, jboolean run) {
 }
 
 JNIEXPORT void JNICALL
+JNI_AUDIO(nativePsStartSingleCalibration)(JNIEnv *env, jobject /* this */) {
+    psStartSingleCalibration();
+}
+
+JNIEXPORT void JNICALL
+JNI_PS(nativePsStartSingleCalibration)(JNIEnv *env, jobject /* this */) {
+    psStartSingleCalibration();
+}
+
+JNIEXPORT void JNICALL
 JNI_AUDIO(nativePsSetMox)(JNIEnv *env, jobject /* this */, jboolean mox) {
     psSetMox(mox == JNI_TRUE);
 }
