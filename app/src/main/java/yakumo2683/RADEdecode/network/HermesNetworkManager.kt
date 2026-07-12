@@ -457,6 +457,20 @@ class HermesNetworkManager(private val appContext: Context? = null) : NetworkAud
                 PureSignalBridge.psSetRun(true)
             } else {
                 PureSignalBridge.psSetRun(false)
+                // CRASH FIX (field-reported, reproducible once corr=1): the
+                // WDSP control thread completes coefficient ramp-in/out ONLY
+                // through further xiqc (psApply) calls. TX has just stopped,
+                // so without these drain blocks the thread parks in its
+                // busy-wait holding locks and the next key/destroy crashes.
+                // ~64 ms of zeros ≫ the 5 ms ramp; run off the caller thread
+                // (setPtt(false) is invoked from the VM on unkey).
+                kotlin.concurrent.thread(name = "hl2-ps-drain") {
+                    val zeros = FloatArray(PS_BLOCK_SAMPLES * 2)
+                    repeat(3) {
+                        try { PureSignalBridge.psApply(zeros, PS_BLOCK_SAMPLES) } catch (_: Throwable) {}
+                        try { Thread.sleep(10) } catch (_: InterruptedException) {}
+                    }
+                }
             }
         }
         _state.value = _state.value.copy(ptt = on)
