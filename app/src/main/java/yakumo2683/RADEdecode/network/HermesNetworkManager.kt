@@ -66,9 +66,9 @@ class HermesNetworkManager(private val appContext: Context? = null) : NetworkAud
         private const val IQ_RATE = 48000
         private const val INTERP = IQ_RATE / AUDIO_RATE            // 6
 
-        /** Receivers: RX1 = the receive path, RX2 = PureSignal TX feedback
-         *  (the gateware routes the PA sample into a receiver during MOX when
-         *  the PS bit — addr 0x0A bit 22 — is set). */
+        /** Receivers: RX1 = receive/physical ADC/PA feedback; RX2 becomes
+         *  the internal TX-DAC reference during MOX when the PureSignal bit
+         *  (addr 0x0A bit 22) is set. */
         private const val NUM_RX = 2
         /** EP6 sample group: 6 bytes I/Q per receiver + 2 bytes mic. */
         private const val RX_GROUP_BYTES = 6 * NUM_RX + 2
@@ -79,12 +79,11 @@ class HermesNetworkManager(private val appContext: Context? = null) : NetworkAud
         private const val SAMPLES_PER_PACKET = 2 * SAMPLES_PER_FRAME
         private const val PACKET_NS = SAMPLES_PER_PACKET * 1_000_000_000L / IQ_RATE  // 2.625 ms
 
-        /** LNA gain applied during TX (addr 0x0E) — sets the PureSignal
-         *  feedback level into the ADC. Tuned via the fb1/fb2 TX-health
-         *  readings: at 0 dB the feedback measured fb2 ≈ -15.5 dBFS RMS but
-         *  the ADC overflow flag tripped during TX on 40/20 m (envelope
-         *  peaks clipping); -12 dB clears the overflow with ample 24-bit
-         *  SNR left for the calibration fit. */
+        /** LNA gain applied during TX (addr 0x0E) — sets the RX1 PA-feedback
+         *  level into the physical ADC. At 0 dB the ADC overflow flag tripped
+         *  during TX on 40/20 m; -12 dB clears the overflow with ample 24-bit
+         *  SNR left for the calibration fit. RX2 is an internal DAC reference
+         *  and bypasses this ADC/LNA setting. */
         private const val TX_FB_LNA_DB = -12
 
         // SSB passband (Hz above the suppressed carrier / NCO)
@@ -116,28 +115,30 @@ class HermesNetworkManager(private val appContext: Context? = null) : NetworkAud
         /* ── PureSignal phase 2b (WDSP calcc/iqc via PureSignalBridge) ──
          *
          * The engine works in a normalized domain where the TX envelope
-         * nominally peaks at 1.0: the facade fixes WDSP's hw_scale at 1.0,
-         * the iqc bins its input envelope over [0,1] in 16 intervals, and
-         * calcc's collector only completes a calibration once ALL 16 bins
-         * fill (samples with env > 1.0 are ignored). Our analytic floats
-         * (oi,oq) peak at ~0.5 (the ±0.999-clamped RADE waveform through
-         * the half-amplitude analytic filter), so the PS path multiplies
-         * them by PS_TX_NORM = 2 before psApply/psFeed — restoring the
-         * real-signal amplitude so envelope peaks reach ~1.0 — and writes
-         * int16 with TX_IQ_SCALE / PS_TX_NORM, keeping the RF level
-         * identical to the non-PS path. */
+         * nominally peaks at 1.0. IQC bins its input envelope over [0,1] in
+         * 16 intervals, while CALCC normalizes HL2's lower-level RX2 DAC
+         * reference with PS_HL2_TX_REF_PEAK. Our analytic floats (oi,oq)
+         * peak at ~0.5 (the ±0.999-clamped RADE waveform through the
+         * half-amplitude analytic filter), so the PS path multiplies them by
+         * PS_TX_NORM = 2 before psApply — restoring the real-signal amplitude
+         * so envelope peaks reach ~1.0 — and writes int16 with
+         * TX_IQ_SCALE / PS_TX_NORM, keeping RF level identical to PS-off.
+         * RX2 is multiplied by the inverse of that final 0.8 protocol scale
+         * before CALCC, matching piHPSDR's HL2 drive-inverse treatment. */
         private const val PS_TX_NORM = 2.0f
         private const val PS_POST_SCALE = TX_IQ_SCALE / PS_TX_NORM
+        /** Undo the fixed post-IQC protocol scale on RX2 before CALCC. */
+        private const val PS_TX_REFERENCE_SCALE = 32767.0f / PS_POST_SCALE
 
         /** Complex samples per psFeed block (matches the engine blockSize). */
         private const val PS_BLOCK_SAMPLES = 1024
 
-        /** Radio-side TX FIFO priming depth in samples: the feedback heard
-         *  now left the phone this much before the txIqRing backlog. */
-        private const val PS_RADIO_FIFO_SAMPLES = TX_BUFFER_LATENCY_MS * IQ_RATE / 1000  // 1920
-
-        /** TX-reference history: 4 s of complex samples at 48 kHz. */
-        private const val PS_REF_RING_SAMPLES = 4 * IQ_RATE
+        /**
+         * Protocol-1 HL2 TX-DAC reference peak. piHPSDR measured 0.2386 for
+         * HL2 and uses a padded 0.2400. WDSP uses this to normalize the
+         * hardware reference back into the [0,1] correction-envelope domain.
+         */
+        private const val PS_HL2_TX_REF_PEAK = 0.24f
     }
 
     data class State(
@@ -196,36 +197,28 @@ class HermesNetworkManager(private val appContext: Context? = null) : NetworkAud
 
     /* ── PureSignal phase 2b: live predistortion state ────────
      *
-     * The feedback is receiver 2 (i2/q2 — the gateware routes the PA
-     * sample into RX2 during MOX via the PS bit, addr 0x0A bit 22); RX1
-     * stays the antenna monitor used only for the phase-1 stats above.
-     *
-     * Reference/feedback time alignment: a feedback sample arriving now
-     * corresponds to a reference sample the TX pump produced earlier by
-     * (txIqRing backlog + the radio's 40 ms TX FIFO = PS_RADIO_FIFO_SAMPLES).
-     * The backlog is measured ONCE at the first feedback block of each
-     * over and frozen — both clocks are nominally 48 kHz, so intra-over
-     * drift is crystal-ppm-small, and freezing avoids chasing ring-level
-     * jitter. sendAudioFrame appends the post-psApply reference into
-     * psRefRing (TX pump thread); the EP6 reader assembles 1024-sample
-     * feedback blocks and pops the matching reference window for psFeed. */
+     * HL2's gateware supplies the correctly paired PureSignal streams:
+     * RX1 remains on the physical ADC (PA output feedback), while addr 0x0A
+     * bit 22 switches RX2 to the internal TX DAC reference during MOX. Both
+     * pass through matching mixer/receiver chains and arrive in the same EP6
+     * sample group. Feed inverse-drive-scaled RX2 first and RX1 second to
+     * WDSP pscc; adding the phone TX-ring/FIFO delay here would incorrectly
+     * de-align that pair. */
     @Volatile private var psEnabledFlag = false
     /** Engine exists (psCreate succeeded); cleared by disable/disconnect. */
     @Volatile private var psEngineUp = false
 
-    private val psRefLock = Any()
-    /** Interleaved I/Q reference history; allocated on first engine create
-     *  (1.5 MB — don't tax non-HL2 users). Guarded by [psRefLock]. */
-    private var psRefRing: FloatArray? = null
-    /** Complex samples written into [psRefRing] since PTT-on. */
-    private var psRefWritten = 0L
-
-    /* Reader-thread-only feedback assembly (volatile: reset from setPtt). */
-    private val psFbBlock = FloatArray(PS_BLOCK_SAMPLES * 2)
-    private val psRefBlock = FloatArray(PS_BLOCK_SAMPLES * 2)
-    @Volatile private var psFbFill = 0
-    @Volatile private var psDelayFrozen = false
-    private var psDelaySamples = 0L
+    private val psBlockAssembler = Hl2PureSignalBlockAssembler(
+        blockSamples = PS_BLOCK_SAMPLES,
+        txReferenceScale = PS_TX_REFERENCE_SCALE
+    ) {
+        txReferenceIq, paFeedbackIq, sampleCount ->
+        // PTT/disable can race the reader at a block boundary. Recheck the
+        // active state before entering native calibration.
+        if (mox && psEnabledFlag && psEngineUp) {
+            PureSignalBridge.psFeed(txReferenceIq, paFeedbackIq, sampleCount)
+        }
+    }
 
     /* Pacer-thread scratch for the 1 s diagnostics line. */
     private val psInfoScratch = IntArray(16)
@@ -252,26 +245,25 @@ class HermesNetworkManager(private val appContext: Context? = null) : NetworkAud
         if (v) {
             if (_state.value.connected) psEngineCreate()
         } else {
-            PureSignalBridge.psSetRun(false)
             psEngineDestroy()
         }
     }
 
     private fun psEngineCreate() {
-        synchronized(psRefLock) {
-            if (psRefRing == null) psRefRing = FloatArray(PS_REF_RING_SAMPLES * 2)
-            psRefWritten = 0L
-        }
-        psFbFill = 0
-        psDelayFrozen = false
-        psEngineUp = PureSignalBridge.psCreate(IQ_RATE, PS_BLOCK_SAMPLES)
+        psBlockAssembler.reset()
+        psEngineUp = PureSignalBridge.psCreate(
+            IQ_RATE,
+            PS_BLOCK_SAMPLES,
+            PS_HL2_TX_REF_PEAK
+        )
         Log.i(TAG, "PureSignal engine create: ${if (psEngineUp) "OK" else "FAILED"} " +
-            "(rate=$IQ_RATE block=$PS_BLOCK_SAMPLES)")
+            "(rate=$IQ_RATE block=$PS_BLOCK_SAMPLES hwPeak=$PS_HL2_TX_REF_PEAK)")
     }
 
     private fun psEngineDestroy() {
         if (!psEngineUp) return
         psEngineUp = false
+        psBlockAssembler.reset()
         PureSignalBridge.psDestroy()   // force-clears any in-flight calibration
         Log.i(TAG, "PureSignal engine destroyed")
     }
@@ -446,31 +438,19 @@ class HermesNetworkManager(private val appContext: Context? = null) : NetworkAud
         synchronized(txIqLock) { txIqCount = 0; txIqRead = 0; txIqWrite = 0 }
         if (psEnabledFlag && psEngineUp) {
             if (on) {
-                // Fresh alignment per over: reference indices restart and the
-                // txIqRing backlog is re-frozen at the first feedback block.
-                synchronized(psRefLock) { psRefWritten = 0L }
-                psFbFill = 0
-                psDelayFrozen = false
+                // Drop a partial EP6 pair block from the previous over.
+                psBlockAssembler.reset()
                 // Calibration only runs while keyed: the WDSP solver expects
                 // psApply to keep flowing while run=true (coefficient-ramp
                 // handshake), and sendAudioFrame pumps throughout MOX.
                 PureSignalBridge.psSetRun(true)
             } else {
-                PureSignalBridge.psSetRun(false)
-                // CRASH FIX (field-reported, reproducible once corr=1): the
-                // WDSP control thread completes coefficient ramp-in/out ONLY
-                // through further xiqc (psApply) calls. TX has just stopped,
-                // so without these drain blocks the thread parks in its
-                // busy-wait holding locks and the next key/destroy crashes.
-                // ~64 ms of zeros ≫ the 5 ms ramp; run off the caller thread
-                // (setPtt(false) is invoked from the VM on unkey).
-                kotlin.concurrent.thread(name = "hl2-ps-drain") {
-                    val zeros = FloatArray(PS_BLOCK_SAMPLES * 2)
-                    repeat(3) {
-                        try { PureSignalBridge.psApply(zeros, PS_BLOCK_SAMPLES) } catch (_: Throwable) {}
-                        try { Thread.sleep(10) } catch (_: InterruptedException) {}
-                    }
-                }
+                // Keep an accepted correction across overs, as upstream WDSP
+                // clients do. Only MOX/calibration collection stops here.
+                // Resetting correction requires paired psFeed+psApply traffic;
+                // the former apply-only drain could never initiate ramp-out.
+                PureSignalBridge.psSetMox(false)
+                psBlockAssembler.reset()
             }
         }
         _state.value = _state.value.copy(ptt = on)
@@ -608,64 +588,21 @@ class HermesNetworkManager(private val appContext: Context? = null) : NetworkAud
                     if (m2 > fbPeak2) fbPeak2 = m2
                     fbCount++
                 }
-                // PureSignal phase 2b: RX2 carries the PA feedback sample.
-                if (psActive) psPushFeedback(i2, q2)
+                // PureSignal phase 2b: HL2 RX2 is the internal TX/DAC
+                // reference; RX1 is the physical ADC/PA feedback.
+                if (psActive) {
+                    psBlockAssembler.push(
+                        rx1FeedbackI = i1,
+                        rx1FeedbackQ = q1,
+                        rx2ReferenceI = i2,
+                        rx2ReferenceQ = q2
+                    )
+                }
             } else {
                 demodPush(i1, q1)
             }
             p += RX_GROUP_BYTES
         }
-    }
-
-    /**
-     * Collect one RX2 feedback sample (reader thread). When a full
-     * [PS_BLOCK_SAMPLES] block is assembled, pop the time-aligned TX
-     * reference window from [psRefRing] and feed both to the calibration
-     * computer (cheap: psFeed converts + runs the WDSP state machine; the
-     * actual solve happens on the engine's own thread).
-     */
-    private fun psPushFeedback(fi: Float, fq: Float) {
-        val fill = psFbFill
-        psFbBlock[2 * fill] = fi
-        psFbBlock[2 * fill + 1] = fq
-        if (fill + 1 < PS_BLOCK_SAMPLES) {
-            psFbFill = fill + 1
-            return
-        }
-        psFbFill = 0
-
-        // Lock order: psRefLock → txIqLock (sendAudioFrame's PS path nests
-        // the same way; nothing takes them in reverse). Holding psRefLock
-        // across the freeze keeps (psRefWritten, txIqCount) mutually
-        // consistent — a pump burst between the two reads would otherwise
-        // skew the frozen delay by a whole 20 ms frame.
-        synchronized(psRefLock) {
-            if (!psDelayFrozen) {
-                // First feedback block of the over: freeze the alignment
-                // delay. txIqRing holds int16 I,Q pairs → level/2 = complex
-                // samples of phone-side backlog; the radio's primed TX FIFO
-                // adds 40 ms (PS_RADIO_FIFO_SAMPLES).
-                val backlogSamples = synchronized(txIqLock) { txIqCount } / 2
-                psDelaySamples = backlogSamples.toLong() + PS_RADIO_FIFO_SAMPLES
-                psDelayFrozen = true
-                Log.i(TAG, "PS align: backlog=$backlogSamples + fifo=$PS_RADIO_FIFO_SAMPLES " +
-                    "→ delay=$psDelaySamples samples (ref=$psRefWritten)")
-            }
-            val ring = psRefRing ?: return
-            // The block just completed holds feedback for reference positions
-            // [written - delay - block, written - delay).
-            val start = psRefWritten - psDelaySamples - PS_BLOCK_SAMPLES
-            if (start < 0) return                                   // not enough history yet
-            if (psRefWritten - start > PS_REF_RING_SAMPLES) return  // already overwritten
-            var idx = ((start % PS_REF_RING_SAMPLES).toInt()) * 2
-            val cap = PS_REF_RING_SAMPLES * 2
-            for (k in 0 until PS_BLOCK_SAMPLES * 2) {
-                psRefBlock[k] = ring[idx]
-                idx++
-                if (idx == cap) idx = 0
-            }
-        }
-        PureSignalBridge.psFeed(psRefBlock, psFbBlock, PS_BLOCK_SAMPLES)
     }
 
     /**
@@ -765,7 +702,7 @@ class HermesNetworkManager(private val appContext: Context? = null) : NetworkAud
                 // Without them no low-pass filter is selected and the TX
                 // path through the board is open — keys but no RF.
                 buf[off + 2] = (filterOcBits(freqHz) shl 1).toByte()
-                // bit2 duplex + bits[6:3] = NRX-1 (RX2 = PureSignal feedback)
+                // bit2 duplex + bits[6:3] = NRX-1 (RX2 = PS TX-DAC reference)
                 buf[off + 4] = (0x04 or ((NUM_RX - 1) shl 3)).toByte()
             }
             1 -> {  // addr 0x01: TX NCO frequency
@@ -776,8 +713,8 @@ class HermesNetworkManager(private val appContext: Context? = null) : NetworkAud
                 buf[off] = ((0x02 shl 1) or moxBit).toByte()
                 putFreq(buf, off + 1, freqHz)
             }
-            3 -> {  // addr 0x03: RX2 NCO frequency — the PureSignal feedback
-                    // receiver tracks the TX frequency
+            3 -> {  // addr 0x03: RX2 NCO frequency — the PureSignal TX-DAC
+                    // reference receiver tracks the TX frequency
                 buf[off] = ((0x03 shl 1) or moxBit).toByte()
                 putFreq(buf, off + 1, freqHz)
             }
@@ -902,8 +839,8 @@ class HermesNetworkManager(private val appContext: Context? = null) : NetworkAud
                 if (System.nanoTime() - statNs >= 1_000_000_000L) {
                     statNs = System.nanoTime()
                     val ringLevel = synchronized(txIqLock) { txIqCount }
-                    // PureSignal feedback levels (dBFS) per receiver — which
-                    // one carries the TX sample identifies the feedback path.
+                    // PureSignal levels (dBFS): RX1 is physical PA feedback;
+                    // RX2 is the gateware's internal TX/DAC reference.
                     var fb1 = -120.0
                     var fb2 = -120.0
                     var fbPk1 = -120.0
@@ -921,7 +858,8 @@ class HermesNetworkManager(private val appContext: Context? = null) : NetworkAud
                     }
                     // WDSP calibration health while PureSignal is enabled:
                     // cals=info[5] attempted calibrations, dog=info[13] iqc
-                    // watchdog (climbs if feedback stalls while TX flows),
+                    // envelope-bin watchdog (climbs when a correction runs
+                    // while the next collection cannot finish),
                     // corr=info[14] correction applied, state=info[15] cal
                     // state machine, fblvl=info[4] feedback level indicator.
                     val psDiag = if (psEnabledFlag) {
@@ -940,7 +878,9 @@ class HermesNetworkManager(private val appContext: Context? = null) : NetworkAud
                             "fwd=$radioFwdPower rev=$radioRevPower paI=$radioPaCurrent " +
                             "temp=$radioTemp ovf=${if (radioAdcOverflow) 1 else 0} " +
                             "| PS: fbLna=${TX_FB_LNA_DB}dB " +
-                            "fb1=%.1f/%.1f fb2=%.1f/%.1f dBFS".format(fb1, fbPk1, fb2, fbPk2) +
+                            "rx1Fb=%.1f/%.1f rx2Ref=%.1f/%.1f dBFS".format(
+                                fb1, fbPk1, fb2, fbPk2
+                            ) +
                             psDiag
                     )
                     ep2SentInterval = 0
@@ -1118,12 +1058,11 @@ class HermesNetworkManager(private val appContext: Context? = null) : NetworkAud
      * chain xiqc (the corrector) runs in place on midbuff (TXA.c xtxa,
      * "PureSignal correction"), and the calibration reference handed to
      * pscc is the hardware-bound signal AFTER that correction — TXA.c
-     * creates calcc with hw_scale = 1/0.4072, the DAC peak of the
-     * POST-iqc outbound samples, and calcc's math (ym = drive/feedback vs
-     * feedback envelope) only measures the PA's inverse if the reference
-     * is the actual corrected drive. So here: psApply first, THEN the
-     * corrected block is both recorded as the psFeed reference and scaled
-     * to int16 for the radio.
+     * creates calcc with the inverse hardware-reference peak, and calcc's
+     * math only measures the PA's inverse if the reference is the actual
+     * corrected drive. HL2 returns that post-DAC reference as RX2, paired
+     * in hardware with RX1 feedback, so no app-side reference history or
+     * TX FIFO delay estimate belongs here.
      */
     override fun sendAudioFrame(pcm: ShortArray) {
         if (!isConnected) return
@@ -1166,33 +1105,16 @@ class HermesNetworkManager(private val appContext: Context? = null) : NetworkAud
 
         if (psEnabledFlag && psEngineUp && mox) {
             // Normalize into WDSP's [0,1] envelope domain (see PS_TX_NORM),
-            // predistort, then record the corrected block as the calibration
-            // reference and convert with the compensated int16 scale.
+            // predistort, then convert with the compensated int16 scale. The
+            // radio returns the actual post-DAC reference synchronously on RX2.
             for (i in 0 until outSamples * 2) blk[i] *= PS_TX_NORM
             PureSignalBridge.psApply(blk, outSamples)
-            synchronized(psRefLock) {   // lock order: psRefLock → txIqLock
-                psAppendReferenceLocked(blk, outSamples)
-                writeTxRing(blk, outSamples, PS_POST_SCALE)
-            }
+            writeTxRing(blk, outSamples, PS_POST_SCALE)
         } else {
             // Numerically identical to the pre-PureSignal path: the same
             // oi,oq floats through the same single TX_IQ_SCALE multiply.
             writeTxRing(blk, outSamples, TX_IQ_SCALE)
         }
-    }
-
-    /** Append [nSamples] complex reference samples to the history ring.
-     *  Caller holds [psRefLock]. */
-    private fun psAppendReferenceLocked(blk: FloatArray, nSamples: Int) {
-        val ring = psRefRing ?: return
-        val cap = PS_REF_RING_SAMPLES * 2
-        var idx = ((psRefWritten % PS_REF_RING_SAMPLES).toInt()) * 2
-        for (k in 0 until nSamples * 2) {
-            ring[idx] = blk[k]
-            idx++
-            if (idx == cap) idx = 0
-        }
-        psRefWritten += nSamples
     }
 
     /** Scale [nSamples] complex float samples to int16 and push them into

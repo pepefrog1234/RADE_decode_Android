@@ -710,7 +710,7 @@ class TransceiverViewModel(application: Application) : AndroidViewModel(applicat
         selection > 0 -> selection
         selection == AudioService.RX_OUTPUT_SYSTEM_DEFAULT -> -1
         else -> {
-            val bridge = AudioBridge(getApplication())
+            val bridge = AudioBridge.forDeviceDiscovery(getApplication())
             val id = bridge.findPreferredRxOutputDevice()?.id ?: -1
             bridge.release()
             id
@@ -780,26 +780,60 @@ class TransceiverViewModel(application: Application) : AndroidViewModel(applicat
     /**
      * Dump the app's own recent audio/routing logcat: [AudioService] (RX/TX
      * lifecycle, Bluetooth/LE Audio routing, keep-alive), [AudioBridge], and the
-     * native "AudioEngine" / "RADE_JNI" tags. Used to diagnose LE Audio (LC3)
-     * routing across TX. Blocking — call off the main thread.
+     * native "AudioEngine" / "RADE_JNI" / "PureSignalPS" tags. Fatal Java
+     * and native crash tags plus the dedicated crash buffer are included on a
+     * best-effort basis; logcat permission/errors are reported in the capture
+     * instead of silently becoming empty output. Blocking — call off the main
+     * thread.
      */
     fun captureAudioLog(): String = try {
-        val proc = Runtime.getRuntime().exec(
+        fun runLogcat(label: String, command: Array<String>): String {
+            return try {
+                val proc = ProcessBuilder(*command)
+                    .redirectErrorStream(true)
+                    .start()
+                val text = proc.inputStream.bufferedReader().use { it.readText() }
+                val exit = proc.waitFor()
+                if (exit == 0) text else {
+                    "($label unavailable: logcat exit=$exit" +
+                        if (text.isBlank()) ")" else ": ${text.trim()})"
+                }
+            } catch (e: Exception) {
+                "($label unavailable: ${e.message ?: e.javaClass.simpleName})"
+            }
+        }
+
+        val mainLog = runLogcat(
+            "audio log",
             arrayOf(
                 "logcat", "-d", "-v", "time",
                 "AudioService:V", "AudioBridge:V", "AudioEngine:V", "RADE_JNI:V",
-                "HermesNet:V", "*:S"
+                "HermesNet:V", "PureSignalPS:V", "TransceiverVM:V",
+                "AndroidRuntime:V", "libc:V", "DEBUG:V", "crash_dump64:V",
+                "tombstoned:V", "*:S"
             )
         )
-        val out = proc.inputStream.bufferedReader().use { it.readText() }
-        proc.waitFor()
-        out.ifBlank { "(no audio log — start RX, do one TX→RX with the LC3 headset, then capture)" }
+        val crashLog = runLogcat(
+            "crash buffer",
+            arrayOf("logcat", "-b", "crash", "-d", "-v", "time")
+        )
+
+        buildString {
+            if (mainLog.isNotBlank()) append(mainLog.trimEnd())
+            if (crashLog.isNotBlank()) {
+                if (isNotEmpty()) append("\n\n")
+                append("--------- crash buffer\n")
+                append(crashLog.trimEnd())
+            }
+        }.ifBlank {
+            "(no audio/crash log — start RX, reproduce once, then capture)"
+        }
     } catch (e: Exception) {
         "Failed to read logcat: ${e.message}"
     }
 
     fun refreshDevices() {
-        val bridge = AudioBridge(getApplication())
+        val bridge = AudioBridge.forDeviceDiscovery(getApplication())
         val devices = bridge.getInputDevices()
         val outputDevices = bridge.getOutputDevices()
         val usbInput = bridge.findUsbInputDevice()

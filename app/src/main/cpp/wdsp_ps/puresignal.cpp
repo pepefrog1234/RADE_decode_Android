@@ -26,6 +26,7 @@
 #include <pthread.h>
 #include <unistd.h>
 #include <string.h>
+#include <cmath>
 #include <android/log.h>
 
 #include "wdsp_min.h"
@@ -46,7 +47,6 @@ namespace {
 constexpr int kChannel = 0;         // the single WDSP channel we own
 constexpr int kInts = 16;           // envelope intervals (Thetis default)
 constexpr int kSpi = 256;           // samples per interval (Thetis default)
-constexpr double kHwPeak = 1.0;     // TX reference expected to peak at <= 1.0
 constexpr double kMoxDelay = 0.1;   // s of TX to skip after keying (Thetis default)
 constexpr double kLoopDelay = 0.0;  // s between auto-cals (Thetis default)
 constexpr double kPtol = 0.8;       // fit population tolerance (Thetis default)
@@ -76,7 +76,21 @@ void psDestroyLocked()
     SetPSControl(kChannel, 1, 0, 0, 0);
     SetPSMox(kChannel, 0);
     ForceShutDown(g_calcc, g_iqc, 50);
-    usleep(50 * 1000);  // allow an in-flight solver thread to finish calc()
+
+    // CALCC workers are detached. A solver that finishes after the first
+    // ForceShutDown can enter SetTXAiqcStart/Swap late and set busy/run again,
+    // then wait forever because the write lock above has stopped psApply.
+    // Re-open that handshake until every tracked worker has actually exited;
+    // never free CALCC/IQC while a worker can still dereference them.
+    unsigned waitSlices = 0;
+    while (!wdsp_wait_for_workers(10)) {
+        InterlockedBitTestAndReset(&g_iqc->busy, 0);
+        InterlockedBitTestAndReset(&g_iqc->run, 0);
+        if (++waitSlices % 100 == 0)
+            PS_LOGE("PureSignal destroy still waiting for WDSP worker(s)");
+    }
+    InterlockedBitTestAndReset(&g_iqc->busy, 0);
+    InterlockedBitTestAndReset(&g_iqc->run, 0);
 
     txa[kChannel].iqc.p0 = txa[kChannel].iqc.p1 = nullptr;
     destroy_iqc(g_iqc);
@@ -98,10 +112,11 @@ void psDestroyLocked()
 
 } // namespace
 
-bool psCreate(int rate, int blockSize)
+bool psCreate(int rate, int blockSize, double hardwarePeak)
 {
-    if (rate <= 0 || blockSize <= 0) {
-        PS_LOGE("psCreate: bad args rate=%d blockSize=%d", rate, blockSize);
+    if (rate <= 0 || blockSize <= 0 || !std::isfinite(hardwarePeak) || hardwarePeak <= 0.0) {
+        PS_LOGE("psCreate: bad args rate=%d blockSize=%d hardwarePeak=%f",
+                rate, blockSize, hardwarePeak);
         return false;
     }
     if (blockSize > kMaxBlockSize) blockSize = kMaxBlockSize;
@@ -119,7 +134,7 @@ bool psCreate(int rate, int blockSize)
         rate,               // feedback sample rate
         kInts,              // ints
         kSpi,               // spi
-        1.0 / kHwPeak,      // hw_scale
+        1.0 / hardwarePeak, // normalize the hardware TX/DAC reference
         kMoxDelay,          // mox delay
         kLoopDelay,         // loop delay
         kPtol,              // ptol
@@ -151,8 +166,8 @@ bool psCreate(int rate, int blockSize)
     g_created = true;
     pthread_rwlock_unlock(&g_psLock);
 
-    PS_LOGI("PureSignal engine created: rate=%d blockSize=%d ints=%d spi=%d",
-            rate, blockSize, kInts, kSpi);
+    PS_LOGI("PureSignal engine created: rate=%d blockSize=%d hwPeak=%.4f ints=%d spi=%d",
+            rate, blockSize, hardwarePeak, kInts, kSpi);
     return true;
 }
 
@@ -237,6 +252,16 @@ void psSetRun(bool run)
             SetPSMox(kChannel, 0);
         }
         PS_LOGI("psSetRun(%d)", run ? 1 : 0);
+    }
+    pthread_rwlock_unlock(&g_psLock);
+}
+
+void psSetMox(bool mox)
+{
+    pthread_rwlock_rdlock(&g_psLock);
+    if (g_created) {
+        SetPSMox(kChannel, mox ? 1 : 0);
+        PS_LOGI("psSetMox(%d)", mox ? 1 : 0);
     }
     pthread_rwlock_unlock(&g_psLock);
 }

@@ -17,7 +17,14 @@ import android.util.Log
  *
  * Mirrors iOS AudioManager.swift functionality.
  */
-class AudioBridge(private val context: Context) {
+class AudioBridge private constructor(
+    private val context: Context,
+    private val ownsNativeEngine: Boolean
+) {
+
+    constructor(context: Context) : this(context, ownsNativeEngine = true)
+
+    private var released = false
 
     /** Callback interface for audio engine events. */
     interface Callback {
@@ -41,8 +48,10 @@ class AudioBridge(private val context: Context) {
     }
 
     init {
-        nativeCreate()
-        nativeSetCallback(jniCallback)
+        if (ownsNativeEngine) {
+            nativeCreate()
+            nativeSetCallback(jniCallback)
+        }
     }
 
     /**
@@ -199,7 +208,10 @@ class AudioBridge(private val context: Context) {
     fun stopRecording() = nativeStopRecording()
 
     /** Release native resources. Call when done. */
+    @Synchronized
     fun release() {
+        if (!ownsNativeEngine || released) return
+        released = true
         stop()
         stopTx(drainEoo = false)
         nativeDestroy()
@@ -285,8 +297,11 @@ class AudioBridge(private val context: Context) {
 
     /** Create the PureSignal engine for interleaved I/Q at [rate] Hz,
      *  nominal [blockSize] complex samples per feed/apply call. */
-    fun psCreate(rate: Int = 48000, blockSize: Int = 1024): Boolean =
-        nativePsCreate(rate, blockSize)
+    fun psCreate(
+        rate: Int = 48000,
+        blockSize: Int = 1024,
+        hardwarePeak: Float = 1.0f
+    ): Boolean = nativePsCreate(rate, blockSize, hardwarePeak)
 
     /** Shut down and free the PureSignal engine. */
     fun psDestroy() = nativePsDestroy()
@@ -304,6 +319,9 @@ class AudioBridge(private val context: Context) {
 
     /** Enable/disable automatic calibration (correction ramps in/out). */
     fun psSetRun(run: Boolean) = nativePsSetRun(run)
+
+    /** Change only MOX state while preserving accepted correction coefficients. */
+    fun psSetMox(mox: Boolean) = nativePsSetMox(mox)
 
     /* ── USB Audio Device Discovery ──────────────────────────── */
 
@@ -443,12 +461,13 @@ class AudioBridge(private val context: Context) {
     external fun nativeFillNetTxFrame(outBuf: ShortArray, numSamples: Int): Int
 
     /* PureSignal (WDSP calcc/iqc) */
-    private external fun nativePsCreate(rate: Int, blockSize: Int): Boolean
+    private external fun nativePsCreate(rate: Int, blockSize: Int, hardwarePeak: Float): Boolean
     private external fun nativePsDestroy()
     private external fun nativePsFeed(txRef: FloatArray, feedback: FloatArray, n: Int)
     private external fun nativePsApply(txIq: FloatArray, n: Int)
     private external fun nativePsGetInfo(out16: IntArray)
     private external fun nativePsSetRun(run: Boolean)
+    private external fun nativePsSetMox(mox: Boolean)
 
     private val audioDeviceComparator = compareByDescending<AudioDevice> { it.isUsb }
         .thenByDescending { it.isBluetooth }
@@ -521,6 +540,14 @@ class AudioBridge(private val context: Context) {
         init {
             System.loadLibrary("rade_jni")
         }
+
+        /**
+         * Device enumeration does not need an AudioEngine. Using this factory
+         * avoids replacing the service's process-global native engine merely
+         * to query Android's [AudioManager].
+         */
+        internal fun forDeviceDiscovery(context: Context): AudioBridge =
+            AudioBridge(context, ownsNativeEngine = false)
 
         /** Spectrum bin count (FFT_SIZE / 2). */
         const val SPECTRUM_BINS = 512

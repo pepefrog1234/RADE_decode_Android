@@ -676,8 +676,8 @@ JNI_AUDIO(nativeFillNetTxFrame)(JNIEnv *env, jobject /* this */, jshortArray out
 #define JNI_PS(name) \
     Java_yakumo2683_RADEdecode_PureSignalBridge_##name
 
-static jboolean psCreateJni(JNIEnv * /*env*/, jint rate, jint blockSize) {
-    return psCreate((int)rate, (int)blockSize) ? JNI_TRUE : JNI_FALSE;
+static jboolean psCreateJni(JNIEnv * /*env*/, jint rate, jint blockSize, jfloat hardwarePeak) {
+    return psCreate((int)rate, (int)blockSize, (double)hardwarePeak) ? JNI_TRUE : JNI_FALSE;
 }
 
 /** Feed TX-reference + RX-feedback blocks (interleaved I/Q float, n complex samples). */
@@ -719,13 +719,15 @@ static void psGetInfoJni(JNIEnv *env, jintArray out16) {
 }
 
 JNIEXPORT jboolean JNICALL
-JNI_AUDIO(nativePsCreate)(JNIEnv *env, jobject /* this */, jint rate, jint blockSize) {
-    return psCreateJni(env, rate, blockSize);
+JNI_AUDIO(nativePsCreate)(JNIEnv *env, jobject /* this */, jint rate, jint blockSize,
+                          jfloat hardwarePeak) {
+    return psCreateJni(env, rate, blockSize, hardwarePeak);
 }
 
 JNIEXPORT jboolean JNICALL
-JNI_PS(nativePsCreate)(JNIEnv *env, jobject /* this */, jint rate, jint blockSize) {
-    return psCreateJni(env, rate, blockSize);
+JNI_PS(nativePsCreate)(JNIEnv *env, jobject /* this */, jint rate, jint blockSize,
+                       jfloat hardwarePeak) {
+    return psCreateJni(env, rate, blockSize, hardwarePeak);
 }
 
 JNIEXPORT void JNICALL
@@ -778,6 +780,16 @@ JNI_AUDIO(nativePsSetRun)(JNIEnv *env, jobject /* this */, jboolean run) {
 JNIEXPORT void JNICALL
 JNI_PS(nativePsSetRun)(JNIEnv *env, jobject /* this */, jboolean run) {
     psSetRun(run == JNI_TRUE);
+}
+
+JNIEXPORT void JNICALL
+JNI_AUDIO(nativePsSetMox)(JNIEnv *env, jobject /* this */, jboolean mox) {
+    psSetMox(mox == JNI_TRUE);
+}
+
+JNIEXPORT void JNICALL
+JNI_PS(nativePsSetMox)(JNIEnv *env, jobject /* this */, jboolean mox) {
+    psSetMox(mox == JNI_TRUE);
 }
 
 } /* extern "C" */

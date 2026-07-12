@@ -25,9 +25,9 @@
  *     i.e. on the NEXT psFeed calls; keep feeding/applying for a few blocks
  *     so the correction ramps out cleanly (or just call psDestroy, which
  *     force-shuts the engine down).
- *   - The TX reference fed to psFeed is expected to peak at <= 1.0
- *     (hardware peak fixed at 1.0; samples with |IQ| > 1.0 are ignored by
- *     the calibration collector).
+ *   - `hardwarePeak` passed to psCreate is the nominal peak of the TX/DAC
+ *     reference fed to psFeed. CALCC scales that hardware-domain reference
+ *     back to the IQC [0,1] envelope domain.
  */
 
 #ifndef PURESIGNAL_H
@@ -35,9 +35,11 @@
 
 /** Create the engine (calcc + iqc) for interleaved I/Q at `rate` Hz.
  *  `blockSize` is the nominal number of complex samples per psFeed/psApply
- *  call (larger calls are processed in blockSize chunks). Recreates the
- *  engine if one already exists. Returns false on bad arguments. */
-bool psCreate(int rate, int blockSize);
+ *  call (larger calls are processed in blockSize chunks). `hardwarePeak`
+ *  is the positive full-scale peak of the hardware TX reference (HL2
+ *  Protocol 1 is approximately 0.24). Recreates the engine if one already
+ *  exists. Returns false on bad arguments. */
+bool psCreate(int rate, int blockSize, double hardwarePeak);
 
 /** Force-shutdown and free the engine. Safe to call when not created. */
 void psDestroy();
@@ -60,7 +62,8 @@ void psApply(float* txIQ, int nSamples);
  *   [6]  solution sanity-check bitfield (scheck: 0 = OK)
  *   [7]  feedback-fit sanity-check bitfield (rxscheck: 0 = OK)
  *   [8..12] unused (0)
- *   [13] iqc watchdog count (feedback stalled while TX flows if it climbs)
+ *   [13] iqc envelope-bin watchdog count (a collection that cannot finish
+ *        while correction spans all bins is reset when this reaches 6)
  *   [14] 1 while a correction is being applied (iqc running)
  *   [15] calibration state machine state (0 RESET, 1 WAIT, 2 MOXDELAY,
  *        3 SETUP, 4 COLLECT, 5 MOXCHECK, 6 CALC, 7 DELAY, 8 STAYON, 9 TURNON)
@@ -72,5 +75,10 @@ void psGetInfo(int* info16);
  *  (WDSP SetPSControl reset + SetPSMox(0)) — see header note about feeding
  *  a few more blocks. */
 void psSetRun(bool run);
+
+/** Update only WDSP's MOX state, preserving accepted correction coefficients.
+ *  Use this for normal PTT transitions; reset/destroy is reserved for turning
+ *  the PureSignal feature off or tearing the engine down. */
+void psSetMox(bool mox);
 
 #endif // PURESIGNAL_H

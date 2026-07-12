@@ -101,6 +101,10 @@ void LinuxSetEvent(sem_t* sem);
 
 HANDLE wdsp_beginthread( void( __cdecl *start_address )( void * ), unsigned stack_size, void *arglist);
 
+/* [RADE] Wait up to timeout_ms for every detached wdsp_beginthread worker to
+ * finish. Returns non-zero only when no tracked worker remains. */
+int wdsp_wait_for_workers(unsigned timeout_ms);
+
 void _endthread();
 
 void SetThreadPriority(HANDLE thread, int priority);
@@ -108,4 +112,3 @@ void SetThreadPriority(HANDLE thread, int priority);
 int CloseHandle(HANDLE hObject);
 
 #endif
-

@@ -21,9 +21,13 @@ object PureSignalBridge {
     }
 
     /** Create the PureSignal engine for interleaved I/Q at [rate] Hz,
-     *  nominal [blockSize] complex samples per feed/apply call. */
-    fun psCreate(rate: Int = 48000, blockSize: Int = 1024): Boolean =
-        nativePsCreate(rate, blockSize)
+     *  nominal [blockSize] complex samples per feed/apply call. [hardwarePeak]
+     *  is the nominal peak of the radio-provided TX/DAC reference. */
+    fun psCreate(
+        rate: Int = 48000,
+        blockSize: Int = 1024,
+        hardwarePeak: Float = 1.0f
+    ): Boolean = nativePsCreate(rate, blockSize, hardwarePeak)
 
     /** Shut down and free the PureSignal engine (safe when not created). */
     fun psDestroy() = nativePsDestroy()
@@ -43,10 +47,14 @@ object PureSignalBridge {
     /** Enable/disable automatic calibration (correction ramps in/out). */
     fun psSetRun(run: Boolean) = nativePsSetRun(run)
 
-    private external fun nativePsCreate(rate: Int, blockSize: Int): Boolean
+    /** Change only MOX state while preserving accepted correction coefficients. */
+    fun psSetMox(mox: Boolean) = nativePsSetMox(mox)
+
+    private external fun nativePsCreate(rate: Int, blockSize: Int, hardwarePeak: Float): Boolean
     private external fun nativePsDestroy()
     private external fun nativePsFeed(txRef: FloatArray, feedback: FloatArray, n: Int)
     private external fun nativePsApply(txIq: FloatArray, n: Int)
     private external fun nativePsGetInfo(out16: IntArray)
     private external fun nativePsSetRun(run: Boolean)
+    private external fun nativePsSetMox(mox: Boolean)
 }
