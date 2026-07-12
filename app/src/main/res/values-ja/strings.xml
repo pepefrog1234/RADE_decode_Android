@@ -175,6 +175,8 @@
     <string name="rig_hl2_lna">受信 LNA ゲイン</string>
     <string name="rig_hl2_pa">PA（5 W 出力）</string>
     <string name="rig_hl2_pa_hint">ON = パワーアンプ経由でメインのアンテナ端子から出力。OFF = 低出力（約 10 mW）端子から出力し、アンテナ端子は受信のまま保持します。</string>
+    <string name="rig_hl2_ps">PureSignal（実験的）</string>
+    <string name="rig_hl2_ps_hint">送信の歪みを自動補正します（Thetis と同じ WDSP エンジン）。PA が ON のときに有効。</string>
     <string name="rig_vban_mode">Thetis (VBAN)</string>
     <string name="rig_vban_hint">受信・送信の音声を Wi-Fi 経由で PC の Voicemeeter（VBAN プロトコル）へ流し、その仮想ケーブルを SDR ソフトの VAC として使います。PureSignal などは PC 側でそのまま動作し、スマホと PC の間にサウンドカードもケーブルも不要です。Voicemeeter の送出（OUTGOING）ストリームをこのスマホの IP（48 kHz・PCM16）に設定し、受信（INCOMING）ストリームでは「RADE-TX」を選択してください。CAT ポートは SDR の CAT サーバーのポート（空欄/0 = CAT なし、VOX 運用）。</string>
     <string name="rig_vban_port">VBAN ポート</string>

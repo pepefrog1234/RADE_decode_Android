@@ -965,6 +965,7 @@ class TransceiverViewModel(application: Application) : AndroidViewModel(applicat
                 hermesNetwork.setDrive(prefs.getInt("hl2_drive", 128))
                 hermesNetwork.setLnaDb(prefs.getInt("hl2_lna", 19))
                 hermesNetwork.setPaEnabled(prefs.getBoolean("hl2_pa", true))
+                hermesNetwork.setPsEnabled(prefs.getBoolean("hl2_ps", false))
                 if (hermesNetwork.connect(host)) {
                     audioService?.networkRig = hermesNetwork
                 }
@@ -989,9 +990,16 @@ class TransceiverViewModel(application: Application) : AndroidViewModel(applicat
         hermesNetwork.setPaEnabled(v)
     }
 
+    /** PureSignal adaptive TX predistortion (experimental, WDSP engine). */
+    fun hl2SetPsEnabled(v: Boolean) {
+        prefs.edit().putBoolean("hl2_ps", v).apply()
+        hermesNetwork.setPsEnabled(v)
+    }
+
     fun getSavedHl2Drive(): Int = prefs.getInt("hl2_drive", 128)
     fun getSavedHl2LnaDb(): Int = prefs.getInt("hl2_lna", 19)
     fun getSavedHl2PaEnabled(): Boolean = prefs.getBoolean("hl2_pa", true)
+    fun getSavedHl2PsEnabled(): Boolean = prefs.getBoolean("hl2_ps", false)
 
     /**
      * Start rig control over the radio's own Wi-Fi (Icom RS-BA1 network protocol,

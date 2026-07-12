@@ -283,6 +283,7 @@ fun RigScreen(viewModel: TransceiverViewModel = viewModel()) {
     var hl2Drive by remember { mutableFloatStateOf(viewModel.getSavedHl2Drive().toFloat()) }
     var hl2Lna by remember { mutableFloatStateOf(viewModel.getSavedHl2LnaDb().toFloat()) }
     var hl2Pa by remember { mutableStateOf(viewModel.getSavedHl2PaEnabled()) }
+    var hl2Ps by remember { mutableStateOf(viewModel.getSavedHl2PsEnabled()) }
     // Thetis (VBAN) network-audio mode fields
     var vbanHostInput by remember { mutableStateOf(rigPrefs.getString("vban_host", "") ?: "") }
     var vbanPortInput by remember { mutableStateOf(rigPrefs.getString("vban_port", "6980") ?: "6980") }
@@ -585,6 +586,28 @@ fun RigScreen(viewModel: TransceiverViewModel = viewModel()) {
                         Switch(
                             checked = hl2Pa,
                             onCheckedChange = { hl2Pa = it; viewModel.hl2SetPaEnabled(it) },
+                            colors = SwitchDefaults.colors(checkedTrackColor = Cyan600)
+                        )
+                    }
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Column(Modifier.weight(1f)) {
+                            Text(
+                                stringResource(R.string.rig_hl2_ps),
+                                fontSize = 13.sp,
+                                fontFamily = FontFamily.Monospace
+                            )
+                            Text(
+                                stringResource(R.string.rig_hl2_ps_hint),
+                                color = OnSurfaceDim,
+                                fontSize = 11.sp
+                            )
+                        }
+                        Switch(
+                            checked = hl2Ps,
+                            onCheckedChange = { hl2Ps = it; viewModel.hl2SetPsEnabled(it) },
                             colors = SwitchDefaults.colors(checkedTrackColor = Cyan600)
                         )
                     }

@@ -664,23 +664,24 @@ JNI_AUDIO(nativeFillNetTxFrame)(JNIEnv *env, jobject /* this */, jshortArray out
 }
 
 /* ── PureSignal (WDSP calcc/iqc) JNI methods ─────────────────
- * Adaptive TX predistortion engine — dormant until Kotlin wires
- * real audio through it. See wdsp_ps/puresignal.h for the contract. */
+ * Adaptive TX predistortion engine. See wdsp_ps/puresignal.h for the
+ * contract. Exported under TWO Kotlin classes driving the same single
+ * native engine:
+ *   - AudioBridge.nativePs*      (original bindings)
+ *   - PureSignalBridge.nativePs* (a plain `object` — lets code that must
+ *     not instantiate a native AudioEngine, e.g. HermesNetworkManager,
+ *     reach the engine)
+ * Shared static impls below; the JNI entry points are thin name shims. */
 
-JNIEXPORT jboolean JNICALL
-JNI_AUDIO(nativePsCreate)(JNIEnv *env, jobject /* this */, jint rate, jint blockSize) {
+#define JNI_PS(name) \
+    Java_yakumo2683_RADEdecode_PureSignalBridge_##name
+
+static jboolean psCreateJni(JNIEnv * /*env*/, jint rate, jint blockSize) {
     return psCreate((int)rate, (int)blockSize) ? JNI_TRUE : JNI_FALSE;
 }
 
-JNIEXPORT void JNICALL
-JNI_AUDIO(nativePsDestroy)(JNIEnv *env, jobject /* this */) {
-    psDestroy();
-}
-
 /** Feed TX-reference + RX-feedback blocks (interleaved I/Q float, n complex samples). */
-JNIEXPORT void JNICALL
-JNI_AUDIO(nativePsFeed)(JNIEnv *env, jobject /* this */,
-                        jfloatArray txRef, jfloatArray fb, jint n) {
+static void psFeedJni(JNIEnv *env, jfloatArray txRef, jfloatArray fb, jint n) {
     if (!txRef || !fb || n <= 0) return;
     jsize lenTx = env->GetArrayLength(txRef);
     jsize lenFb = env->GetArrayLength(fb);
@@ -695,8 +696,7 @@ JNI_AUDIO(nativePsFeed)(JNIEnv *env, jobject /* this */,
 }
 
 /** Apply the current correction to TX I/Q in place (n complex samples, copied back). */
-JNIEXPORT void JNICALL
-JNI_AUDIO(nativePsApply)(JNIEnv *env, jobject /* this */, jfloatArray iq, jint n) {
+static void psApplyJni(JNIEnv *env, jfloatArray iq, jint n) {
     if (!iq || n <= 0) return;
     jint maxN = (jint)(env->GetArrayLength(iq) / 2);
     if (n > maxN) n = maxN;
@@ -708,8 +708,7 @@ JNI_AUDIO(nativePsApply)(JNIEnv *env, jobject /* this */, jfloatArray iq, jint n
 }
 
 /** Copy the 16-int PS state vector (see puresignal.h for semantics). */
-JNIEXPORT void JNICALL
-JNI_AUDIO(nativePsGetInfo)(JNIEnv *env, jobject /* this */, jintArray out16) {
+static void psGetInfoJni(JNIEnv *env, jintArray out16) {
     if (!out16) return;
     int info[16];
     psGetInfo(info);
@@ -719,8 +718,65 @@ JNI_AUDIO(nativePsGetInfo)(JNIEnv *env, jobject /* this */, jintArray out16) {
     env->SetIntArrayRegion(out16, 0, len, reinterpret_cast<jint*>(info));
 }
 
+JNIEXPORT jboolean JNICALL
+JNI_AUDIO(nativePsCreate)(JNIEnv *env, jobject /* this */, jint rate, jint blockSize) {
+    return psCreateJni(env, rate, blockSize);
+}
+
+JNIEXPORT jboolean JNICALL
+JNI_PS(nativePsCreate)(JNIEnv *env, jobject /* this */, jint rate, jint blockSize) {
+    return psCreateJni(env, rate, blockSize);
+}
+
+JNIEXPORT void JNICALL
+JNI_AUDIO(nativePsDestroy)(JNIEnv *env, jobject /* this */) {
+    psDestroy();
+}
+
+JNIEXPORT void JNICALL
+JNI_PS(nativePsDestroy)(JNIEnv *env, jobject /* this */) {
+    psDestroy();
+}
+
+JNIEXPORT void JNICALL
+JNI_AUDIO(nativePsFeed)(JNIEnv *env, jobject /* this */,
+                        jfloatArray txRef, jfloatArray fb, jint n) {
+    psFeedJni(env, txRef, fb, n);
+}
+
+JNIEXPORT void JNICALL
+JNI_PS(nativePsFeed)(JNIEnv *env, jobject /* this */,
+                     jfloatArray txRef, jfloatArray fb, jint n) {
+    psFeedJni(env, txRef, fb, n);
+}
+
+JNIEXPORT void JNICALL
+JNI_AUDIO(nativePsApply)(JNIEnv *env, jobject /* this */, jfloatArray iq, jint n) {
+    psApplyJni(env, iq, n);
+}
+
+JNIEXPORT void JNICALL
+JNI_PS(nativePsApply)(JNIEnv *env, jobject /* this */, jfloatArray iq, jint n) {
+    psApplyJni(env, iq, n);
+}
+
+JNIEXPORT void JNICALL
+JNI_AUDIO(nativePsGetInfo)(JNIEnv *env, jobject /* this */, jintArray out16) {
+    psGetInfoJni(env, out16);
+}
+
+JNIEXPORT void JNICALL
+JNI_PS(nativePsGetInfo)(JNIEnv *env, jobject /* this */, jintArray out16) {
+    psGetInfoJni(env, out16);
+}
+
 JNIEXPORT void JNICALL
 JNI_AUDIO(nativePsSetRun)(JNIEnv *env, jobject /* this */, jboolean run) {
+    psSetRun(run == JNI_TRUE);
+}
+
+JNIEXPORT void JNICALL
+JNI_PS(nativePsSetRun)(JNIEnv *env, jobject /* this */, jboolean run) {
     psSetRun(run == JNI_TRUE);
 }
 
