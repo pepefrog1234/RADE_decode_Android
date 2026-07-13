@@ -132,6 +132,9 @@
     <string name="header_performance">效能</string>
     <string name="settings_power_save_mode">效能節約模式</string>
     <string name="settings_power_save_mode_help">隱藏頻譜圖與瀑布圖並停止 FFT 運算，減輕低效能裝置的負擔，讓解碼能順暢運作。</string>
+    <string name="header_rade_mode">RADE 模式</string>
+    <string name="settings_rade_v2">RADE V2 波形（實驗性）</string>
+    <string name="settings_rade_v2_help">將收發切換到新的 RADE V2 波形。該功能剛合併到上游主線，仍在測試中。V1 與 V2 互不相容，通聯雙方必須使用相同版本。EOO 呼號僅支援 V1。日常使用請保持關閉。</string>
     <string name="header_diagnostics">診斷</string>
     <string name="settings_diag_help">擷取 App 近期的電台／CAT 紀錄（rigctld、USB 序列橋），用於回報控制問題。請先重現問題，再擷取並複製。</string>
     <string name="settings_diag_capture">擷取 CAT 紀錄</string>

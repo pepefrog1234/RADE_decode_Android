@@ -424,6 +424,12 @@ JNI_AUDIO(nativeSetRxVoiceCommunicationOutputEnabled)(JNIEnv *env, jobject /* th
     if (g_audioEngine) g_audioEngine->setRxVoiceCommunicationOutputEnabled(enabled == JNI_TRUE);
 }
 
+/** Select the RADE V2 waveform (experimental) for subsequent modem opens. */
+JNIEXPORT void JNICALL
+JNI_AUDIO(nativeSetRadeV2Enabled)(JNIEnv *env, jobject /* this */, jboolean enabled) {
+    if (g_audioEngine) g_audioEngine->setRadeV2Enabled(enabled == JNI_TRUE);
+}
+
 JNIEXPORT jboolean JNICALL
 JNI_AUDIO(nativeIsRxUsingJavaOutput)(JNIEnv *env, jobject /* this */) {
     if (!g_audioEngine) return JNI_FALSE;

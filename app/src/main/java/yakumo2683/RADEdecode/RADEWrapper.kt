@@ -37,6 +37,10 @@ class RADEWrapper {
 
         /** rade_open flag: use C decoder */
         const val FLAG_USE_C_DECODER = 0x2
+
+        /** rade_open flag: select the RADE V2 waveform (experimental; V1 and
+         *  V2 are not interoperable on the air) */
+        const val FLAG_MODE_V2 = 0x10
     }
 
     /* ── RADE modem ─────────────────────────────────────────── */

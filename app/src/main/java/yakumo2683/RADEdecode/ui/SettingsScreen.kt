@@ -673,6 +673,41 @@ fun SettingsScreen(viewModel: TransceiverViewModel = viewModel()) {
             }
         }
 
+        // ── RADE Mode (V2 experimental) ──
+        SectionHeader(stringResource(R.string.header_rade_mode))
+
+        Surface(
+            shape = RoundedCornerShape(12.dp),
+            color = SurfaceCard,
+            modifier = Modifier
+                .fillMaxWidth()
+                .border(1.dp, MaterialTheme.colorScheme.outline, RoundedCornerShape(12.dp))
+        ) {
+            Column(modifier = Modifier.padding(16.dp)) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text(
+                        stringResource(R.string.settings_rade_v2),
+                        fontWeight = FontWeight.Bold,
+                        color = MaterialTheme.colorScheme.onSurface
+                    )
+                    Switch(
+                        checked = state.radeV2Mode,
+                        onCheckedChange = { viewModel.setRadeV2Mode(it) },
+                        colors = SwitchDefaults.colors(checkedTrackColor = Cyan400)
+                    )
+                }
+                Spacer(Modifier.height(8.dp))
+                Text(
+                    stringResource(R.string.settings_rade_v2_help),
+                    fontSize = 11.sp, color = OnSurfaceDim, lineHeight = 16.sp
+                )
+            }
+        }
+
         SectionHeader(stringResource(R.string.header_diagnostics))
 
         Surface(

@@ -616,7 +616,7 @@ void AudioEngine::processModemFrame() {
     // Map to app states: 0=SEARCH, 2=SYNC (no CANDIDATE from this API).
     int newSync = rade_sync(rade_) ? 2 : 0;
     int oldSync = syncState_.exchange(newSync);
-    snrEstimate_.store(rade_snrdB_3k_est(rade_));
+    snrEstimate_.store((int)rade_snrdB_3k_est(rade_));  // API returns float since V2 merge
     freqOffset_.store(rade_freq_offset(rade_));
 
     if (newSync != oldSync && callback_)
@@ -869,9 +869,12 @@ void AudioEngine::restartOutputStream(oboe::AudioStream *closedStream) {
 
 bool AudioEngine::initModem() {
     rade_initialize();
-    rade_ = rade_open(nullptr, RADE_USE_C_DECODER);
+    int flags = RADE_USE_C_DECODER;
+    if (radeV2_.load()) flags |= RADE_MODE_V2;
+    rade_ = rade_open(nullptr, flags);
     if (!rade_) { LOGE("rade_open failed"); return false; }
-    LOGI("RADE opened v%d", rade_version());
+    LOGI("RADE opened api=v%d waveform=%s", rade_version(),
+         radeV2_.load() ? "V2 (experimental)" : "V1");
 
     fargan_ = (FARGANState *)calloc(1, sizeof(FARGANState));
     if (!fargan_) { rade_close(rade_); rade_ = nullptr; return false; }
@@ -900,12 +903,15 @@ void AudioEngine::releaseModem() {
 
 bool AudioEngine::initTxModem() {
     rade_initialize();
-    rade_ = rade_open(nullptr, RADE_USE_C_ENCODER | RADE_USE_C_DECODER);
+    int flags = RADE_USE_C_ENCODER | RADE_USE_C_DECODER;
+    if (radeV2_.load()) flags |= RADE_MODE_V2;
+    rade_ = rade_open(nullptr, flags);
     if (!rade_) { LOGE("TX: rade_open failed"); return false; }
 
     int nFeatIn = rade_n_features_in_out(rade_);
     txFeaturesPerTx_ = nFeatIn / NB_TOTAL_FEATURES;
-    LOGI("TX: rade opened, features_per_tx=%d (total floats=%d)", txFeaturesPerTx_, nFeatIn);
+    LOGI("TX: rade opened, waveform=%s features_per_tx=%d (total floats=%d)",
+         radeV2_.load() ? "V2 (experimental)" : "V1", txFeaturesPerTx_, nFeatIn);
 
     lpcnetEnc_ = lpcnet_encoder_create();
     if (!lpcnetEnc_) { LOGE("TX: lpcnet_encoder_create failed"); releaseModem(); return false; }
@@ -1434,11 +1440,13 @@ void AudioEngine::generateTxOutput() {
 void AudioEngine::sendTxEoo() {
     if (!rade_) return;
 
-    // Encode callsign into EOO bits
+    // Encode callsign into EOO bits (V1 aux data channel only: on the V2
+    // waveform rade_n_eoo_bits() is 0 — the EOO frame still marks end of
+    // over below, it just carries no callsign payload).
     {
         std::lock_guard<std::mutex> lk(txCallsignMutex_);
-        if (!txCallsign_.empty()) {
-            int nEoo = rade_n_eoo_bits(rade_);
+        int nEoo = rade_n_eoo_bits(rade_);
+        if (!txCallsign_.empty() && nEoo > 0) {
             std::vector<float> eooBits(nEoo, 0.0f);
             eoo_callsign_encode(txCallsign_.c_str(), eooBits.data(), nEoo);
             rade_tx_set_eoo_bits(rade_, eooBits.data());

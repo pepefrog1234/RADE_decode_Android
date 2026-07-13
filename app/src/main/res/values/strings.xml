@@ -133,6 +133,9 @@
     <string name="header_performance">PERFORMANCE</string>
     <string name="settings_power_save_mode">Power Save Mode</string>
     <string name="settings_power_save_mode_help">Hides the spectrum and waterfall and stops FFT processing to lighten the load on low-end devices, helping decoding run smoothly.</string>
+    <string name="header_rade_mode">RADE Mode</string>
+    <string name="settings_rade_v2">RADE V2 waveform (experimental)</string>
+    <string name="settings_rade_v2_help">Switches TX and RX to the new RADE V2 waveform, just merged upstream and still being tested. V1 and V2 cannot hear each other on the air — both stations must use the same version. The end-of-over callsign is V1-only. Leave OFF for normal operation.</string>
     <string name="header_diagnostics">DIAGNOSTICS</string>
     <string name="settings_diag_help">Capture the app\'s recent rig/CAT logs (rigctld, USB-serial bridge) to share when reporting a control problem. Reproduce the issue first, then capture and copy.</string>
     <string name="settings_diag_capture">Capture CAT log</string>

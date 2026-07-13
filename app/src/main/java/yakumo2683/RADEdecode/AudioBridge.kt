@@ -85,6 +85,11 @@ class AudioBridge private constructor(
     /** Use Kotlin/AudioTrack for RX playback instead of native Oboe output. */
     fun setRxJavaOutputEnabled(enabled: Boolean) = nativeSetRxJavaOutputEnabled(enabled)
 
+    /** Select the RADE V2 waveform (experimental, upstream still testing) for
+     *  subsequent modem opens. V1 and V2 are not interoperable on the air; on
+     *  V2 the EOO frame carries no callsign payload. Set before start. */
+    fun setRadeV2Enabled(enabled: Boolean) = nativeSetRadeV2Enabled(enabled)
+
     /** Route native RX playback as call audio instead of media audio. */
     fun setRxVoiceCommunicationOutputEnabled(enabled: Boolean) =
         nativeSetRxVoiceCommunicationOutputEnabled(enabled)
@@ -431,6 +436,7 @@ class AudioBridge private constructor(
     private external fun nativeSetInputDevice(deviceId: Int)
     private external fun nativeSetOutputDevice(deviceId: Int)
     private external fun nativeSetRxJavaOutputEnabled(enabled: Boolean)
+    private external fun nativeSetRadeV2Enabled(enabled: Boolean)
     private external fun nativeSetRxVoiceCommunicationOutputEnabled(enabled: Boolean)
     external fun nativeIsRxUsingJavaOutput(): Boolean
     private external fun nativeSetDevices(inputDeviceId: Int, outputDeviceId: Int)

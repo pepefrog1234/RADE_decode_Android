@@ -34,10 +34,36 @@ set(OPUS_OSCE OFF CACHE BOOL "" FORCE)
 add_subdirectory(opus)
 
 # ─── RADE modem library ─────────────────────────────────────
-# rade_all.c is a unity build that #includes all RADE .c files.
+# Per-file compilation, matching upstream radae_nopy's own build (the old
+# rade_all.c unity build was an Xcode workaround; V1 and V2 sources have
+# colliding file-local statics, so a unity build would need rename hacks).
 # With USE_LIBOPUS, rade_nnet.c is empty (nnet comes from libopus).
 add_library(rade STATIC
-    radae/rade_all.c
+    # V1 waveform
+    radae/rade_api.c
+    radae/rade_enc.c
+    radae/rade_dec.c
+    radae/rade_tx.c
+    radae/rade_rx.c
+    radae/rade_acq.c
+    radae/rade_ofdm.c
+    radae/rade_bpf.c
+    radae/rade_dsp.c
+    radae/rade_enc_data.c
+    radae/rade_dec_data.c
+    # V2 waveform (experimental)
+    radae/rade_enc_v2.c
+    radae/rade_dec_v2.c
+    radae/rade_tx_v2.c
+    radae/rade_rx_v2.c
+    radae/rade_sync.c
+    radae/rade_v2_ofdm.c
+    radae/rade_enc_v2_data.c
+    radae/rade_dec_v2_data.c
+    radae/rade_sync_data.c
+    # FFT + opus-nnet shim
+    radae/kiss_fft.c
+    radae/kiss_fftr.c
     radae/rade_nnet.c
 )
 

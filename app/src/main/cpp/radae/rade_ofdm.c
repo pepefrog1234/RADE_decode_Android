@@ -36,6 +36,7 @@
 #include "rade_ofdm.h"
 #include <string.h>
 #include <assert.h>
+#include <stdio.h>
 
 /*---------------------------------------------------------------------------*\
                            INITIALIZATION
@@ -413,8 +414,8 @@ float rade_ofdm_pilot_eq(const rade_ofdm *ofdm, RADE_COMP *rx_sym,
     float snrdB_est = 10.0f * log10f(snr_est);
 
     /* Correction based on average of straight line fit to AWGN/MPG/MPP */
-    float m_corr = 0.8070f;
-    float c_corr = 2.513f;
+    float m_corr = 0.7650f;
+    float c_corr = 4.1343f;
     snrdB_est = (snrdB_est - c_corr) / m_corr;
 
     /* Convert to 3kHz noise bandwidth */
@@ -543,6 +544,9 @@ int rade_ofdm_demod_eoo(const rade_ofdm *ofdm, float *z_hat, const RADE_COMP *rx
         RADE_COMP sum = rade_czero();
         sum = rade_cadd(sum, rade_cdiv(rx_sym[0][c], ofdm->P[c]));
         sum = rade_cadd(sum, rade_cdiv(rx_sym[1][c], ofdm->Pend[c]));
+        /* [RADE] local fix (commit 4c3d76b): the trailing Pend pilot is at
+           symbol Ns+1, not Ns (a data symbol) — using Ns corrupted the phase
+           estimate and prevented LDPC decode of iOS EOO callsigns. */
         sum = rade_cadd(sum, rade_cdiv(rx_sym[Ns + 1][c], ofdm->Pend[c]));
         float phase_offset = rade_cangle(sum);
 
@@ -552,7 +556,9 @@ int rade_ofdm_demod_eoo(const rade_ofdm *ofdm, float *z_hat, const RADE_COMP *rx
         }
     }
 
-    /* Extract data symbols (symbols 2 to Ns, i.e., Ns-1 data symbols) */
+    /* Extract data symbols (symbols 2 to Ns, i.e., Ns-1 data symbols)
+       [RADE] local fix (commit 4c3d76b): loop must include symbol Ns
+       (s <= Ns) — upstream's s < Ns drops the last data symbol. */
     int out_idx = 0;
     for (int s = 2; s <= Ns; s++) {
         for (int c = 0; c < Nc; c++) {

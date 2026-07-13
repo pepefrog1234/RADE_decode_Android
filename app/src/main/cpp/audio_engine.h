@@ -145,6 +145,12 @@ public:
     int getSnrEstimate() const { return snrEstimate_.load(); }
     float getFreqOffset() const { return freqOffset_.load(); }
     bool isUnprocessedRejected() const { return unprocessedRejected_.load(); }
+
+    /** Select the RADE V2 waveform (experimental) for subsequent modem opens.
+     *  Takes effect on the next RX/TX start. V1 and V2 are not interoperable
+     *  on the air; on V2 the EOO frame carries no callsign payload. */
+    void setRadeV2Enabled(bool v) { radeV2_.store(v); }
+    bool isRadeV2Enabled() const { return radeV2_.load(); }
     /**
      * Session id of the currently open input stream, or -1 if no stream is open.
      * Exposed so Kotlin can attach AcousticEchoCanceler / NoiseSuppressor /
@@ -210,6 +216,7 @@ private:
     std::atomic<int> snrEstimate_{0};
     std::atomic<float> freqOffset_{0.0f};
     std::atomic<bool> unprocessedRejected_{false};
+    std::atomic<bool> radeV2_{false};
     int inputSessionId_ = -1;
 
     std::string lastCallsign_;

@@ -84,7 +84,8 @@ class TransceiverViewModel(application: Application) : AndroidViewModel(applicat
         val powerSaveMode: Boolean = false,  // 效能節約模式: hide spectrum/waterfall + skip FFT on weak devices
         val pttHoldMode: Boolean = false,    // hold-to-talk: TX is keyed only while the TX button is held
         val bluetoothMicTx: Boolean = false, // experimental: capture TX voice from the Bluetooth headset mic (SCO)
-        val txMicDeviceId: Int = -1          // selected TX mic input device id (-1 = built-in mic)
+        val txMicDeviceId: Int = -1,         // selected TX mic input device id (-1 = built-in mic)
+        val radeV2Mode: Boolean = false      // experimental: RADE V2 waveform (not interoperable with V1)
     ) {
         val syncText: String get() = when (syncState) {
             0 -> "SEARCH"
@@ -129,6 +130,7 @@ class TransceiverViewModel(application: Application) : AndroidViewModel(applicat
             service.setOutputVolume(prefs.getFloat("output_volume", 1.0f))
             service.setTxVolume(prefs.getFloat("tx_volume", 0.2f))
             service.powerSaveMode = _uiState.value.powerSaveMode
+            service.radeV2Mode = _uiState.value.radeV2Mode
             _uiState.value = _uiState.value.copy(serviceBound = true)
             startCollectingServiceState()
         }
@@ -174,6 +176,7 @@ class TransceiverViewModel(application: Application) : AndroidViewModel(applicat
             powerSaveMode = prefs.getBoolean("power_save_mode", false),
             pttHoldMode = prefs.getBoolean("ptt_hold_mode", false),
             bluetoothMicTx = prefs.getBoolean("bluetooth_mic_tx", false),
+            radeV2Mode = prefs.getBoolean("rade_v2_mode", false),
             txMicDeviceId = prefs.getInt("tx_mic_device", -1),
             selectedDeviceId = savedRxInputDeviceId,
             selectedRxOutputDeviceId = prefs.getInt(
@@ -370,6 +373,23 @@ class TransceiverViewModel(application: Application) : AndroidViewModel(applicat
         prefs.edit().putBoolean("power_save_mode", enabled).apply()
         _uiState.value = _uiState.value.copy(powerSaveMode = enabled)
         audioService?.powerSaveMode = enabled
+    }
+
+    /**
+     * Experimental: switch the modem to the RADE V2 waveform (recently merged
+     * upstream, still under test). V1 and V2 are NOT interoperable on the air
+     * — both stations must select the same version. On V2 the end-of-over
+     * frame carries no callsign payload, so EOO callsign RX/TX is V1-only.
+     * Applies immediately: a running RX restarts on the new waveform.
+     */
+    fun setRadeV2Mode(enabled: Boolean) {
+        prefs.edit().putBoolean("rade_v2_mode", enabled).apply()
+        _uiState.value = _uiState.value.copy(radeV2Mode = enabled)
+        audioService?.radeV2Mode = enabled
+        if (_uiState.value.isRunning && !_uiState.value.isTx) {
+            stopReceiving()
+            startReceiving()
+        }
     }
 
     /** Hold-to-talk: when enabled the TX button keys TX only while held. */

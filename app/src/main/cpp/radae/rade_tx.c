@@ -211,7 +211,7 @@ int rade_tx_state_eoo(rade_tx_state *tx, RADE_COMP *tx_out) {
                 freq_sym[c].imag = tx->eoo_bits[bit_idx + 1];
             }
 
-            /* IDFT -> time domain, insert CP, write to tx_out */
+            /* IDFT → time domain, insert CP, write to tx_out */
             rade_ofdm_idft(&tx->ofdm, time_sym, freq_sym);
             for (int c = 0; c < RADE_M; c++)
             {

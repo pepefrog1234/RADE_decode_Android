@@ -27,9 +27,6 @@ ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
 SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 */
 
-#ifndef _KISS_FFT_GUTS_H
-#define _KISS_FFT_GUTS_H
-
 /* kiss_fft.h
    defines kiss_fft_scalar as either short or a float type
    and defines
@@ -195,5 +192,3 @@ struct kiss_fft_state {
 #define KISS_FFT_TMP_ALLOC(nbytes) KISS_FFT_MALLOC(nbytes)
 #define KISS_FFT_TMP_FREE(ptr) KISS_FFT_FREE(ptr)
 #endif
-
-#endif /* _KISS_FFT_GUTS_H */

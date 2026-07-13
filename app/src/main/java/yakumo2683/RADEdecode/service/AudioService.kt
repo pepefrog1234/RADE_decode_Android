@@ -93,6 +93,12 @@ class AudioService : LifecycleService() {
     @Volatile
     var powerSaveMode: Boolean = false
 
+    /** RADE V2 waveform (experimental, upstream still under test): applied to
+     *  every new AudioBridge before its modem opens. V1 and V2 are not
+     *  interoperable on the air. Set by the ViewModel. */
+    @Volatile
+    var radeV2Mode: Boolean = false
+
     companion object {
         const val CHANNEL_ID = "rade_decode_channel"
         const val NOTIFICATION_ID = 1
@@ -167,6 +173,7 @@ class AudioService : LifecycleService() {
         audioBridge = bridge
         bridge.setInputGain(rxInputGain)
         bridge.setTxMicGain(txMicGain)
+        bridge.setRadeV2Enabled(radeV2Mode)
 
         bridge.callback = object : AudioBridge.Callback {
             override fun onSyncStateChanged(state: Int) {
@@ -810,6 +817,7 @@ class AudioService : LifecycleService() {
         audioBridge = bridge
         bridge.setInputGain(rxInputGain)
         bridge.setTxMicGain(txMicGain)
+        bridge.setRadeV2Enabled(radeV2Mode)
         bridge.callback = object : AudioBridge.Callback {
             override fun onSyncStateChanged(state: Int) = handleSyncChange(state)
             override fun onCallsignDecoded(callsign: String) = handleCallsignDecoded(callsign)
@@ -925,6 +933,7 @@ class AudioService : LifecycleService() {
         audioBridge = bridge
         bridge.setInputGain(rxInputGain)
         bridge.setTxMicGain(txMicGain)
+        bridge.setRadeV2Enabled(radeV2Mode)
 
         val notification = buildNotification(getString(R.string.btn_tx), 0, callsign)
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
@@ -1253,6 +1262,7 @@ class AudioService : LifecycleService() {
         audioBridge = bridge
         bridge.setInputGain(rxInputGain)
         bridge.setTxMicGain(txMicGain)
+        bridge.setRadeV2Enabled(radeV2Mode)
 
         // Start/update foreground service (no gap in foreground status)
         val notification = buildNotification(getString(R.string.btn_tx), 0, callsign)

@@ -132,6 +132,9 @@
     <string name="header_performance">パフォーマンス</string>
     <string name="settings_power_save_mode">省電力モード</string>
     <string name="settings_power_save_mode_help">スペクトラムとウォーターフォール表示を非表示にし、FFT処理を停止して低スペック端末の負荷を軽減し、デコードを安定して動作させます。</string>
+    <string name="header_rade_mode">RADE モード</string>
+    <string name="settings_rade_v2">RADE V2 波形（実験的）</string>
+    <string name="settings_rade_v2_help">送受信を新しい RADE V2 波形に切り替えます。開発元に統合されたばかりで、まだテスト中の機能です。V1 と V2 には互換性がなく、交信する両局が同じバージョンを選ぶ必要があります。EOO コールサインは V1 のみ対応です。通常運用では OFF のままにしてください。</string>
     <string name="header_diagnostics">診断</string>
     <string name="settings_diag_help">リグ／CAT 関連のログ（rigctld・USB シリアル橋）を取得して、不具合報告に添付できます。先に問題を再現してから、取得→コピーしてください。</string>
     <string name="settings_diag_capture">CAT ログを取得</string>
