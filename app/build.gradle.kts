@@ -11,8 +11,8 @@ android {
         applicationId = "yakumo2683.RADEdecode"
         minSdk = 26
         targetSdk = 35
-        versionCode = 10571
-        versionName = "1.5.71-ps-model-diagnostic"
+        versionCode = 10572
+        versionName = "1.5.72-ps-adaptive-refinement"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 
@@ -45,6 +45,8 @@ android {
 
     buildFeatures {
         compose = true
+        // Version banner in connection logs (BuildConfig.VERSION_NAME).
+        buildConfig = true
     }
 
     externalNativeBuild {

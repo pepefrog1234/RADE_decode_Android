@@ -144,6 +144,12 @@ class HermesNetworkManager(private val appContext: Context? = null) : NetworkAud
          * hardware reference back into the [0,1] correction-envelope domain.
          */
         private const val PS_HL2_TX_REF_PEAK = 0.24f
+
+        /** Locking at or above this feedback gain almost always means the
+         *  ADC is hearing the HL2's unswitchable TRX-relay crosstalk rather
+         *  than an external sampler (DL1YCF: healthy external feeds lock in
+         *  the piHPSDR "EXT" range, measured <= +10 dB on this hardware). */
+        private const val CROSSTALK_GAIN_WARN_DB = 15
     }
 
     data class State(
@@ -235,6 +241,9 @@ class HermesNetworkManager(private val appContext: Context? = null) : NetworkAud
 
     /* Pacer-thread scratch for the 1 s diagnostics line. */
     private val psInfoScratch = IntArray(16)
+
+    /* Accepted-solution count at the last periodic model dump (pacer only). */
+    private var psModelLoggedOk = 0
 
     /* PS envelope diagnostics: highest pre-limiter envelope and number of
      * radially limited samples since the last stats line. Written only by
@@ -403,6 +412,9 @@ class HermesNetworkManager(private val appContext: Context? = null) : NetworkAud
     suspend fun connect(host: String): Boolean = withContext(Dispatchers.IO) {
         if (_state.value.connected || _state.value.connecting) return@withContext false
         connectionClosing = false
+        // Version banner: makes every field log fingerprintable to a build.
+        Log.i(TAG, "App v${yakumo2683.RADEdecode.BuildConfig.VERSION_NAME} " +
+            "(code ${yakumo2683.RADEdecode.BuildConfig.VERSION_CODE}) — HL2 direct connect")
         _state.value = State(connecting = true, freqHz = freqHz)
         try {
             val sock = DatagramSocket().apply {
@@ -953,6 +965,16 @@ class HermesNetworkManager(private val appContext: Context? = null) : NetworkAud
             }
         }
 
+        // A clip at the locked gain would poison continuous refinement with
+        // distorted feedback; freeze the accepted correction for this over
+        // (the controller itself keeps the lock and returns Wait here).
+        if (overflowSeen && psControlStatus == "LOCKED" && psEngineUp) {
+            PureSignalBridge.psSetAdaptive(false)
+            psControlStatus = "LOCKED_STATIC"
+            Log.w(TAG, "PureSignal: ADC overflow while locked — adaptive " +
+                "refinement frozen (accepted correction kept) for this over")
+        }
+
         when (decision) {
             Hl2PureSignalFeedbackController.Decision.Wait -> Unit
             Hl2PureSignalFeedbackController.Decision.StartSingleCalibration -> {
@@ -978,9 +1000,24 @@ class HermesNetworkManager(private val appContext: Context? = null) : NetworkAud
             }
             is Hl2PureSignalFeedbackController.Decision.Complete -> {
                 psControlStatus = "LOCKED"
-                if (psEngineUp) PureSignalBridge.psSetMox(false)
+                // Keep MOX asserted and hand WDSP over to continuous automode:
+                // each ~1 s cycle re-solves on corrected-reference data and
+                // swaps refined coefficients seamlessly (how Thetis runs PS).
+                // The one-shot phase only exists to find a safe feedback gain.
+                if (psEngineUp) PureSignalBridge.psSetAdaptive(true)
                 Log.i(TAG, "PureSignal controller: LOCKED (${decision.reason}) " +
-                    "gain=${psFeedbackGainDb}dB")
+                    "gain=${psFeedbackGainDb}dB, adaptive refinement enabled")
+                if (psFeedbackGainDb >= CROSSTALK_GAIN_WARN_DB) {
+                    // DL1YCF: the TRX-relay crosstalk cannot be switched off
+                    // and an external sampler must dominate it. A healthy
+                    // external feed locks at low gain (piHPSDR EXT range
+                    // tops out at +19 dB; measured good setups lock <=+10).
+                    Log.w(TAG, "PureSignal: locked at ${psFeedbackGainDb}dB feedback " +
+                        "gain — at this level the ADC is likely hearing the HL2's " +
+                        "internal TRX-relay crosstalk rather than the external " +
+                        "sampler. Reduce feedback-path attenuation (target lock " +
+                        "<= +10dB) or expect barefoot-only correction.")
+                }
                 logPsModelSummary()
             }
             is Hl2PureSignalFeedbackController.Decision.StopRetry -> {
@@ -1097,6 +1134,19 @@ class HermesNetworkManager(private val appContext: Context? = null) : NetworkAud
                                 feedbackRatioDb = if (hadFbSamples) fb1 - fb2 else Double.NaN,
                                 overflowSeen = overflowSeen
                             )
+                        }
+                        // During adaptive refinement, dump the evolving model
+                        // every 10 accepted solutions (~12 s) so field logs
+                        // show convergence without spamming.
+                        if (psControlStatus.startsWith("LOCKED")) {
+                            if (psModelLoggedOk == 0) {
+                                psModelLoggedOk = snapshot.acceptedCounter
+                            } else if (snapshot.acceptedCounter >= psModelLoggedOk + 10) {
+                                psModelLoggedOk = snapshot.acceptedCounter
+                                logPsModelSummary()
+                            }
+                        } else {
+                            psModelLoggedOk = 0
                         }
                         val ceiling = synchronized(psControlLock) {
                             psFeedbackController.gainCeilingDb

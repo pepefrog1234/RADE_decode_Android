@@ -822,4 +822,14 @@ JNI_PS(nativePsSetMox)(JNIEnv *env, jobject /* this */, jboolean mox) {
     psSetMox(mox == JNI_TRUE);
 }
 
+JNIEXPORT void JNICALL
+JNI_AUDIO(nativePsSetAdaptive)(JNIEnv *env, jobject /* this */, jboolean on) {
+    psSetAdaptive(on == JNI_TRUE);
+}
+
+JNIEXPORT void JNICALL
+JNI_PS(nativePsSetAdaptive)(JNIEnv *env, jobject /* this */, jboolean on) {
+    psSetAdaptive(on == JNI_TRUE);
+}
+
 } /* extern "C" */

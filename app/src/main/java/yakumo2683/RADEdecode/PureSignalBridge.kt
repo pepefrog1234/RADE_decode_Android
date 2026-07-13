@@ -61,6 +61,11 @@ object PureSignalBridge {
     /** Change only MOX state while preserving accepted correction coefficients. */
     fun psSetMox(mox: Boolean) = nativePsSetMox(mox)
 
+    /** Enable/disable WDSP automode: continuous re-calibration that keeps
+     *  refining and seamlessly swapping coefficients (~1/s), as Thetis runs
+     *  it. Off leaves the last accepted correction applied. */
+    fun psSetAdaptive(on: Boolean) = nativePsSetAdaptive(on)
+
     private external fun nativePsCreate(rate: Int, blockSize: Int, hardwarePeak: Float): Boolean
     private external fun nativePsDestroy()
     private external fun nativePsFeed(txRef: FloatArray, feedback: FloatArray, n: Int)
@@ -70,4 +75,5 @@ object PureSignalBridge {
     private external fun nativePsSetRun(run: Boolean)
     private external fun nativePsStartSingleCalibration()
     private external fun nativePsSetMox(mox: Boolean)
+    private external fun nativePsSetAdaptive(on: Boolean)
 }

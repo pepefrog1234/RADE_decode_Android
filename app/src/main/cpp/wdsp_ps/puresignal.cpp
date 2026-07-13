@@ -302,3 +302,15 @@ void psSetMox(bool mox)
     }
     pthread_rwlock_unlock(&g_psLock);
 }
+
+void psSetAdaptive(bool on)
+{
+    pthread_rwlock_rdlock(&g_psLock);
+    if (g_created) {
+        // reset=0 keeps the applied correction; automode drives the WDSP
+        // state machine through continuous collect/solve/swap cycles.
+        SetPSControl(kChannel, 0, 0, on ? 1 : 0, 0);
+        PS_LOGI("psSetAdaptive(%d)", on ? 1 : 0);
+    }
+    pthread_rwlock_unlock(&g_psLock);
+}

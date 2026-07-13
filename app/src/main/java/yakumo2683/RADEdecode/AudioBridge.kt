@@ -331,6 +331,9 @@ class AudioBridge private constructor(
     /** Change only MOX state while preserving accepted correction coefficients. */
     fun psSetMox(mox: Boolean) = nativePsSetMox(mox)
 
+    /** Enable/disable WDSP automode (continuous refinement, Thetis-style). */
+    fun psSetAdaptive(on: Boolean) = nativePsSetAdaptive(on)
+
     /* ── USB Audio Device Discovery ──────────────────────────── */
 
     data class AudioDevice(
@@ -478,6 +481,7 @@ class AudioBridge private constructor(
     private external fun nativePsSetRun(run: Boolean)
     private external fun nativePsStartSingleCalibration()
     private external fun nativePsSetMox(mox: Boolean)
+    private external fun nativePsSetAdaptive(on: Boolean)
 
     private val audioDeviceComparator = compareByDescending<AudioDevice> { it.isUsb }
         .thenByDescending { it.isBluetooth }

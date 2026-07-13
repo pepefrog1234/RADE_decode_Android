@@ -101,4 +101,12 @@ void psStartSingleCalibration();
  *  the PureSignal feature off or tearing the engine down. */
 void psSetMox(bool mox);
 
+/** Enable/disable WDSP automode (continuous re-calibration, Thetis default).
+ *  Turning it on from the post-one-shot STAYON state ramps the current
+ *  correction out once, recollects, and then refines continuously (~1/s,
+ *  loop delay 0); each accepted refinement swaps coefficients seamlessly.
+ *  Turning it off leaves the last accepted correction applied (STAYON).
+ *  MOX must be managed separately (psSetMox). */
+void psSetAdaptive(bool on);
+
 #endif // PURESIGNAL_H
