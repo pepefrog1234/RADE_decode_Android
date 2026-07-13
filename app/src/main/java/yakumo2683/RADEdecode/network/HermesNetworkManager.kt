@@ -103,24 +103,34 @@ class HermesNetworkManager(private val appContext: Context? = null) : NetworkAud
         private const val AGC_MAX_GAIN = 2000f                      // +66 dB
         private const val AGC_SMOOTH = 0.1f
 
-        // Analytic TX of a real signal halves the amplitude; ×2 restores it,
-        // ×0.8 leaves envelope headroom over the clamped RADE waveform.
-        private const val TX_IQ_SCALE = 2.0f * 0.8f * 32767.0f
+        // Analytic TX of a real signal halves the waveform amplitude, but the
+        // complex ENVELOPE of the clamped RADE waveform peaks ~25% above the
+        // waveform itself: on hardware the ×2.0 "restore" made the int16
+        // stage rail at ±32767 (HL2's RX2 DAC-loopback reference sat pinned
+        // at hwPeak in every interval). ×1.6 maps the measured ≥0.625
+        // analytic peak to full scale with the ×0.8 headroom actually intact.
+        private const val TX_IQ_SCALE = 1.6f * 0.8f * 32767.0f
 
         /* ── PureSignal phase 2b (WDSP calcc/iqc via PureSignalBridge) ──
          *
          * The engine works in a normalized domain where the TX envelope
-         * nominally peaks at 1.0. IQC bins its input envelope over [0,1] in
-         * 16 intervals, while CALCC normalizes HL2's lower-level RX2 DAC
-         * reference with PS_HL2_TX_REF_PEAK. Our analytic floats (oi,oq)
-         * peak at ~0.5 (the ±0.999-clamped RADE waveform through the
-         * half-amplitude analytic filter), so the PS path multiplies them by
-         * PS_TX_NORM = 2 before psApply — restoring the real-signal amplitude
-         * so envelope peaks reach ~1.0 — and writes int16 with
-         * TX_IQ_SCALE / PS_TX_NORM, keeping RF level identical to PS-off.
+         * peaks at exactly 1.0: IQC bins its input envelope over [0,1] in 16
+         * intervals (a cubic per bin — envelopes past 1.0 EXTRAPOLATE the top
+         * spline), and CALCC both discards collection samples whose scaled
+         * reference envelope exceeds 1.0 and needs the top bin populated to
+         * finish a collection at all. Our analytic floats (oi,oq) measured
+         * ≥0.625 peak on hardware — not the naive 0.5 — so the previous
+         * ×2.0 norm overflowed that domain to ~1.25 AND railed the int16
+         * wire stage; the corrector then expanded peaks further into the
+         * clip each calibration, which is why correction made IMD worse.
+         * PS_TX_NORM = 1.6 maps the measured peak to ~1.0 and a radial
+         * (phase-preserving) limiter in sendAudioFrame pins the residual
+         * overshoot to exactly 1.0, which also guarantees top-bin samples.
+         * int16 output uses TX_IQ_SCALE / PS_TX_NORM = 0.8 full scale at
+         * envelope 1.0, leaving ~2 dB for the corrector's peak expansion.
          * RX2 is multiplied by the inverse of that final 0.8 protocol scale
          * before CALCC, matching piHPSDR's HL2 drive-inverse treatment. */
-        private const val PS_TX_NORM = 2.0f
+        private const val PS_TX_NORM = 1.6f
         private const val PS_POST_SCALE = TX_IQ_SCALE / PS_TX_NORM
         /** Undo the fixed post-IQC protocol scale on RX2 before CALCC. */
         private const val PS_TX_REFERENCE_SCALE = 32767.0f / PS_POST_SCALE
@@ -225,6 +235,13 @@ class HermesNetworkManager(private val appContext: Context? = null) : NetworkAud
 
     /* Pacer-thread scratch for the 1 s diagnostics line. */
     private val psInfoScratch = IntArray(16)
+
+    /* PS envelope diagnostics: highest pre-limiter envelope and number of
+     * radially limited samples since the last stats line. Written only by
+     * the TX pump thread; read-then-reset by the pacer (losing one racy
+     * update is acceptable for a diagnostic). */
+    @Volatile private var psEnvPeakInterval = 0f
+    @Volatile private var psEnvLimitedInterval = 0
 
     private fun resetFeedbackStats() {
         synchronized(fbStatsLock) {
@@ -944,6 +961,13 @@ class HermesNetworkManager(private val appContext: Context? = null) : NetworkAud
                     psControlStatus = "CALIBRATING"
                     Log.i(TAG, "PureSignal controller: one-shot calibration started " +
                         "gain=${psFeedbackGainDb}dB")
+                } else {
+                    // Engine went down between the gate check and here; the
+                    // solver never saw the request, so don't sit waiting on
+                    // an attempt counter that cannot advance.
+                    synchronized(psControlLock) {
+                        psFeedbackController.onCalibrationLaunchFailed()
+                    }
                 }
             }
             is Hl2PureSignalFeedbackController.Decision.ApplyGain -> {
@@ -1033,6 +1057,13 @@ class HermesNetworkManager(private val appContext: Context? = null) : NetworkAud
                         val ceiling = synchronized(psControlLock) {
                             psFeedbackController.gainCeilingDb
                         }
+                        // Envelope domain health: peak pre-limiter envelope
+                        // (should sit just at/below 1.00) and how many
+                        // samples the radial limiter touched this interval.
+                        val envPeak = psEnvPeakInterval
+                        val envLimited = psEnvLimitedInterval
+                        psEnvPeakInterval = 0f
+                        psEnvLimitedInterval = 0
                         " ps=[try=${snapshot.attemptCounter} ok=${snapshot.acceptedCounter} " +
                             "rej=${snapshot.rejectedCounter} result=${snapshot.lastOutcome} " +
                             "fit=${snapshot.feedbackScaleFit}/${snapshot.magnitudeFit}/" +
@@ -1042,6 +1073,7 @@ class HermesNetworkManager(private val appContext: Context? = null) : NetworkAud
                             "dog=${snapshot.dogCounter} " +
                             "corr=${if (snapshot.correctionApplied) 1 else 0} " +
                             "state=${snapshot.state} fblvl=${snapshot.feedbackLevel} " +
+                            "env=%.2f/%d ".format(envPeak, envLimited) +
                             "ctl=$psControlStatus ceil=${ceiling}dB]"
                     } else ""
                     Log.i(
@@ -1280,10 +1312,30 @@ class HermesNetworkManager(private val appContext: Context? = null) : NetworkAud
         }
 
         if (psEnabledFlag && psEngineUp && mox) {
-            // Normalize into WDSP's [0,1] envelope domain (see PS_TX_NORM),
-            // predistort, then convert with the compensated int16 scale. The
-            // radio returns the actual post-DAC reference synchronously on RX2.
-            for (i in 0 until outSamples * 2) blk[i] *= PS_TX_NORM
+            // Normalize into WDSP's [0,1] envelope domain (see PS_TX_NORM)
+            // and radially pin any residual envelope overshoot to exactly
+            // 1.0 — scaling I and Q together preserves phase, unlike the
+            // final per-component int16 clamp, and keeps the corrector and
+            // CALCC inside their fitted domain. Then predistort and convert
+            // with the compensated int16 scale; the radio returns the actual
+            // post-DAC reference synchronously on RX2.
+            var envPeak = psEnvPeakInterval
+            var limited = psEnvLimitedInterval
+            for (n in 0 until outSamples) {
+                var i = blk[2 * n] * PS_TX_NORM
+                var q = blk[2 * n + 1] * PS_TX_NORM
+                val env = sqrt(i * i + q * q)
+                if (env > envPeak) envPeak = env
+                if (env > 1.0f) {
+                    limited++
+                    i /= env
+                    q /= env
+                }
+                blk[2 * n] = i
+                blk[2 * n + 1] = q
+            }
+            psEnvPeakInterval = envPeak
+            psEnvLimitedInterval = limited
             PureSignalBridge.psApply(blk, outSamples)
             writeTxRing(blk, outSamples, PS_POST_SCALE)
         } else {

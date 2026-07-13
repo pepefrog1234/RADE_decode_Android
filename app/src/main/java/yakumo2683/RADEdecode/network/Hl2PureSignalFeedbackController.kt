@@ -75,7 +75,15 @@ internal data class PsInfoSnapshot(
 }
 
 /**
- * Bounded gain/preflight policy for one-shot HL2 PureSignal calibration.
+ * Bounded gain policy for one-shot HL2 PureSignal calibration.
+ *
+ * The solver's own feedback-level fit (fblvl, info[4]) is the single gain
+ * authority. An earlier a-priori RX1/RX2 RMS-ratio preflight window proved
+ * unusable on HL2 hardware, whose internal feedback tap sits within a couple
+ * of dB of the DAC reference even at minimum LNA gain — the ratio gate
+ * either stopped immediately or ping-ponged against the fblvl seeking.
+ * Preflight now only guarantees one complete, overflow-free interval with
+ * live feedback samples before each solver attempt.
  *
  * The learned gain and clipping ceiling persist between PTT periods.  Retry
  * counts and the timeout are per PTT period, preventing a bad feedback path
@@ -102,17 +110,25 @@ internal class Hl2PureSignalFeedbackController(
     private var phase = Phase.IDLE
     private var pttStartedAtMs = 0L
     private var attemptBaseline = 0
+    private var overflowsAtMinGain = 0
 
     /** Begin a PTT period. The first clean interval is always a preflight. */
     fun onPttStarted(nowMs: Long): Decision {
         pttStartedAtMs = nowMs
         gainChangesThisPtt = 0
+        overflowsAtMinGain = 0
         phase = Phase.PREFLIGHT
         return Decision.Wait
     }
 
     fun onPttStopped() {
         phase = Phase.IDLE
+    }
+
+    /** The app could not hand the one-shot to the solver (engine down or
+     *  restarting). Re-arm instead of waiting on a result that cannot come. */
+    fun onCalibrationLaunchFailed() {
+        if (phase == Phase.AWAITING_RESULT) phase = Phase.PREFLIGHT
     }
 
     /**
@@ -132,6 +148,11 @@ internal class Hl2PureSignalFeedbackController(
         }
 
         if (overflowSeen) {
+            // A locked solution stays locked: collection has ended, so a
+            // clip on the now-unused feedback receiver cannot corrupt it.
+            if (phase == Phase.COMPLETE) {
+                return Decision.Wait
+            }
             if (phase == Phase.STOPPED && gainDb == MIN_GAIN_DB) {
                 return Decision.Wait
             }
@@ -148,7 +169,7 @@ internal class Hl2PureSignalFeedbackController(
 
         return when (phase) {
             Phase.PREFLIGHT -> {
-                evaluatePreflight(info, feedbackRatioDb, nowMs)
+                evaluatePreflight(info, feedbackRatioDb)
             }
 
             Phase.AWAITING_RESULT -> {
@@ -166,41 +187,13 @@ internal class Hl2PureSignalFeedbackController(
 
     private fun evaluatePreflight(
         info: PsInfoSnapshot,
-        feedbackRatioDb: Double,
-        nowMs: Long
+        feedbackRatioDb: Double
     ): Decision {
+        // A finite ratio proves both PureSignal receivers delivered samples
+        // for a full interval; that plus "no overflow" is the whole
+        // preflight. Level suitability is judged from the solver's fblvl.
         if (!feedbackRatioDb.isFinite()) return Decision.Wait
 
-        if (feedbackRatioDb !in PREFLIGHT_RATIO_MIN_DB..PREFLIGHT_RATIO_MAX_DB) {
-            val deltaDb = (PREFLIGHT_RATIO_TARGET_DB - feedbackRatioDb)
-                .roundToInt()
-                .coerceIn(-MAX_ADJUSTMENT_DB, MAX_ADJUSTMENT_DB)
-            val requestedGain = (gainDb + deltaDb).coerceIn(MIN_GAIN_DB, gainCeilingDb)
-            if (requestedGain == gainDb) {
-                if (feedbackRatioDb < PREFLIGHT_RATIO_MIN_DB && gainDb >= gainCeilingDb) {
-                    // A prior clip may impose a ceiling below the coarse ratio
-                    // target. Let one solver attempt measure fblvl; a sane
-                    // result >=90 is still usable and may be accepted safely.
-                    attemptBaseline = info.attemptCounter
-                    phase = Phase.AWAITING_RESULT
-                    return Decision.StartSingleCalibration
-                }
-                return stop(StopReason.FEEDBACK_TOO_STRONG_AT_MIN_GAIN)
-            }
-            if (timedOut(nowMs)) return stop(StopReason.TIMEOUT)
-            if (gainChangesThisPtt >= MAX_GAIN_CHANGES_PER_PTT) {
-                return stop(StopReason.GAIN_CHANGE_LIMIT)
-            }
-
-            gainDb = requestedGain
-            gainChangesThisPtt++
-            // Remain in preflight: the new gain must produce a complete,
-            // clean interval before the solver is allowed to run.
-            return Decision.ApplyGain(gainDb, gainCeilingDb, GainReason.PREFLIGHT_RATIO)
-        }
-
-        // This call closes one complete, overflow-free interval at a usable
-        // RX1-feedback/RX2-reference ratio.
         attemptBaseline = info.attemptCounter
         phase = Phase.AWAITING_RESULT
         return Decision.StartSingleCalibration
@@ -210,15 +203,22 @@ internal class Hl2PureSignalFeedbackController(
         // Clipping protection is intentionally exempt from retry/time limits:
         // even after calibration gives up, the physical ADC must be backed off.
         val clippedGain = gainDb
+        val backedOffGain = (clippedGain - OVERFLOW_BACKOFF_DB).coerceAtLeast(MIN_GAIN_DB)
+        if (backedOffGain == gainDb) {
+            // Cannot back off any further. The HL2 ADC reports an occasional
+            // transient clip even at minimum feedback gain, so a single event
+            // only invalidates the interval; persistent clipping gives up.
+            if (++overflowsAtMinGain >= MAX_OVERFLOWS_AT_MIN_GAIN) {
+                return stop(StopReason.OVERFLOW_AT_MIN_GAIN)
+            }
+            if (phase == Phase.AWAITING_RESULT) phase = Phase.PREFLIGHT
+            return Decision.Wait
+        }
+
         gainCeilingDb = minOf(
             gainCeilingDb,
             (clippedGain - CLIP_CEILING_MARGIN_DB).coerceAtLeast(MIN_GAIN_DB)
         )
-        val backedOffGain = (clippedGain - OVERFLOW_BACKOFF_DB).coerceAtLeast(MIN_GAIN_DB)
-        if (backedOffGain == gainDb) {
-            return stop(StopReason.OVERFLOW_AT_MIN_GAIN)
-        }
-
         gainDb = backedOffGain
         gainChangesThisPtt++
         phase = Phase.PREFLIGHT
@@ -239,24 +239,28 @@ internal class Hl2PureSignalFeedbackController(
             }
         }
 
-        if (level < TARGET_MIN && gainDb >= gainCeilingDb) {
-            return if (level >= MIN_USABLE_AT_CEILING && info.solutionOk) {
-                complete(CompleteReason.MINIMUM_USABLE_AT_CEILING)
-            } else if (level < MIN_USABLE_AT_CEILING) {
-                stop(StopReason.FEEDBACK_TOO_WEAK_AT_CEILING)
-            } else {
-                phase = Phase.PREFLIGHT
-                Decision.Wait
-            }
-        }
-
         val deltaDb = feedbackGainAdjustment(level)
         val requestedGain = (gainDb + deltaDb).coerceIn(MIN_GAIN_DB, gainCeilingDb)
         if (requestedGain == gainDb) {
-            return stop(
-                if (level < TARGET_MIN) StopReason.FEEDBACK_TOO_WEAK_AT_CEILING
-                else StopReason.FEEDBACK_TOO_STRONG_AT_MIN_GAIN
-            )
+            // Pinned at a gain limit: accept an off-target but usable level
+            // rather than giving up on hardware that cannot reach the window
+            // (HL2's feedback runs hot at minimum gain on the higher bands).
+            return when {
+                level < TARGET_MIN && level >= MIN_USABLE_AT_CEILING && info.solutionOk ->
+                    complete(CompleteReason.MINIMUM_USABLE_AT_CEILING)
+                level > TARGET_MAX && level <= MAX_USABLE_AT_MIN_GAIN && info.solutionOk ->
+                    complete(CompleteReason.USABLE_ABOVE_TARGET_AT_MIN_GAIN)
+                level < MIN_USABLE_AT_CEILING ->
+                    stop(StopReason.FEEDBACK_TOO_WEAK_AT_CEILING)
+                level > MAX_USABLE_AT_MIN_GAIN ->
+                    stop(StopReason.FEEDBACK_TOO_STRONG_AT_MIN_GAIN)
+                else -> {
+                    // Usable level but a rejected fit: retry after another
+                    // clean interval, bounded by the per-PTT timeout.
+                    phase = Phase.PREFLIGHT
+                    Decision.Wait
+                }
+            }
         }
 
         if (timedOut(nowMs)) return stop(StopReason.TIMEOUT)
@@ -314,13 +318,13 @@ internal class Hl2PureSignalFeedbackController(
 
     enum class GainReason {
         ADC_OVERFLOW,
-        PREFLIGHT_RATIO,
         FEEDBACK_LEVEL
     }
 
     enum class CompleteReason {
         TARGET_REACHED,
-        MINIMUM_USABLE_AT_CEILING
+        MINIMUM_USABLE_AT_CEILING,
+        USABLE_ABOVE_TARGET_AT_MIN_GAIN
     }
 
     enum class StopReason {
@@ -337,12 +341,10 @@ internal class Hl2PureSignalFeedbackController(
         const val TARGET_MIN = 140
         const val TARGET_MAX = 165
         const val MIN_USABLE_AT_CEILING = 90
+        const val MAX_USABLE_AT_MIN_GAIN = 200
         const val MAX_GAIN_CHANGES_PER_PTT = 4
-        const val RETRY_TIMEOUT_MS = 8_000L
-
-        const val PREFLIGHT_RATIO_MIN_DB = -12.0
-        const val PREFLIGHT_RATIO_MAX_DB = -6.0
-        const val PREFLIGHT_RATIO_TARGET_DB = -9.0
+        const val MAX_OVERFLOWS_AT_MIN_GAIN = 3
+        const val RETRY_TIMEOUT_MS = 20_000L
 
         private const val TARGET_CENTER = 152.293
         private const val MAX_ADJUSTMENT_DB = 15

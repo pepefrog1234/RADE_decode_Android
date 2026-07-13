@@ -81,45 +81,21 @@ class Hl2PureSignalFeedbackControllerTest {
     }
 
     @Test
-    fun `preflight centers RX feedback ratio with a capped gain change`() {
-        val controller = Hl2PureSignalFeedbackController()
-        controller.onPttStarted(nowMs = 0)
-
-        assertEquals(
-            Hl2PureSignalFeedbackController.Decision.ApplyGain(
-                gainDb = 3,
-                ceilingDb = 48,
-                reason = Hl2PureSignalFeedbackController.GainReason.PREFLIGHT_RATIO
-            ),
-            controller.onFeedbackInterval(
-                snapshot(attempt = 0),
-                feedbackRatioDb = -40.0,
-                overflowSeen = false,
-                nowMs = 1_000
-            )
-        )
-        assertEquals(
-            Hl2PureSignalFeedbackController.Decision.StartSingleCalibration,
-            controller.onFeedbackInterval(
-                snapshot(attempt = 0),
-                feedbackRatioDb = -9.0,
-                overflowSeen = false,
-                nowMs = 2_000
-            )
-        )
-    }
-
-    @Test
-    fun `preflight accepts full coarse ratio band`() {
-        listOf(-12.0, -9.0, -6.0).forEach { ratioDb ->
+    fun `preflight launches a one shot at any finite feedback ratio`() {
+        // HL2's internal feedback tap runs within a couple of dB of the DAC
+        // reference even at minimum LNA gain; suitability is judged from the
+        // solver's fblvl, never from an a-priori ratio window.
+        listOf(-40.0, -9.0, -4.6, -1.1, 0.0, 3.0).forEach { ratioDb ->
             val controller = Hl2PureSignalFeedbackController()
             controller.onPttStarted(nowMs = 0)
             assertEquals(
+                "ratio $ratioDb dB",
                 Hl2PureSignalFeedbackController.Decision.StartSingleCalibration,
                 controller.onFeedbackInterval(
                     snapshot(attempt = 0), ratioDb, overflowSeen = false, nowMs = 1_000
                 )
             )
+            assertEquals(-12, controller.gainDb)
         }
     }
 
@@ -139,7 +115,7 @@ class Hl2PureSignalFeedbackControllerTest {
                 Hl2PureSignalFeedbackController.StopReason.TIMEOUT
             ),
             controller.onFeedbackInterval(
-                snapshot(attempt = 0), Double.NaN, overflowSeen = false, nowMs = 8_000
+                snapshot(attempt = 0), Double.NaN, overflowSeen = false, nowMs = 20_000
             )
         )
     }
@@ -194,6 +170,27 @@ class Hl2PureSignalFeedbackControllerTest {
     }
 
     @Test
+    fun `failed one shot launch re-arms the preflight`() {
+        val controller = Hl2PureSignalFeedbackController()
+        controller.onPttStarted(nowMs = 0)
+        assertEquals(
+            Hl2PureSignalFeedbackController.Decision.StartSingleCalibration,
+            controller.onFeedbackInterval(
+                snapshot(attempt = 0), -9.0, overflowSeen = false, nowMs = 1_000
+            )
+        )
+
+        controller.onCalibrationLaunchFailed()
+
+        assertEquals(
+            Hl2PureSignalFeedbackController.Decision.StartSingleCalibration,
+            controller.onFeedbackInterval(
+                snapshot(attempt = 0), -9.0, overflowSeen = false, nowMs = 2_000
+            )
+        )
+    }
+
+    @Test
     fun `overflow takes priority backs off six dB and lowers persistent ceiling`() {
         val controller = Hl2PureSignalFeedbackController(initialGainDb = 20)
         controller.onPttStarted(nowMs = 0)
@@ -237,7 +234,9 @@ class Hl2PureSignalFeedbackControllerTest {
     }
 
     @Test
-    fun `overflow after lock invalidates the accepted operating point`() {
+    fun `overflow after lock keeps the locked correction`() {
+        // After Complete the solver no longer collects, so a stray clip on
+        // the (unused) feedback receiver must not tear down a good solution.
         val controller = Hl2PureSignalFeedbackController(initialGainDb = 20)
         controller.onPttStarted(nowMs = 0)
         controller.onFeedbackInterval(snapshot(0), -9.0, false, nowMs = 1_000)
@@ -246,15 +245,13 @@ class Hl2PureSignalFeedbackControllerTest {
         )
 
         assertEquals(
-            Hl2PureSignalFeedbackController.Decision.ApplyGain(
-                gainDb = 14,
-                ceilingDb = 18,
-                reason = Hl2PureSignalFeedbackController.GainReason.ADC_OVERFLOW
-            ),
+            Hl2PureSignalFeedbackController.Decision.Wait,
             controller.onFeedbackInterval(
                 snapshot(1, level = 152, accepted = true), -9.0, true, nowMs = 3_000
             )
         )
+        assertEquals(20, controller.gainDb)
+        assertEquals(48, controller.gainCeilingDb)
     }
 
     @Test
@@ -302,16 +299,60 @@ class Hl2PureSignalFeedbackControllerTest {
     }
 
     @Test
-    fun `coarse preflight still tries once when clipping ceiling is below target`() {
+    fun `accepts usable feedback above target at minimum gain`() {
+        // The 20 m case measured on hardware: fblvl 181 with the LNA already
+        // at -12 dB. Slightly hot feedback is still a usable calibration.
+        val controller = Hl2PureSignalFeedbackController()
+        controller.onPttStarted(nowMs = 0)
+        controller.onFeedbackInterval(
+            snapshot(attempt = 0), -1.1, overflowSeen = false, nowMs = 1_000
+        )
+
+        assertEquals(
+            Hl2PureSignalFeedbackController.Decision.Complete(
+                Hl2PureSignalFeedbackController.CompleteReason.USABLE_ABOVE_TARGET_AT_MIN_GAIN
+            ),
+            controller.onFeedbackInterval(
+                snapshot(attempt = 1, level = 181, accepted = true),
+                feedbackRatioDb = -1.1,
+                overflowSeen = false,
+                nowMs = 2_000
+            )
+        )
+        assertEquals(-12, controller.gainDb)
+    }
+
+    @Test
+    fun `stops when feedback stays far too strong at minimum gain`() {
+        val controller = Hl2PureSignalFeedbackController()
+        controller.onPttStarted(nowMs = 0)
+        controller.onFeedbackInterval(
+            snapshot(attempt = 0), -1.0, overflowSeen = false, nowMs = 1_000
+        )
+
+        assertEquals(
+            Hl2PureSignalFeedbackController.Decision.StopRetry(
+                Hl2PureSignalFeedbackController.StopReason.FEEDBACK_TOO_STRONG_AT_MIN_GAIN
+            ),
+            controller.onFeedbackInterval(
+                snapshot(attempt = 1, level = 250, accepted = true),
+                feedbackRatioDb = -1.0,
+                overflowSeen = false,
+                nowMs = 2_000
+            )
+        )
+    }
+
+    @Test
+    fun `clean interval after an overflow backoff starts a one shot`() {
         val controller = Hl2PureSignalFeedbackController(initialGainDb = 20)
         controller.onPttStarted(nowMs = 0)
         controller.onFeedbackInterval(snapshot(0), -9.0, true, nowMs = 1_000)
         // Backoff is 14 dB and the persistent ceiling is 18 dB.
-        controller.onFeedbackInterval(snapshot(0), -20.0, false, nowMs = 2_000)
 
         assertEquals(
             Hl2PureSignalFeedbackController.Decision.StartSingleCalibration,
-            controller.onFeedbackInterval(snapshot(0), -13.0, false, nowMs = 3_000)
+            controller.onFeedbackInterval(snapshot(0), -20.0, false, nowMs = 2_000)
         )
     }
 
@@ -321,29 +362,68 @@ class Hl2PureSignalFeedbackControllerTest {
         controller.onPttStarted(nowMs = 0)
 
         assertEquals(
+            Hl2PureSignalFeedbackController.Decision.StopRetry(
+                Hl2PureSignalFeedbackController.StopReason.TIMEOUT
+            ),
+            controller.onFeedbackInterval(snapshot(0), -9.0, false, nowMs = 21_000)
+        )
+        assertEquals(
             Hl2PureSignalFeedbackController.Decision.ApplyGain(
                 gainDb = 14,
                 ceilingDb = 18,
                 reason = Hl2PureSignalFeedbackController.GainReason.ADC_OVERFLOW
             ),
-            controller.onFeedbackInterval(snapshot(0), -9.0, true, nowMs = 8_000)
+            controller.onFeedbackInterval(snapshot(0), -9.0, true, nowMs = 22_000)
         )
     }
 
     @Test
-    fun `persistent overflow at minimum reports failure only once`() {
+    fun `tolerates transient overflow at minimum gain then stops`() {
         val controller = Hl2PureSignalFeedbackController()
         controller.onPttStarted(nowMs = 0)
 
         assertEquals(
-            Hl2PureSignalFeedbackController.Decision.StopRetry(
-                Hl2PureSignalFeedbackController.StopReason.OVERFLOW_AT_MIN_GAIN
-            ),
+            Hl2PureSignalFeedbackController.Decision.Wait,
             controller.onFeedbackInterval(snapshot(0), -9.0, true, nowMs = 1_000)
         )
         assertEquals(
             Hl2PureSignalFeedbackController.Decision.Wait,
             controller.onFeedbackInterval(snapshot(0), -9.0, true, nowMs = 2_000)
+        )
+        assertEquals(
+            Hl2PureSignalFeedbackController.Decision.StopRetry(
+                Hl2PureSignalFeedbackController.StopReason.OVERFLOW_AT_MIN_GAIN
+            ),
+            controller.onFeedbackInterval(snapshot(0), -9.0, true, nowMs = 3_000)
+        )
+        assertEquals(
+            Hl2PureSignalFeedbackController.Decision.Wait,
+            controller.onFeedbackInterval(snapshot(0), -9.0, true, nowMs = 4_000)
+        )
+    }
+
+    @Test
+    fun `overflow tolerance at minimum gain resets each PTT`() {
+        val controller = Hl2PureSignalFeedbackController()
+        controller.onPttStarted(nowMs = 0)
+        controller.onFeedbackInterval(snapshot(0), -9.0, true, nowMs = 1_000)
+        controller.onFeedbackInterval(snapshot(0), -9.0, true, nowMs = 2_000)
+        controller.onPttStopped()
+
+        controller.onPttStarted(nowMs = 10_000)
+        assertEquals(
+            Hl2PureSignalFeedbackController.Decision.Wait,
+            controller.onFeedbackInterval(snapshot(0), -9.0, true, nowMs = 11_000)
+        )
+        assertEquals(
+            Hl2PureSignalFeedbackController.Decision.Wait,
+            controller.onFeedbackInterval(snapshot(0), -9.0, true, nowMs = 12_000)
+        )
+        assertEquals(
+            Hl2PureSignalFeedbackController.Decision.StopRetry(
+                Hl2PureSignalFeedbackController.StopReason.OVERFLOW_AT_MIN_GAIN
+            ),
+            controller.onFeedbackInterval(snapshot(0), -9.0, true, nowMs = 13_000)
         )
     }
 
@@ -413,7 +493,7 @@ class Hl2PureSignalFeedbackControllerTest {
     }
 
     @Test
-    fun `stops retrying after eight seconds`() {
+    fun `stops retrying after twenty seconds`() {
         val controller = Hl2PureSignalFeedbackController()
         controller.onPttStarted(nowMs = 10_000)
         controller.onFeedbackInterval(snapshot(attempt = 0), -9.0, false, nowMs = 11_000)
@@ -422,7 +502,7 @@ class Hl2PureSignalFeedbackControllerTest {
             Hl2PureSignalFeedbackController.Decision.StopRetry(
                 Hl2PureSignalFeedbackController.StopReason.TIMEOUT
             ),
-            controller.onFeedbackInterval(snapshot(attempt = 0), -9.0, false, nowMs = 18_000)
+            controller.onFeedbackInterval(snapshot(attempt = 0), -9.0, false, nowMs = 30_000)
         )
     }
 
