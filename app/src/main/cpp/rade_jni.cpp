@@ -772,6 +772,26 @@ JNI_PS(nativePsGetInfo)(JNIEnv *env, jobject /* this */, jintArray out16) {
     psGetInfoJni(env, out16);
 }
 
+/** Copy the 32-float accepted-model summary (see puresignal.h). */
+static void psGetModelJni(JNIEnv *env, jfloatArray out32) {
+    if (!out32) return;
+    float model[32];
+    psGetModel(model);
+    jsize len = env->GetArrayLength(out32);
+    if (len > 32) len = 32;
+    env->SetFloatArrayRegion(out32, 0, len, reinterpret_cast<jfloat*>(model));
+}
+
+JNIEXPORT void JNICALL
+JNI_AUDIO(nativePsGetModel)(JNIEnv *env, jobject /* this */, jfloatArray out32) {
+    psGetModelJni(env, out32);
+}
+
+JNIEXPORT void JNICALL
+JNI_PS(nativePsGetModel)(JNIEnv *env, jobject /* this */, jfloatArray out32) {
+    psGetModelJni(env, out32);
+}
+
 JNIEXPORT void JNICALL
 JNI_AUDIO(nativePsSetRun)(JNIEnv *env, jobject /* this */, jboolean run) {
     psSetRun(run == JNI_TRUE);

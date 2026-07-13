@@ -981,6 +981,7 @@ class HermesNetworkManager(private val appContext: Context? = null) : NetworkAud
                 if (psEngineUp) PureSignalBridge.psSetMox(false)
                 Log.i(TAG, "PureSignal controller: LOCKED (${decision.reason}) " +
                     "gain=${psFeedbackGainDb}dB")
+                logPsModelSummary()
             }
             is Hl2PureSignalFeedbackController.Decision.StopRetry -> {
                 psControlStatus = "FAILED:${decision.reason}"
@@ -991,6 +992,49 @@ class HermesNetworkManager(private val appContext: Context? = null) : NetworkAud
                 Log.w(TAG, "PureSignal controller stopped for this PTT: ${decision.reason}")
             }
         }
+    }
+
+    /**
+     * One-shot dump of the accepted correction model. A single line answers
+     * the decisive hardware question: did the solver see a real PA? A
+     * compressing PA reads as ym rising toward the top bins (AM/AM > 0 dB)
+     * and a bent phase curve (AM/PM span). A near-flat model despite known
+     * PA compression means the feedback tap does not contain the PA's
+     * nonlinearity — a topology problem no software can correct.
+     */
+    private fun logPsModelSummary() {
+        if (!psEngineUp) return
+        val m = FloatArray(32)
+        PureSignalBridge.psGetModel(m)
+        var lo = -1
+        var hi = -1
+        for (k in 0 until 16) {
+            if (m[k] > 0f) {
+                if (lo < 0) lo = k
+                hi = k
+            }
+        }
+        if (lo < 0 || hi <= lo) {
+            Log.i(TAG, "PS model: no fitted bins")
+            return
+        }
+        var phMin = Float.MAX_VALUE
+        var phMax = -Float.MAX_VALUE
+        for (k in lo..hi) {
+            val ph = m[16 + k]
+            if (ph < phMin) phMin = ph
+            if (ph > phMax) phMax = ph
+        }
+        val amAmDb = 20.0 * log10(m[hi].toDouble() / m[lo].toDouble())
+        Log.i(
+            TAG,
+            "PS model: bins $lo..$hi ym %.3f->%.3f (AM/AM %.2f dB) AM/PM span %.1f deg"
+                .format(m[lo], m[hi], amAmDb, phMax - phMin)
+        )
+        Log.i(TAG, "PS model ym: " +
+            (0 until 16).joinToString(",") { "%.3f".format(m[it]) })
+        Log.i(TAG, "PS model ph: " +
+            (0 until 16).joinToString(",") { "%.1f".format(m[16 + it]) })
     }
 
     private fun pacerLoop() {

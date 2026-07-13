@@ -242,6 +242,30 @@ void psGetInfo(int* info16)
     pthread_rwlock_unlock(&g_psLock);
 }
 
+void psGetModel(float* out32)
+{
+    if (!out32) return;
+    memset(out32, 0, 32 * sizeof(float));
+    pthread_rwlock_rdlock(&g_psLock);
+    if (g_created) {
+        CALCC a = g_calcc;
+        // disp.* hold the fitted splines of the last accepted solution
+        // (calc() zeroes them on a rejected fit). Coefficient [4k+0] is the
+        // spline value at the bin-k start point.
+        EnterCriticalSection(&a->disp.cs_disp);
+        for (int k = 0; k < 16 && k < a->ints; k++) {
+            const double ym = a->disp.cm[4 * k];
+            const double yc = a->disp.cc[4 * k];
+            const double ys = a->disp.cs[4 * k];
+            out32[k] = (float)ym;
+            if (yc != 0.0 || ys != 0.0)
+                out32[16 + k] = (float)(atan2(ys, yc) * (180.0 / 3.14159265358979323846));
+        }
+        LeaveCriticalSection(&a->disp.cs_disp);
+    }
+    pthread_rwlock_unlock(&g_psLock);
+}
+
 void psSetRun(bool run)
 {
     pthread_rwlock_rdlock(&g_psLock);

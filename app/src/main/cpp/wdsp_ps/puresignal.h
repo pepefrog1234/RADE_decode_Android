@@ -73,6 +73,18 @@ void psApply(float* txIQ, int nSamples);
  *  Zeroed when the engine is not created. */
 void psGetInfo(int* info16);
 
+/** Copy a 32-float summary of the last ACCEPTED correction model:
+ *   [0..15]  ym — magnitude correction at each envelope-bin start (the
+ *            inverse of the fitted PA AM/AM curve; a compressing PA reads
+ *            as ym rising toward the top bins)
+ *   [16..31] correction phase at each bin start, degrees (inverse of the
+ *            fitted AM/PM; only the SPAN across bins is meaningful — the
+ *            absolute value includes the constant ref/feedback path offset)
+ *  Bins the fit never populated (and everything when no accepted solution
+ *  exists or the engine is down) read 0. Sourced from WDSP's display
+ *  arrays, which calc() fills with the fitted splines only when scOK. */
+void psGetModel(float* out32);
+
 /** true: start one manual calibration (WDSP mancal + SetPSMox(1)).
  *  false: reset the calibration state machine and ramp the correction out
  *  (WDSP SetPSControl reset + SetPSMox(0)) — see header note about feeding

@@ -318,6 +318,10 @@ class AudioBridge private constructor(
      *  [9]=rejected, [10]=last outcome, [14]=correcting, [15]=state). */
     fun psGetInfo(out16: IntArray) = nativePsGetInfo(out16)
 
+    /** Copy the 32-float accepted-model summary ([0..15] ym per envelope bin,
+     *  [16..31] correction phase per bin in degrees; zeros = not fitted). */
+    fun psGetModel(out32: FloatArray) = nativePsGetModel(out32)
+
     /** Start one calibration, or reset and ramp correction out. */
     fun psSetRun(run: Boolean) = nativePsSetRun(run)
 
@@ -470,6 +474,7 @@ class AudioBridge private constructor(
     private external fun nativePsFeed(txRef: FloatArray, feedback: FloatArray, n: Int)
     private external fun nativePsApply(txIq: FloatArray, n: Int)
     private external fun nativePsGetInfo(out16: IntArray)
+    private external fun nativePsGetModel(out32: FloatArray)
     private external fun nativePsSetRun(run: Boolean)
     private external fun nativePsStartSingleCalibration()
     private external fun nativePsSetMox(mox: Boolean)
