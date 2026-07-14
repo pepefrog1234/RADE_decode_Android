@@ -187,6 +187,7 @@ class TransceiverViewModel(application: Application) : AndroidViewModel(applicat
         // Load the persistent status message; reporter holds it and re-emits
         // on every (re)connect, so we just need to give it the saved value.
         reporter.updateMessage(prefs.getString("reporter_message", "") ?: "")
+        reporter.modeString = if (_uiState.value.radeV2Mode) "RADEV2" else "RADEV1"
         syncReporterState()
 
         // Location → grid update (only triggers reconnect if grid actually changes)
@@ -386,6 +387,8 @@ class TransceiverViewModel(application: Application) : AndroidViewModel(applicat
         prefs.edit().putBoolean("rade_v2_mode", enabled).apply()
         _uiState.value = _uiState.value.copy(radeV2Mode = enabled)
         audioService?.radeV2Mode = enabled
+        // qso.freedv.org's Mode column should reflect the selected waveform.
+        reporter.modeString = if (enabled) "RADEV2" else "RADEV1"
         if (_uiState.value.isRunning && !_uiState.value.isTx) {
             stopReceiving()
             startReceiving()

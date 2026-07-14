@@ -198,11 +198,17 @@ class FreeDVReporter(private val scope: CoroutineScope) {
      * decoded yet — the server uses the recency of these emits to drive the
      * "currently receiving / blue dot" indicator on qso.freedv.org's map.
      */
+    /** Mode string sent with rx/tx reports and shown in qso.freedv.org's
+     *  Mode column. Follows the freedv-gui convention: "RADEV1" normally,
+     *  "RADEV2" while the experimental V2 waveform is selected. */
+    @Volatile
+    var modeString: String = "RADEV1"
+
     fun reportRx(callsign: String, snr: Int) {
         if (!_connected.value || config.callsign.isEmpty()) return
         sendEvent("rx_report", JSONObject().apply {
             put("callsign", callsign)
-            put("mode", "RADEV1")
+            put("mode", modeString)
             put("snr", snr)
         })
     }
@@ -237,7 +243,7 @@ class FreeDVReporter(private val scope: CoroutineScope) {
         if (!_connected.value) return
         sendEvent("tx_report", JSONObject().apply {
             put("transmitting", transmitting)
-            put("mode", "RADEV1")
+            put("mode", modeString)
         })
     }
 
