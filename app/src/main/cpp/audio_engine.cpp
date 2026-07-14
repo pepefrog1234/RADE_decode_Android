@@ -653,12 +653,30 @@ void AudioEngine::synthesizeSpeech(const float *features, int nTotalFeatures) {
         const float *frameFeatures = features + f * NB_TOTAL;
 
         if (!farganReady_) {
-            // Warmup: feed frames one by one via fargan_cont
-            // fargan_cont expects NB_FEATURES-strided features for FARGAN_CONT_SAMPLES/FARGAN_FRAME_SIZE frames
-            float silence[FARGAN_CONT_SAMPLES] = {0};
-            fargan_cont(fargan_, silence, frameFeatures);
+            // FARGAN continuation pre-loads FIVE frames of conditioning
+            // features from ONE contiguous buffer at NB_FEATURES(20) stride
+            // (fargan.c fargan_cont: features0[i*NB_FEATURES], i=0..4).
+            // The old warmup called fargan_cont once per decoded frame with
+            // a 36-float-stride pointer: the conditioning frames were
+            // misaligned, and on RADE V2 — only 4 frames per rade_rx batch —
+            // the 5-frame read ran past the features buffer and poisoned the
+            // recurrent state, garbling all decoded speech for the over.
+            // Collect FARGAN_WARMUP_FRAMES (= the 5 fargan_cont expects)
+            // across batches, repack to NB_FEAT stride, call cont once.
+            static_assert(FARGAN_WARMUP_FRAMES == 5,
+                          "fargan_cont pre-loads exactly 5 conditioning frames");
+            std::memcpy(&farganWarmupFeat_[farganWarmupCount_ * NB_TOTAL],
+                        frameFeatures, NB_TOTAL * sizeof(float));
             farganWarmupCount_++;
             if (farganWarmupCount_ >= FARGAN_WARMUP_FRAMES) {
+                float cont[FARGAN_WARMUP_FRAMES * NB_FEAT];
+                for (int k = 0; k < FARGAN_WARMUP_FRAMES; k++) {
+                    std::memcpy(&cont[k * NB_FEAT],
+                                &farganWarmupFeat_[k * NB_TOTAL],
+                                NB_FEAT * sizeof(float));
+                }
+                float silence[FARGAN_CONT_SAMPLES] = {0};
+                fargan_cont(fargan_, silence, cont);
                 farganReady_ = true;
                 LOGI("FARGAN warmup complete after %d frames", farganWarmupCount_);
             }

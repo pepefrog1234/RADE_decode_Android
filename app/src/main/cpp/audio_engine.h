@@ -189,6 +189,9 @@ private:
     FARGANState *fargan_ = nullptr;
     int farganWarmupCount_ = 0;
     bool farganReady_ = false;
+    /* First FARGAN_WARMUP_FRAMES decoded frames (36-float stride), collected
+     * across rade_rx batches for one correct fargan_cont call. */
+    float farganWarmupFeat_[FARGAN_WARMUP_FRAMES * 36] = {};
 
     AudioRingBuffer playbackRing_{RING_BUFFER_SIZE};
 

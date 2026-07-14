@@ -72,3 +72,11 @@ target_link_libraries(rade PUBLIC opus)
 add_executable(loopback loopback.c)
 target_include_directories(loopback PRIVATE ${CPP_DIR}/radae)
 target_link_libraries(loopback PRIVATE rade m)
+
+# Full speech A/B: 16k wav → lpcnet features → rade tx/rx → FARGAN → wav,
+# for both waveforms, mirroring the app's TX pump and synthesizeSpeech
+# (including warmup). Catches vocoder-path bugs the modem loopback cannot
+# (v1.6.3 exists because of one). Usage: ./build/audiocheck speech16k.wav
+add_executable(audiocheck audiocheck.c)
+target_include_directories(audiocheck PRIVATE ${CPP_DIR}/radae ${CPP_DIR}/opus/dnn ${CPP_DIR}/opus/include ${CPP_DIR}/opus/celt)
+target_link_libraries(audiocheck PRIVATE rade m)
