@@ -119,7 +119,11 @@ void compute_glu(const LinearLayer *layer, float *output, const float *input, in
    }
 }
 
-#define MAX_CONV_INPUTS_ALL DRED_MAX_CONV_INPUTS
+/* [RADE] upstream radae_nopy opus-nnet.c.diff: raised from
+   DRED_MAX_CONV_INPUTS (1536) to support RADE V2 decoder conv layers,
+   which need up to 1792 inputs (896 channels * kernel_size 2). Without
+   this the celt_assert below aborts the moment a V2 signal syncs. */
+#define MAX_CONV_INPUTS_ALL 2048
 
 void compute_generic_conv1d(const LinearLayer *layer, float *output, float *mem, const float *input, int input_size, int activation, int arch)
 {

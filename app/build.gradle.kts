@@ -11,8 +11,8 @@ android {
         applicationId = "yakumo2683.RADEdecode"
         minSdk = 26
         targetSdk = 35
-        versionCode = 10601
-        versionName = "1.6.1-reporter-radev2"
+        versionCode = 10602
+        versionName = "1.6.2-v2-decoder-crash-fix"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 
