@@ -178,7 +178,10 @@ class IcomNetworkManager : NetworkAudioRig {
             }
 
             ctrl.sendTracked(buildLogin(ctrl))                       // authInnerSeq 0 → login
-            val r60 = ctrl.expect(96, byteArrayOf(0x60, 0, 0, 0, 0, 0, 0x01, 0))
+            // 5 s window (was 3 s): the first full round-trip over a cold
+            // LTE/VPN path can be slow; the login packet itself is covered by
+            // the tracked-retransmit mechanism, so no resend here.
+            val r60 = ctrl.expect(96, byteArrayOf(0x60, 0, 0, 0, 0, 0, 0x01, 0), timeoutMs = 5000)
             if (r60 == null) {
                 fail("No login reply — is 'Network control' ON and the control port correct?")
                 disconnect(); return ""
@@ -667,11 +670,33 @@ class IcomNetworkManager : NetworkAudioRig {
                 running = true
                 scope.launch(Dispatchers.IO) { readerLoop() }
 
-                sendRaw(plain(0x03, withRemote = false)); sendRaw(plain(0x03, withRemote = false))
-                val r4 = expect(16, byteArrayOf(0x10, 0, 0, 0, 0x04, 0, 0, 0)) ?: return false
+                // Handshake with retries. Over LTE/VPN the first packets are
+                // routinely lost while the path warms up (LTE idle→active, VPN
+                // tunnel state, ARP on the far LAN) — the previous two
+                // fire-and-forget SYNs + single 3 s wait failed with "Control
+                // handshake failed" on a path where another Icom client works.
+                // kappanhang/wfview resend the SYN until the radio answers; do
+                // the same for all three streams (control/serial/audio share
+                // this open()).
+                var r4: ByteArray? = null
+                for (attempt in 1..8) {
+                    sendRaw(plain(0x03, withRemote = false))
+                    r4 = expect(16, byteArrayOf(0x10, 0, 0, 0, 0x04, 0, 0, 0), timeoutMs = 1000)
+                    if (r4 != null) break
+                    Log.i(TAG, "$name: no SYN reply (attempt $attempt/8)")
+                }
+                if (r4 == null) return false
                 remoteSID = u32be(r4, 8)
-                sendRaw(pkt6()); sendRaw(pkt6())
-                expect(16, byteArrayOf(0x10, 0, 0, 0, 0x06, 0, 0x01, 0)) ?: return false
+                var pkt6Ok = false
+                for (attempt in 1..5) {
+                    sendRaw(pkt6())
+                    if (expect(16, byteArrayOf(0x10, 0, 0, 0, 0x06, 0, 0x01, 0), timeoutMs = 1000) != null) {
+                        pkt6Ok = true
+                        break
+                    }
+                    Log.i(TAG, "$name: no pkt6 reply (attempt $attempt/5)")
+                }
+                if (!pkt6Ok) return false
                 trackSeq = 1
                 Log.i(TAG, "$name stream up: localSID=${hex(localSID)} remoteSID=${hex(remoteSID)}")
                 true
