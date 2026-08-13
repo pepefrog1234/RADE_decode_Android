@@ -280,7 +280,11 @@ class FreeDVReporter(private val scope: CoroutineScope) {
                     put("role", "report")
                     put("callsign", config.callsign)
                     put("grid_square", config.gridSquare)
-                    put("version", "RADE_Android/1.0")
+                    // Real app version (e.g. "RADE_Android/1.6.5") — was hardcoded
+                    // "1.0". The suffix after '-' is a build nickname, not part of
+                    // the version number shown on qso.freedv.org.
+                    put("version", "RADE_Android/" +
+                        yakumo2683.RADEdecode.BuildConfig.VERSION_NAME.substringBefore('-'))
                     put("os", "Android")
                     // Fixed capability flag — app supports TX. Current RX/TX activity
                     // is communicated live via rx_report / tx_report events.
