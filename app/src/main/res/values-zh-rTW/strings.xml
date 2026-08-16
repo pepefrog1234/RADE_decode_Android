@@ -192,6 +192,8 @@
     <string name="rig_usb_refresh">重新整理</string>
     <string name="rig_usb_permission_waiting">等待 USB 授權中…</string>
     <string name="rig_dtr_rts_hint">DTR/RTS 控制線。若您的 USB 轉串列線把 RTS 接到 PTT，請將 RTS 關閉。</string>
+    <string name="rig_rts_ptt">RTS PTT（發射時用 RTS 觸發 PTT）</string>
+    <string name="rig_rts_ptt_help">適用於以 RTS 線觸發 PTT 的無 CAT 介面：按 TX 自動拉高 RTS，結束發射（呼號送出後）自動放開。使用時請保持上方的 RTS 開關為關閉。</string>
     <string name="rig_baud">鮑率</string>
     <string name="rig_manufacturer">製造商</string>
     <string name="rig_all_manufacturers">所有製造商</string>

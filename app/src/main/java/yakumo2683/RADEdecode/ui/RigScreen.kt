@@ -301,6 +301,8 @@ fun RigScreen(viewModel: TransceiverViewModel = viewModel()) {
     // RTS off (some USB-serial cables wire RTS to PTT — asserting it would key the rig).
     var dtrEnabled by remember { mutableStateOf(rigPrefs.getBoolean("dtr_enabled", true)) }
     var rtsEnabled by remember { mutableStateOf(rigPrefs.getBoolean("rts_enabled", false)) }
+    // RTS-as-PTT for CAT-less interfaces (RTS line keys the rig).
+    var rtsPttEnabled by remember { mutableStateOf(rigPrefs.getBoolean("rts_ptt_enabled", false)) }
     // Manufacturer filter
     val manufacturers = remember { listOf("All") + rigModels.map { it.mfg }.distinct() }
     var selectedMfg by remember { mutableStateOf(rigPrefs.getString("mfg_filter", "All") ?: "All") }
@@ -969,6 +971,25 @@ fun RigScreen(viewModel: TransceiverViewModel = viewModel()) {
                     }
                     Text(
                         stringResource(R.string.rig_dtr_rts_hint),
+                        color = OnSurfaceDim,
+                        fontSize = 11.sp
+                    )
+
+                    // RTS-as-PTT: for CAT-less interfaces that key the rig with
+                    // the RTS line (classic 4-jack digimode interfaces, Digirig
+                    // wiring). TX asserts RTS automatically; back to the static
+                    // RTS setting after the over.
+                    ModemLineToggle(
+                        label = stringResource(R.string.rig_rts_ptt),
+                        checked = rtsPttEnabled,
+                        onCheckedChange = {
+                            rtsPttEnabled = it
+                            rigPrefs.edit().putBoolean("rts_ptt_enabled", it).apply()
+                        },
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                    Text(
+                        stringResource(R.string.rig_rts_ptt_help),
                         color = OnSurfaceDim,
                         fontSize = 11.sp
                     )

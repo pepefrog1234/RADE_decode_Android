@@ -112,6 +112,10 @@ class TransceiverViewModel(application: Application) : AndroidViewModel(applicat
      *  stuck in TX. */
     private var pttKeyedByApp = false
 
+    /** True while the app has keyed the rig by asserting the serial RTS line
+     *  (CAT-less interfaces, Rig tab "RTS PTT" option). */
+    private var rtsPttKeyed = false
+
     private val serviceConnection = object : ServiceConnection {
         override fun onServiceConnected(name: ComponentName?, binder: IBinder?) {
             val service = (binder as AudioService.LocalBinder).service
@@ -143,6 +147,8 @@ class TransceiverViewModel(application: Application) : AndroidViewModel(applicat
     }
 
     private val prefs = application.getSharedPreferences("rade_prefs", Context.MODE_PRIVATE)
+    // Rig-tab prefs (DTR/RTS lines, RTS-PTT) — written by RigScreen.
+    private val rigPrefs = application.getSharedPreferences("rig_prefs", Context.MODE_PRIVATE)
     private val savedRxInputDeviceId: Int
         get() = prefs.getInt("rx_input_device", -1)
 
@@ -517,6 +523,20 @@ class TransceiverViewModel(application: Application) : AndroidViewModel(applicat
             pttKeyedByApp = true
             hermesNetwork.setPtt(true)
         }
+        // RTS-as-PTT (Rig tab option): CAT-less interfaces key the rig with the
+        // serial RTS line (classic 4-jack digimode interfaces, Digirig wiring).
+        // Assert RTS for the over; released in stopTxAndUnkeyPtt after the
+        // audio has drained.
+        if (rigPrefs.getBoolean("rts_ptt_enabled", false) &&
+            usbSerialManager.state.value.connectedDevice != null
+        ) {
+            rtsPttKeyed = true
+            usbSerialManager.setModemLines(
+                dtr = rigPrefs.getBoolean("dtr_enabled", true),
+                rts = true
+            )
+            Log.i("TransceiverVM", "RTS PTT: asserted RTS for TX")
+        }
         if (useNetworkAudio()) {
             // Full wireless: mic → encoder → network (Icom UDP / HL2 I/Q).
             // The TX MIC picker applies here too — "no USB devices" only ever
@@ -616,11 +636,23 @@ class TransceiverViewModel(application: Application) : AndroidViewModel(applicat
         // this removes several seconds of dead time from the TX->RX switch.
         val onAir = rigController.isConnected ||
             useNetworkAudio() ||
-            _uiState.value.selectedOutputDeviceId > 0
+            _uiState.value.selectedOutputDeviceId > 0 ||
+            rtsPttKeyed
         // fullTeardown (Stop pressed): release the engine instead of resuming RX,
         // so a keep-alive (local LC3) TX doesn't leave RX running after Stop.
         withContext(Dispatchers.IO) {
             audioService?.stopTransmitting(drainEoo = onAir, forceFullTeardown = fullTeardown)
+        }
+        // RTS-as-PTT: drop RTS back to its static Rig-tab setting only after the
+        // audio has drained (mirrors the CAT PTT tail below).
+        if (rtsPttKeyed) {
+            delay(TX_PTT_TAIL_MS)
+            usbSerialManager.setModemLines(
+                dtr = rigPrefs.getBoolean("dtr_enabled", true),
+                rts = rigPrefs.getBoolean("rts_enabled", false)
+            )
+            rtsPttKeyed = false
+            Log.i("TransceiverVM", "RTS PTT: released RTS after TX")
         }
         // Unkey whenever WE keyed the rig — not gated on isConnected: over Wi-Fi
         // the rigctld link can be transiently down right here (auto-reconnect in

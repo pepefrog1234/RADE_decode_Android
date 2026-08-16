@@ -193,6 +193,8 @@
     <string name="rig_usb_refresh">更新</string>
     <string name="rig_usb_permission_waiting">USB 権限を待っています…</string>
     <string name="rig_dtr_rts_hint">DTR/RTS 制御線。USB シリアルケーブルが RTS を PTT に配線している場合は RTS をオフにしてください。</string>
+    <string name="rig_rts_ptt">RTS PTT（送信時に RTS で PTT）</string>
+    <string name="rig_rts_ptt_help">RTS 線で PTT を叩く CAT 無しインターフェース用：TX ボタンで自動的に RTS を ON にし、交信終了時（コールサイン送出後）に自動で OFF に戻します。使用時は上の RTS スイッチは OFF のままにしてください。</string>
     <string name="rig_baud">ボーレート</string>
     <string name="rig_manufacturer">メーカー</string>
     <string name="rig_all_manufacturers">すべてのメーカー</string>

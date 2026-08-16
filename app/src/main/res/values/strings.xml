@@ -194,6 +194,8 @@
     <string name="rig_usb_refresh">Refresh</string>
     <string name="rig_usb_permission_waiting">Waiting for USB permission…</string>
     <string name="rig_dtr_rts_hint">DTR/RTS modem lines. Turn off RTS if your USB-serial cable wires it to PTT.</string>
+    <string name="rig_rts_ptt">RTS PTT (key TX via RTS)</string>
+    <string name="rig_rts_ptt_help">For CAT-less interfaces that key the rig with the RTS line: pressing TX asserts RTS automatically and releases it after the over (after the callsign has played out). Leave the RTS switch above OFF when using this.</string>
     <string name="rig_baud">Baud</string>
     <string name="rig_manufacturer">Manufacturer</string>
     <string name="rig_all_manufacturers">All Manufacturers</string>
