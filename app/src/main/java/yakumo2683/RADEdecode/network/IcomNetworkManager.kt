@@ -178,10 +178,17 @@ class IcomNetworkManager : NetworkAudioRig {
             }
 
             ctrl.sendTracked(buildLogin(ctrl))                       // authInnerSeq 0 → login
-            // 5 s window (was 3 s): the first full round-trip over a cold
-            // LTE/VPN path can be slow; the login packet itself is covered by
-            // the tracked-retransmit mechanism, so no resend here.
-            val r60 = ctrl.expect(96, byteArrayOf(0x60, 0, 0, 0, 0, 0, 0x01, 0), timeoutMs = 5000)
+            // 5 s window per attempt, up to 3 attempts: a lost login packet on a
+            // cold path, or a radio still flushing a just-expired previous
+            // session, both recover on a resend instead of failing the connect.
+            var r60 = ctrl.expect(96, byteArrayOf(0x60, 0, 0, 0, 0, 0, 0x01, 0), timeoutMs = 5000)
+            var loginAttempt = 1
+            while (r60 == null && loginAttempt < 3) {
+                loginAttempt++
+                Log.i(TAG, "no login reply; resending login (attempt $loginAttempt/3)")
+                ctrl.sendTracked(buildLogin(ctrl))
+                r60 = ctrl.expect(96, byteArrayOf(0x60, 0, 0, 0, 0, 0, 0x01, 0), timeoutMs = 5000)
+            }
             if (r60 == null) {
                 fail("No login reply — is 'Network control' ON and the control port correct?")
                 disconnect(); return ""
@@ -713,7 +720,14 @@ class IcomNetworkManager : NetworkAudioRig {
                 ((addr[o].toInt() and 0xFF) shl 24) or ((addr[o + 1].toInt() and 0xFF) shl 16) or
                 ((addr[o + 2].toInt() and 0xFF) shl 8) or (addr[o + 3].toInt() and 0xFF)
             } else 0
-            localSID = (ip shl 16) or (sock.localPort and 0xFFFF)
+            // Salt the low 16 bits per session instead of using the local port:
+            // local ip:port are IDENTICAL on every connection here (the local
+            // port is bound to match the remote's), so a port-based SID collides
+            // with the radio's record of a not-yet-expired previous session and
+            // the login is silently ignored. The SID is just our session
+            // identifier echoed back by the radio — any value works, so make it
+            // unique per connect.
+            localSID = (ip shl 16) or kotlin.random.Random.nextInt(0x10000)
         }
 
         fun startPing(firstSeq: Int) {
@@ -772,6 +786,18 @@ class IcomNetworkManager : NetworkAudioRig {
         }
 
         fun close() {
+            // Polite stream-level disconnect (kappanhang/wfview send type 0x05
+            // before closing). Without it the radio keeps this session alive
+            // until its own timeout and silently ignores the NEXT login —
+            // the reported "first connect works, later connects get 'No login
+            // reply'" pattern. Sent twice: a single unacked UDP packet on a
+            // link we are about to drop.
+            if (remoteSID != 0) {
+                try {
+                    sendRaw(plain(0x05, withRemote = true))
+                    sendRaw(plain(0x05, withRemote = true))
+                } catch (_: Exception) {}
+            }
             running = false
             try { socket?.close() } catch (_: Exception) {}
             socket = null
