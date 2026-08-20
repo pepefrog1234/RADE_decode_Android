@@ -232,10 +232,25 @@ class IcomNetworkManager : NetworkAudioRig {
     fun disconnect() {
         val scope = connScope ?: return
         onAudioPcm = null
-        // Best-effort polite shutdown.
+        // Polite shutdown in protocol order, with repeats. The token removal
+        // (deauth, magic 0x01) is what frees this USER's session slot on the
+        // radio: as a single unacked UDP send it was routinely lost, the radio
+        // then held the stale token and ignored every following login for the
+        // same user until the token expired — the reported "connects once,
+        // then NG until the username/password are changed" pattern. Repeats
+        // are cheap and idempotent; the short sleep lets the packets leave
+        // (and the radio process them) before the sockets vanish underneath.
         try {
-            if (serialOpened) serial?.sendTracked(buildSerialOpenClose(close = true))
-            control?.let { it.sendRaw(buildAuth(it, magic = 0x01)) }  // deauth
+            if (serialOpened) {
+                serial?.let {
+                    it.sendTracked(buildSerialOpenClose(close = true))
+                    it.sendTracked(buildSerialOpenClose(close = true))
+                }
+            }
+            control?.let { c ->
+                repeat(3) { c.sendRaw(buildAuth(c, magic = 0x01)) }  // token remove
+            }
+            Thread.sleep(120)
         } catch (_: Exception) {}
         try { audio?.close() } catch (_: Exception) {}
         try { serial?.close() } catch (_: Exception) {}
