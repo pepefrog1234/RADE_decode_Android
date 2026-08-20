@@ -11,8 +11,8 @@ android {
         applicationId = "yakumo2683.RADEdecode"
         minSdk = 26
         targetSdk = 35
-        versionCode = 10608
-        versionName = "1.6.8-icom-deauth"
+        versionCode = 10609
+        versionName = "1.6.9-icom-token-persist"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 

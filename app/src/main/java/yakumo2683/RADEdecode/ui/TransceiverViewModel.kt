@@ -167,6 +167,16 @@ class TransceiverViewModel(application: Application) : AndroidViewModel(applicat
         // liveness/exit cause (crash vs. USB-bridge failure) in the on-screen error.
         rigController.diagnosticsProvider = { rigctldProcess.exitDiagnostics() }
 
+        // Persist the Icom login token across app runs, so a token left on the
+        // radio by an unclean exit (app killed while connected) is removed at
+        // the start of the next connect instead of blocking the login.
+        icomNetwork.saveStaleToken = { v ->
+            prefs.edit().putString("icom_stale_token", v ?: "").apply()
+        }
+        icomNetwork.loadStaleToken = {
+            prefs.getString("icom_stale_token", "")?.takeIf { it.isNotEmpty() }
+        }
+
         // Restore persisted callsign
         val savedCallsign = prefs.getString("tx_callsign", "") ?: ""
         if (savedCallsign.isNotEmpty()) {

@@ -127,6 +127,14 @@ class IcomNetworkManager : NetworkAudioRig {
 
     private var connScope: CoroutineScope? = null
 
+    /** Optional persistence hooks (wired by the ViewModel to SharedPreferences).
+     *  The last session's login token is stored so that a token left behind by
+     *  an UNCLEAN exit (app killed while connected — no logout packet could be
+     *  sent) can be removed at the start of the next connect. Without this the
+     *  radio holds the stale token and ignores the login until it expires. */
+    @Volatile var saveStaleToken: ((String?) -> Unit)? = null
+    @Volatile var loadStaleToken: (() -> String?)? = null
+
     private var control: IcomStream? = null
     private var serial: IcomStream? = null
     private var audio: IcomStream? = null
@@ -177,6 +185,20 @@ class IcomNetworkManager : NetworkAudioRig {
                 disconnect(); return ""
             }
 
+            // Pre-login cleanup: remove the PREVIOUS session's token first. If
+            // the last run ended uncleanly (app killed while connected), the
+            // radio still holds that token and would silently ignore this
+            // login. Removal is idempotent — deleting an already-expired token
+            // is a no-op — so it is sent on every connect. The token is looked
+            // up by its value; the packet rides the fresh control stream.
+            loadStaleToken?.invoke()?.let { hexTok ->
+                parseTokenHex(hexTok)?.let { oldTok ->
+                    Log.i(TAG, "removing stale token from previous session")
+                    repeat(3) { ctrl.sendRaw(buildTokenRemove(ctrl, oldTok)) }
+                    delay(150)
+                }
+            }
+
             ctrl.sendTracked(buildLogin(ctrl))                       // authInnerSeq 0 → login
             // 5 s window per attempt, up to 3 attempts: a lost login packet on a
             // cold path, or a radio still flushing a just-expired previous
@@ -198,6 +220,10 @@ class IcomNetworkManager : NetworkAudioRig {
                 disconnect(); return ""
             }
             System.arraycopy(r60, 26, authID, 0, 6)
+            // Persist the token now, while we hold it: if this session later
+            // ends without a clean disconnect, the NEXT connect removes it
+            // before logging in (see the pre-login cleanup above).
+            saveStaleToken?.invoke(authID.joinToString("") { "%02x".format(it) })
 
             ctrl.startPing(firstSeq = 2)
             ctrl.sendTracked(buildAuth(ctrl, magic = 0x02))          // first auth
@@ -590,6 +616,31 @@ class IcomNetworkManager : NetworkAudioRig {
         System.arraycopy(authID, 0, p, 26, 6)
         authInnerSeq = (authInnerSeq + 1) and 0xFFFF
         return p
+    }
+
+    /** Token-removal (deauth) packet for an EXPLICIT token — used by the
+     *  pre-login cleanup to delete the previous session's token. Identical to
+     *  buildAuth(magic = 0x01) except the token bytes come from the argument
+     *  instead of the live authID. */
+    private fun buildTokenRemove(s: IcomStream, token: ByteArray): ByteArray {
+        val p = ByteArray(64)
+        p[0] = 0x40
+        p.putSid(8, s.localSID); p.putSid(12, s.remoteSID)
+        p[19] = 0x30; p[20] = 0x01; p[21] = 0x01
+        p[23] = authInnerSeq.toByte(); p[24] = (authInnerSeq ushr 8).toByte()
+        System.arraycopy(token, 0, p, 26, minOf(token.size, 6))
+        authInnerSeq = (authInnerSeq + 1) and 0xFFFF
+        return p
+    }
+
+    /** Parse a 12-hex-char token back to its 6 bytes, or null if malformed. */
+    private fun parseTokenHex(hex: String): ByteArray? {
+        if (hex.length != 12) return null
+        return try {
+            ByteArray(6) { i -> hex.substring(i * 2, i * 2 + 2).toInt(16).toByte() }
+        } catch (_: NumberFormatException) {
+            null
+        }
     }
 
     private fun buildConnInfo(s: IcomStream): ByteArray {
