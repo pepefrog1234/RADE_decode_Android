@@ -245,8 +245,15 @@ class RigController {
 
     suspend fun setFreq(hz: Long) = withContext(Dispatchers.IO) {
         val resp = priority { sendCommand("F $hz") }
-        if (resp != null) {
+        // "RPRT 0" = accepted; "RPRT -n" = the rig/rigctld rejected the set.
+        // Recording a rejected frequency here made the display show the new
+        // value for ~1s until the poller snapped it back — looking like the
+        // set "not working" with no clue why. Keep the last real frequency
+        // and log the reason instead.
+        if (resp != null && !resp.trim().startsWith("RPRT -")) {
             _state.value = _state.value.copy(freqHz = hz)
+        } else if (resp != null) {
+            Log.w(TAG, "set_freq $hz rejected: ${resp.trim()}")
         }
     }
 

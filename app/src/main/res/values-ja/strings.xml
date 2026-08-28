@@ -55,6 +55,8 @@
     <string name="settings_reporter_message_placeholder">例：PM95 から移動運用、IC-7300 + ダイポール</string>
     <string name="settings_reporter_message_send">更新</string>
     <string name="settings_reporter_message_help">qso.freedv.org の自局の隣に表示される自由記述。最大 80 文字。再起動後も保持され、再接続のたびに自動で再送されます。「更新」を押すと現在の文字列を即時送信します。</string>
+    <string name="settings_reporter_use_gps">GPS</string>
+    <string name="settings_reporter_grid_help">グリッドロケーター（例: PM95）。qso.freedv.org では必須項目のため、空欄の場合は UN00KN（位置不明）として報告します。GPS ボタンで現在地から自動入力できます。</string>
     <string name="stations_no_stations">現在オンラインの局はありません</string>
     <string name="stations_enable_reporter">設定でレポーターを有効にしてください</string>
     <string name="stations_connect_hint">qso.freedv.org に接続してオンライン局を表示</string>
@@ -207,6 +209,7 @@
     <string name="rig_not_connected">未接続</string>
     <string name="header_frequency">周波数</string>
     <string name="rig_freq_khz">周波数（kHz）</string>
+    <string name="rig_freq_manual_hint">リグ未接続時: 設定した値は手動周波数として保持され、FreeDV Reporter に報告されます。</string>
     <string name="btn_set">設定</string>
     <string name="header_mode">モード</string>
     <string name="rig_no_mode">---</string>

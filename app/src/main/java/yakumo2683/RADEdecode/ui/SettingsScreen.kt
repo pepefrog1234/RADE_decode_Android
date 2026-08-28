@@ -1,5 +1,7 @@
 package yakumo2683.RADEdecode.ui
 
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
@@ -380,9 +382,12 @@ fun SettingsScreen(viewModel: TransceiverViewModel = viewModel()) {
                 OutlinedTextField(
                     value = callsignInput,
                     onValueChange = {
-                        val upper = it.uppercase().take(8)
-                        callsignInput = upper
-                        viewModel.setTxCallsign(upper)
+                        // Full-width → ASCII, uppercase, A–Z 0–9 / only: a space
+                        // or full-width letter here makes qso.freedv.org refuse
+                        // the whole reporter connection.
+                        val sanitized = TransceiverViewModel.sanitizeCallsign(it)
+                        callsignInput = sanitized
+                        viewModel.setTxCallsign(sanitized)
                     },
                     label = { Text(stringResource(R.string.settings_callsign_label)) },
                     singleLine = true,
@@ -563,33 +568,65 @@ fun SettingsScreen(viewModel: TransceiverViewModel = viewModel()) {
 
                 Spacer(Modifier.height(8.dp))
 
-                OutlinedTextField(
-                    value = gridInput,
-                    onValueChange = {
-                        val upper = it.uppercase().take(6)
-                        gridInput = upper
-                        viewModel.setReporterGrid(upper)
-                    },
-                    label = { Text("Grid Square") },
-                    singleLine = true,
-                    modifier = Modifier.fillMaxWidth(),
-                    textStyle = androidx.compose.ui.text.TextStyle(
-                        fontFamily = FontFamily.Monospace,
-                        fontSize = 16.sp,
-                        fontWeight = FontWeight.Bold
-                    ),
-                    colors = OutlinedTextFieldDefaults.colors(
-                        focusedBorderColor = Cyan400,
-                        focusedLabelColor = Cyan400,
-                        cursorColor = Cyan400
-                    )
-                )
+                val locationPermissionLauncher = rememberLauncherForActivityResult(
+                    ActivityResultContracts.RequestMultiplePermissions()
+                ) {
+                    // Granted (either accuracy) → start grid tracking now.
+                    viewModel.locationTracker.startTracking()
+                }
 
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    OutlinedTextField(
+                        value = gridInput,
+                        onValueChange = {
+                            val sanitized = TransceiverViewModel.sanitizeGridSquare(it)
+                            gridInput = sanitized
+                            viewModel.setReporterGrid(sanitized)
+                        },
+                        label = { Text("Grid Square") },
+                        singleLine = true,
+                        modifier = Modifier.weight(1f),
+                        textStyle = androidx.compose.ui.text.TextStyle(
+                            fontFamily = FontFamily.Monospace,
+                            fontSize = 16.sp,
+                            fontWeight = FontWeight.Bold
+                        ),
+                        colors = OutlinedTextFieldDefaults.colors(
+                            focusedBorderColor = Cyan400,
+                            focusedLabelColor = Cyan400,
+                            cursorColor = Cyan400
+                        )
+                    )
+                    OutlinedButton(
+                        onClick = {
+                            if (viewModel.locationTracker.state.value.isTracking) return@OutlinedButton
+                            locationPermissionLauncher.launch(
+                                arrayOf(
+                                    android.Manifest.permission.ACCESS_FINE_LOCATION,
+                                    android.Manifest.permission.ACCESS_COARSE_LOCATION
+                                )
+                            )
+                        },
+                        shape = RoundedCornerShape(10.dp)
+                    ) {
+                        Text(stringResource(R.string.settings_reporter_use_gps), fontSize = 12.sp)
+                    }
+                }
+
+                Spacer(Modifier.height(4.dp))
                 if (locationGrid.gridSquare.isNotEmpty()) {
-                    Spacer(Modifier.height(4.dp))
                     Text(
                         "GPS: ${locationGrid.gridSquare}",
                         fontSize = 11.sp, color = Cyan400
+                    )
+                } else {
+                    Text(
+                        stringResource(R.string.settings_reporter_grid_help),
+                        fontSize = 11.sp, color = OnSurfaceDim, lineHeight = 16.sp
                     )
                 }
 

@@ -35,6 +35,39 @@ private const val TX_PTT_TAIL_MS = 200L
 
 class TransceiverViewModel(application: Application) : AndroidViewModel(application) {
 
+    companion object {
+        /** Map full-width characters (Japanese IME input) onto their ASCII
+         *  equivalents; other characters pass through unchanged. */
+        private fun toAscii(c: Char): Char = when (c) {
+            in '！'..'～' -> c - 0xFEE0   // full-width ASCII block
+            '　' -> ' '                        // ideographic space
+            else -> c
+        }
+
+        /**
+         * Normalize a callsign for EOO TX and FreeDV Reporter: full-width →
+         * ASCII, uppercase, and only characters a callsign can contain
+         * (A–Z, 0–9, '/'). qso.freedv.org refuses the whole connection when
+         * the callsign contains a space or full-width letter, and the station
+         * then never appears on the site.
+         */
+        fun sanitizeCallsign(raw: String): String =
+            raw.map { toAscii(it) }
+                .joinToString("")
+                .uppercase()
+                .filter { it in 'A'..'Z' || it in '0'..'9' || it == '/' }
+                .take(8)
+
+        /** Normalize a Maidenhead grid square: full-width → ASCII, uppercase,
+         *  letters/digits only (e.g. "PM95UR"). */
+        fun sanitizeGridSquare(raw: String): String =
+            raw.map { toAscii(it) }
+                .joinToString("")
+                .uppercase()
+                .filter { it in 'A'..'Z' || it in '0'..'9' }
+                .take(6)
+    }
+
     /* ── FreeDV Reporter ────────────────────────────────────── */
     val reporter = FreeDVReporter(viewModelScope)
     val locationTracker = LocationTracker(application)
@@ -156,6 +189,15 @@ class TransceiverViewModel(application: Application) : AndroidViewModel(applicat
     private val _reporterEnabledPref = MutableStateFlow(false)
     val reporterEnabledPref: StateFlow<Boolean> = _reporterEnabledPref.asStateFlow()
 
+    /**
+     * Manually entered dial frequency (Hz), used when no rig is connected —
+     * shown on the Rig tab and reported to FreeDV Reporter, mirroring
+     * freedv-gui's frequency box which works without any CAT control.
+     * A connected rig (rigctld / HL2) always takes priority over this.
+     */
+    private val _manualFreqHz = MutableStateFlow(0L)
+    val manualFreqHz: StateFlow<Long> = _manualFreqHz.asStateFlow()
+
     /** Result of the last RX-output route test (1 kHz tone), shown in Settings. */
     private val _rxRouteTest = MutableStateFlow<String?>(null)
     val rxRouteTest: StateFlow<String?> = _rxRouteTest.asStateFlow()
@@ -177,11 +219,17 @@ class TransceiverViewModel(application: Application) : AndroidViewModel(applicat
             prefs.getString("icom_stale_token", "")?.takeIf { it.isNotEmpty() }
         }
 
-        // Restore persisted callsign
-        val savedCallsign = prefs.getString("tx_callsign", "") ?: ""
+        // Restore persisted callsign. Sanitize on load too: a full-width or
+        // space-padded callsign saved by an older build would silently keep
+        // the station off qso.freedv.org (server-side regex refusal).
+        val savedCallsign = sanitizeCallsign(prefs.getString("tx_callsign", "") ?: "")
         if (savedCallsign.isNotEmpty()) {
             _uiState.value = _uiState.value.copy(txCallsign = savedCallsign)
         }
+
+        // Start GPS grid updates when location permission is already granted
+        // (no-op otherwise). Settings offers a button to request permission.
+        locationTracker.startTracking()
 
         // Reporter toggle defaults to ON so the app auto-connects to qso.freedv.org
         // on launch; users can still opt out in Settings.
@@ -200,6 +248,9 @@ class TransceiverViewModel(application: Application) : AndroidViewModel(applicat
                 AudioService.RX_OUTPUT_AUTO
             )
         )
+        // Restore the manual dial frequency (used when no rig is connected).
+        _manualFreqHz.value = prefs.getLong("manual_freq_hz", 0L)
+
         // Load the persistent status message; reporter holds it and re-emits
         // on every (re)connect, so we just need to give it the saved value.
         reporter.updateMessage(prefs.getString("reporter_message", "") ?: "")
@@ -260,27 +311,21 @@ class TransceiverViewModel(application: Application) : AndroidViewModel(applicat
                 .distinctUntilChanged()
                 .collect { active ->
                     if (active && reporter.connected.value) {
-                        val freq = when {
-                            rigController.isConnected -> rigController.state.value.freqHz
-                            hermesNetwork.isConnected -> hermesNetwork.state.value.freqHz
-                            else -> 0L
-                        }
+                        val freq = currentReportFreqHz()
                         if (freq > 0) reporter.reportFreqChange(freq)
                     }
                 }
         }
 
-        // When the reporter transitions to connected, push current freq + TX state
+        // When the reporter transitions to connected, push current freq + TX state.
+        // The frequency is dial state, not activity — push it whenever we know
+        // it (rig or manual entry) so the Frequency column on qso.freedv.org
+        // isn't blank until the first RX/TX session.
         viewModelScope.launch {
             reporter.connected.collect { connected ->
                 if (connected) {
-                    val freq = when {
-                        rigController.isConnected -> rigController.state.value.freqHz
-                        hermesNetwork.isConnected -> hermesNetwork.state.value.freqHz
-                        else -> 0L
-                    }
-                    val engineActive = _uiState.value.isRunning || _uiState.value.isTx
-                    if (engineActive && freq > 0) {
+                    val freq = currentReportFreqHz()
+                    if (freq > 0) {
                         reporter.reportFreqChange(freq)
                     }
                     if (_uiState.value.isTx) reporter.reportTx(true)
@@ -308,8 +353,15 @@ class TransceiverViewModel(application: Application) : AndroidViewModel(applicat
     /** GPS grid takes priority, fall back to manual pref. */
     private fun currentGrid(): String {
         val locGrid = locationTracker.state.value.gridSquare
-        if (locGrid.isNotEmpty()) return locGrid
-        return prefs.getString("reporter_grid", "") ?: ""
+        if (locGrid.isNotEmpty()) return sanitizeGridSquare(locGrid)
+        return sanitizeGridSquare(prefs.getString("reporter_grid", "") ?: "")
+    }
+
+    /** Dial frequency to report: a connected rig wins, else the manual entry. */
+    private fun currentReportFreqHz(): Long = when {
+        rigController.isConnected -> rigController.state.value.freqHz
+        hermesNetwork.isConnected -> hermesNetwork.state.value.freqHz
+        else -> _manualFreqHz.value
     }
 
     /**
@@ -369,8 +421,9 @@ class TransceiverViewModel(application: Application) : AndroidViewModel(applicat
     /* ── TX ─────────────────────────────────────────────────── */
 
     fun setTxCallsign(callsign: String) {
-        _uiState.value = _uiState.value.copy(txCallsign = callsign)
-        prefs.edit().putString("tx_callsign", callsign).apply()
+        val sanitized = sanitizeCallsign(callsign)
+        _uiState.value = _uiState.value.copy(txCallsign = sanitized)
+        prefs.edit().putString("tx_callsign", sanitized).apply()
         syncReporterState()
     }
 
@@ -463,7 +516,7 @@ class TransceiverViewModel(application: Application) : AndroidViewModel(applicat
     }
 
     fun setReporterGrid(grid: String) {
-        prefs.edit().putString("reporter_grid", grid).apply()
+        prefs.edit().putString("reporter_grid", sanitizeGridSquare(grid)).apply()
         syncReporterState()
     }
 
@@ -1256,6 +1309,14 @@ class TransceiverViewModel(application: Application) : AndroidViewModel(applicat
             // implicit in the app's own demodulator (USB passband).
             hermesNetwork.setFrequency(hz)
             prefs.edit().putLong("hl2_freq", hz).apply()
+            return
+        }
+        if (!rigController.isConnected) {
+            // No CAT at all: keep the value as the manual dial frequency and
+            // report it to FreeDV Reporter, like freedv-gui's frequency box.
+            prefs.edit().putLong("manual_freq_hz", hz).apply()
+            _manualFreqHz.value = hz
+            if (reporter.connected.value) reporter.reportFreqChange(hz)
             return
         }
         viewModelScope.launch {

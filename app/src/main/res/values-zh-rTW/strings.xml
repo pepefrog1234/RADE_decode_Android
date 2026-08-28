@@ -55,6 +55,8 @@
     <string name="settings_reporter_message_placeholder">例如：行動中於 PL04，IC-7300 + 偶極</string>
     <string name="settings_reporter_message_send">更新</string>
     <string name="settings_reporter_message_help">會顯示在 qso.freedv.org 您的電台旁邊的自由文字。最多 80 字元。重啟後仍保留，並在每次重新連線時自動重送一次；按「更新」會立刻把目前文字推到伺服器。</string>
+    <string name="settings_reporter_use_gps">GPS</string>
+    <string name="settings_reporter_grid_help">梅登黑德網格（例如 PM95）。qso.freedv.org 要求必填——留空時應用程式會以 UN00KN（位置未知）回報。點 GPS 按鈕可從目前位置自動填入。</string>
     <string name="stations_no_stations">目前沒有電台在線</string>
     <string name="stations_enable_reporter">請在設定中啟用回報器</string>
     <string name="stations_connect_hint">連線至 qso.freedv.org 以檢視在線電台</string>
@@ -206,6 +208,7 @@
     <string name="rig_not_connected">未連線</string>
     <string name="header_frequency">頻率</string>
     <string name="rig_freq_khz">頻率（kHz）</string>
+    <string name="rig_freq_manual_hint">未連線電台時：按「設定」會把該值保存為手動頻率，並回報給 FreeDV Reporter。</string>
     <string name="btn_set">設定</string>
     <string name="header_mode">模式</string>
     <string name="rig_no_mode">---</string>

@@ -56,6 +56,8 @@
     <string name="settings_reporter_message_placeholder">e.g. portable from JO31, IC-7300 + dipole</string>
     <string name="settings_reporter_message_send">Update</string>
     <string name="settings_reporter_message_help">Free-text shown next to your station on qso.freedv.org. Up to 80 characters. Remembered across restarts and re-pushed automatically after every reconnect; press Update to push the current text now.</string>
+    <string name="settings_reporter_use_gps">GPS</string>
+    <string name="settings_reporter_grid_help">Maidenhead locator (e.g. PM95). Required by qso.freedv.org — when empty, the app reports UN00KN (unknown location). Tap GPS to fill it from your position automatically.</string>
     <string name="stations_no_stations">No stations online</string>
     <string name="stations_enable_reporter">Enable Reporter in Settings</string>
     <string name="stations_connect_hint">Connect to qso.freedv.org to see active stations</string>
@@ -208,6 +210,7 @@
     <string name="rig_not_connected">Not connected</string>
     <string name="header_frequency">FREQUENCY</string>
     <string name="rig_freq_khz">Freq (kHz)</string>
+    <string name="rig_freq_manual_hint">No rig connected: Set keeps this as your manual frequency and reports it to FreeDV Reporter.</string>
     <string name="btn_set">SET</string>
     <string name="header_mode">MODE</string>
     <string name="rig_no_mode">---</string>

@@ -34,6 +34,7 @@ class LocationTracker(private val context: Context) {
     private var locationCallback: LocationCallback? = null
 
     fun startTracking() {
+        if (_state.value.isTracking) return
         if (!hasLocationPermission()) {
             _state.value = _state.value.copy(hasPermission = false)
             return
@@ -107,6 +108,12 @@ class LocationTracker(private val context: Context) {
         fun fromMaidenhead(grid: String): Pair<Double, Double>? {
             val g = grid.uppercase()
             if (g.length < 2) return null
+            // Validate the field/square ranges: placeholder locators such as
+            // "UN00KN" (ezDV / this app's "unknown" fallback, field U > R)
+            // must not be plotted at a bogus map position.
+            if (g[0] !in 'A'..'R' || g[1] !in 'A'..'R') return null
+            if (g.length >= 4 && (!g[2].isDigit() || !g[3].isDigit())) return null
+            if (g.length >= 6 && (g[4] !in 'A'..'X' || g[5] !in 'A'..'X')) return null
 
             var lon = (g[0] - 'A') * 20.0 - 180.0
             var lat = (g[1] - 'A') * 10.0 - 90.0

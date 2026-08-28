@@ -38,6 +38,16 @@ class FreeDVReporter(private val scope: CoroutineScope) {
         private const val SIO_CONNECT = '0'
         private const val SIO_DISCONNECT = '1'
         private const val SIO_EVENT = '2'
+        private const val SIO_CONNECT_ERROR = '4'
+
+        /**
+         * Grid square reported when the user hasn't set one. qso.freedv.org
+         * REFUSES the whole connection when grid_square is empty (the station
+         * then never appears on the site), so send the "unknown locator"
+         * placeholder that ezDV — written by the reporter server's author —
+         * uses as its default.
+         */
+        const val FALLBACK_GRID_SQUARE = "UN00KN"
     }
 
     data class ReporterStation(
@@ -260,8 +270,16 @@ class FreeDVReporter(private val scope: CoroutineScope) {
             EIO_PONG -> { /* server pong, ignore */ }
             EIO_MESSAGE -> handleSioPacket(raw.substring(1))
             EIO_CLOSE -> {
+                // Server-initiated Engine.IO close (restart/maintenance).
+                // disconnect() would cancel the reconnect job and leave the
+                // app idle forever — close the socket but keep retrying.
                 Log.i(TAG, "Server closed connection")
-                disconnect()
+                _connected.value = false
+                _connecting.value = false
+                webSocket?.close(1000, "Server close")
+                webSocket = null
+                connectionId = null
+                scheduleReconnect()
             }
         }
     }
@@ -279,7 +297,10 @@ class FreeDVReporter(private val scope: CoroutineScope) {
                 if (config.callsign.isNotEmpty()) {
                     put("role", "report")
                     put("callsign", config.callsign)
-                    put("grid_square", config.gridSquare)
+                    // Empty grid_square = server-side ConnectionRefusedError, so
+                    // fall back to the "unknown" locator instead of never showing
+                    // up on qso.freedv.org.
+                    put("grid_square", config.gridSquare.ifEmpty { FALLBACK_GRID_SQUARE })
                     // Real app version (e.g. "RADE_Android/1.6.5") — was hardcoded
                     // "1.0". The suffix after '-' is a build nickname, not part of
                     // the version number shown on qso.freedv.org.
@@ -308,34 +329,63 @@ class FreeDVReporter(private val scope: CoroutineScope) {
 
         when (data[0]) {
             SIO_CONNECT -> {
-                // Connection successful
+                // Connection successful. NOTE: the server runs with
+                // always_connect=True, so this ack arrives even for a
+                // connection it is about to refuse — the refusal follows as a
+                // SIO_DISCONNECT carrying the reason. Don't reset the
+                // reconnect backoff here; scheduleReconnect() resets it only
+                // after the connection has actually survived for a while.
                 try {
                     val obj = JSONObject(data.substring(1))
                     connectionId = obj.optString("sid", null)
-                    _connected.value = true
-                    _connecting.value = false
-                    _lastError.value = ""
-                    resetReconnectDelay()
                     Log.i(TAG, "Socket.IO connected, sid=$connectionId")
-                } catch (_: Exception) {
-                    _connected.value = true
-                    _connecting.value = false
-                    _lastError.value = ""
-                    resetReconnectDelay()
-                }
+                } catch (_: Exception) { }
+                lastConnectAckMs = System.currentTimeMillis()
+                _connected.value = true
+                _connecting.value = false
+                _lastError.value = ""
                 // Re-push our persistent status message after every (re)connect,
                 // mirroring official freedv-gui's connection_successful handler.
                 if (message.isNotEmpty()) emitMessageUpdate()
             }
             SIO_DISCONNECT -> {
-                Log.w(TAG, "Server disconnected us: ${data.substring(1)}")
+                // Payload (if any) is the refusal reason, e.g.
+                // {"message": "callsign, version and grid_square are required"}
+                // — surface it instead of going silently idle forever.
+                val reason = parseSioErrorMessage(data.substring(1))
+                Log.w(TAG, "Server disconnected us: $reason")
+                _lastError.value = if (reason.isEmpty()) "Server disconnect" else reason
                 _connected.value = false
                 _connecting.value = false
                 webSocket?.close(1000, "Server disconnect")
                 webSocket = null
                 connectionId = null
+                scheduleReconnect()
+            }
+            SIO_CONNECT_ERROR -> {
+                // Socket.IO CONNECT_ERROR (sent instead of the ack when the
+                // server refuses without always_connect semantics).
+                val reason = parseSioErrorMessage(data.substring(1))
+                Log.e(TAG, "Socket.IO connect refused: $reason")
+                _lastError.value = if (reason.isEmpty()) "Connection refused" else reason
+                _connected.value = false
+                _connecting.value = false
+                webSocket?.close(1000, "Connect refused")
+                webSocket = null
+                connectionId = null
+                scheduleReconnect()
             }
             SIO_EVENT -> handleSioEvent(data.substring(1))
+        }
+    }
+
+    /** Extract "message" from a Socket.IO error payload; falls back to the raw text. */
+    private fun parseSioErrorMessage(payload: String): String {
+        if (payload.isEmpty()) return ""
+        return try {
+            JSONObject(payload).optString("message", payload)
+        } catch (_: Exception) {
+            payload
         }
     }
 
@@ -609,8 +659,20 @@ class FreeDVReporter(private val scope: CoroutineScope) {
 
     private var reconnectDelay = 5000L
 
+    /** When the last Socket.IO CONNECT ack arrived. Backoff bookkeeping only. */
+    @Volatile private var lastConnectAckMs = 0L
+
     private fun scheduleReconnect() {
         reconnectJob?.cancel()
+        // A connection that survived a while gets a fresh fast retry; rapid
+        // accept-then-refuse cycles (always_connect ack followed by a refusal
+        // disconnect, e.g. invalid auth) keep growing the delay so we don't
+        // hammer qso.freedv.org every few seconds.
+        if (lastConnectAckMs > 0 &&
+            System.currentTimeMillis() - lastConnectAckMs > 60_000
+        ) {
+            resetReconnectDelay()
+        }
         reconnectJob = scope.launch {
             delay(reconnectDelay)
             reconnectDelay = (reconnectDelay * 2).coerceAtMost(300_000) // max 5 min

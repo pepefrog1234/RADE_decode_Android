@@ -309,10 +309,19 @@ fun RigScreen(viewModel: TransceiverViewModel = viewModel()) {
     var mfgExpanded by remember { mutableStateOf(false) }
 
     val anyRigConnected = rigState.connected || hl2State.connected || vbanState.connected
+    val manualFreq by viewModel.manualFreqHz.collectAsState()
+
+    // Dial frequency to show: a connected rig wins, else the manual entry
+    // (kept and reported to FreeDV Reporter when no CAT is available).
+    val displayFreqHz = when {
+        hl2State.connected -> hl2State.freqHz
+        rigState.connected -> rigState.freqHz
+        else -> manualFreq
+    }
 
     // Sync freq display when rig updates (show as kHz)
-    LaunchedEffect(rigState.freqHz, hl2State.freqHz, hl2State.connected) {
-        val hz = if (hl2State.connected) hl2State.freqHz else rigState.freqHz
+    LaunchedEffect(displayFreqHz) {
+        val hz = displayFreqHz
         if (hz > 0) {
             val khz = hz / 1000.0
             freqInput = if (khz == khz.toLong().toDouble()) khz.toLong().toString()
@@ -1221,7 +1230,7 @@ fun RigScreen(viewModel: TransceiverViewModel = viewModel()) {
             ) {
                 // Frequency display
                 Text(
-                    text = formatFreq(if (hl2State.connected) hl2State.freqHz else rigState.freqHz),
+                    text = formatFreq(displayFreqHz),
                     fontSize = 36.sp,
                     fontWeight = FontWeight.Bold,
                     fontFamily = FontFamily.Monospace,
@@ -1244,7 +1253,6 @@ fun RigScreen(viewModel: TransceiverViewModel = viewModel()) {
                         onValueChange = { freqInput = it.filter { c -> c.isDigit() || c == '.' } },
                         label = { Text(stringResource(R.string.rig_freq_khz)) },
                         singleLine = true,
-                        enabled = anyRigConnected,
                         modifier = Modifier.weight(1f),
                         keyboardOptions = KeyboardOptions(
                             keyboardType = KeyboardType.Number,
@@ -1270,12 +1278,24 @@ fun RigScreen(viewModel: TransceiverViewModel = viewModel()) {
                             freqInput.toDoubleOrNull()?.let { viewModel.rigSetFreq((it * 1000).toLong()) }
                             focusManager.clearFocus()
                         },
-                        enabled = anyRigConnected,
                         shape = RoundedCornerShape(10.dp),
                         colors = ButtonDefaults.buttonColors(containerColor = Cyan600)
                     ) {
                         Text(stringResource(R.string.btn_set), fontWeight = FontWeight.Bold)
                     }
+                }
+
+                // Without a rig, Set keeps the value as the manual dial
+                // frequency and reports it to FreeDV Reporter.
+                if (!anyRigConnected) {
+                    Spacer(Modifier.height(6.dp))
+                    Text(
+                        stringResource(R.string.rig_freq_manual_hint),
+                        color = OnSurfaceDim,
+                        fontSize = 11.sp,
+                        lineHeight = 15.sp,
+                        modifier = Modifier.fillMaxWidth()
+                    )
                 }
             }
         }

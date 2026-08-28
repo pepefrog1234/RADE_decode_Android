@@ -11,8 +11,8 @@ android {
         applicationId = "yakumo2683.RADEdecode"
         minSdk = 26
         targetSdk = 35
-        versionCode = 10609
-        versionName = "1.6.9-icom-token-persist"
+        versionCode = 10610
+        versionName = "1.6.10-reporter-grid-manualfreq"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 
