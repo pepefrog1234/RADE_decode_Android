@@ -145,6 +145,11 @@ class TransceiverViewModel(application: Application) : AndroidViewModel(applicat
      *  stuck in TX. */
     private var pttKeyedByApp = false
 
+    /** In-flight key-ON retry (doSwitchToTx). stopTxAndUnkeyPtt cancels and
+     *  joins it before unkeying, so a late key-on retry can never land after
+     *  the unkey and leave the rig stuck in TX. */
+    private var pttKeyJob: Job? = null
+
     /** True while the app has keyed the rig by asserting the serial RTS line
      *  (CAT-less interfaces, Rig tab "RTS PTT" option). */
     private var rtsPttKeyed = false
@@ -580,7 +585,26 @@ class TransceiverViewModel(application: Application) : AndroidViewModel(applicat
         // Auto-PTT via rigctld (both paths)
         if (rigController.isConnected) {
             pttKeyedByApp = true
-            viewModelScope.launch { rigController.setPtt(true) }
+            // Key-on with a bounded retry, mirroring the unkey loop in
+            // stopTxAndUnkeyPtt: over a lossy LTE/VPN Icom link a single "T 1"
+            // (or its ack) can be lost, and the app then transmits audio while
+            // the rig never keyed — reported as "switching to TX sometimes does
+            // nothing". Each retry re-checks that the over is still wanted.
+            pttKeyJob?.cancel()
+            pttKeyJob = viewModelScope.launch {
+                for (attempt in 1..3) {
+                    try {
+                        if (rigController.setPtt(true)) return@launch
+                    } catch (e: Exception) {
+                        Log.w("TransceiverVM", "PTT key attempt $attempt failed", e)
+                    }
+                    if (!pttKeyedByApp) return@launch
+                    Log.w("TransceiverVM", "PTT key not acknowledged (attempt $attempt); retrying")
+                    delay(250L * attempt)
+                    if (!pttKeyedByApp) return@launch
+                }
+                Log.e("TransceiverVM", "PTT key FAILED after retries — rig may still be in RX")
+            }
         } else if (hermesNetwork.isConnected) {
             // HL2 direct: the MOX bit rides the protocol-1 C&C stream.
             pttKeyedByApp = true
@@ -723,6 +747,11 @@ class TransceiverViewModel(application: Application) : AndroidViewModel(applicat
         // on an IC-7300mk2 over WLAN). A single "T 0" can also be lost to a
         // socket timeout, so retry with backoff until rigctld acknowledges.
         if (pttKeyedByApp) {
+            // Stop any in-flight key-ON retry FIRST (cancel + join): a retry
+            // that fired after the unkey would re-key the rig and leave it
+            // stuck in TX.
+            pttKeyJob?.let { it.cancel(); it.join() }
+            pttKeyJob = null
             delay(TX_PTT_TAIL_MS)
             if (hermesNetwork.isConnected && !rigController.isConnected) {
                 // HL2 direct: MOX=0 rides every subsequent C&C frame — no ack

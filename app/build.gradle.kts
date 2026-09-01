@@ -11,8 +11,8 @@ android {
         applicationId = "yakumo2683.RADEdecode"
         minSdk = 26
         targetSdk = 35
-        versionCode = 10611
-        versionName = "1.6.11-icom-login-unwedge"
+        versionCode = 10612
+        versionName = "1.6.12-ptt-robustness"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 

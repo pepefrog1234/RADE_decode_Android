@@ -611,8 +611,24 @@ class IcomNetworkManager : NetworkAudioRig {
                     val v = b.toInt() and 0xFF
                     // CI-V frames end in 0xFD (0xFC for some); also cap at 80 bytes.
                     if (v == 0xFD || v == 0xFC || frame.size >= 80) {
-                        ser.sendTracked(buildSerialData(ser, frame.toByteArray()))
+                        val civ = frame.toByteArray()
+                        val pkt = buildSerialData(ser, civ)
+                        ser.sendTracked(pkt)   // fills the tracking seq into pkt
                         serialInnerSeq = (serialInnerSeq + 1) and 0xFFFF
+                        if (isCivPtt(civ)) {
+                            // PTT gets wire-level redundancy for lossy LTE/VPN
+                            // uplinks: re-send the SAME tracked packet (identical
+                            // bytes and seq — the transport's own resend idiom,
+                            // deduplicated by the radio) on a small stagger, so a
+                            // burst of loss cannot swallow the key/unkey. Without
+                            // this a lost PTT waits on gap-detection or a full
+                            // rigctld timeout+retry round — the reported
+                            // "TX/RX switch sometimes does nothing" on weak LTE.
+                            ser.scope.launch {
+                                delay(25); ser.sendRaw(pkt)
+                                delay(35); ser.sendRaw(pkt)
+                            }
+                        }
                         frame.clear()
                     }
                 }
@@ -724,6 +740,14 @@ class IcomNetworkManager : NetworkAudioRig {
         System.arraycopy(civ, 0, p, 21, l)
         return p
     }
+
+    /** CI-V PTT frame (set or query)? `FE FE <to> <from> 1C 00 …` — command
+     *  0x1C subcommand 0x00. Both directions are idempotent, so duplicating
+     *  them on the wire is safe. */
+    private fun isCivPtt(civ: ByteArray): Boolean =
+        civ.size >= 6 &&
+        civ[0] == 0xFE.toByte() && civ[1] == 0xFE.toByte() &&
+        civ[4] == 0x1C.toByte() && civ[5] == 0x00.toByte()
 
     private fun parseCString(r: ByteArray, off: Int): String {
         var end = off
