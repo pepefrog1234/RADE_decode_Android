@@ -151,6 +151,16 @@ public:
      *  on the air; on V2 the EOO frame carries no callsign payload. */
     void setRadeV2Enabled(bool v) { radeV2_.store(v); }
     bool isRadeV2Enabled() const { return radeV2_.load(); }
+
+    /** Analog SSB monitor (freedv-gui's "Analog"): route the raw 8 kHz channel
+     *  audio to the speaker instead of the decoded speech, so the operator can
+     *  hear whether the frequency is occupied by an analog QSO — essential
+     *  when operating remotely (Icom Wi-Fi/LTE) where the rig's own speaker
+     *  cannot be heard. The modem keeps running (SYNC indicator stays live);
+     *  only the playback source switches. Works for both the USB and the
+     *  network RX paths (they share feedModem's 8 kHz funnel). */
+    void setAnalogMonitor(bool on);
+    bool isAnalogMonitor() const { return analogMonitor_.load(); }
     /**
      * Session id of the currently open input stream, or -1 if no stream is open.
      * Exposed so Kotlin can attach AcousticEchoCanceler / NoiseSuppressor /
@@ -220,6 +230,11 @@ private:
     std::atomic<float> freqOffset_{0.0f};
     std::atomic<bool> unprocessedRejected_{false};
     std::atomic<bool> radeV2_{false};
+    /* Analog SSB monitor: when set, feedModem routes the 8 kHz channel audio
+     * to playbackRing_ (×2 linear interpolation to 16 kHz) and synthesizeSpeech
+     * skips its ring write so decoded speech and raw audio never interleave. */
+    std::atomic<bool> analogMonitor_{false};
+    int16_t analogPrevSample_ = 0;
     int inputSessionId_ = -1;
 
     std::string lastCallsign_;

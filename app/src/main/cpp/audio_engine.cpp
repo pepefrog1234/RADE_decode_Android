@@ -581,7 +581,42 @@ void AudioEngine::processInputFrames(const float *data, int32_t numFrames, int32
     }
 }
 
+void AudioEngine::setAnalogMonitor(bool on) {
+    bool was = analogMonitor_.exchange(on);
+    if (was != on) {
+        analogPrevSample_ = 0;
+        LOGI("Analog SSB monitor %s", on ? "ON" : "OFF");
+    }
+}
+
 void AudioEngine::feedModem(const int16_t *samples8k, int count) {
+    if (analogMonitor_.load()) {
+        // Analog SSB monitor: the decimated 8 kHz channel audio goes straight
+        // to the 16 kHz playback ring (×2 linear interpolation — plenty for a
+        // "is the frequency in use?" check on <3 kHz SSB speech). The modem
+        // below keeps running so the SYNC indicator stays live; its decoded
+        // speech skips the ring while monitoring (see synthesizeSpeech).
+        // The network path applies inputGain_ × NET_RX_ATTEN to tune the
+        // radio's near-full-scale audio for the MODEM — undo the whole thing
+        // here so the monitor plays at the radio's native level (the user's
+        // output-volume slider still applies in renderOutput). The USB path
+        // plays what the modem hears (its level is user-calibrated already).
+        // Floor the divisor so a zeroed input-gain slider yields silence, not
+        // a NaN → garbage cast.
+        float makeup = 1.0f;
+        if (netRxRunning_.load()) {
+            makeup = 1.0f / std::max(inputGain_.load() * NET_RX_ATTEN, 0.05f);
+        }
+        for (int i = 0; i < count; i++) {
+            float cur = (float)samples8k[i] * makeup;
+            float prev = (float)analogPrevSample_ * makeup;
+            int16_t up[2];
+            up[0] = (int16_t)std::clamp((prev + cur) * 0.5f, -32767.0f, 32767.0f);
+            up[1] = (int16_t)std::clamp(cur, -32767.0f, 32767.0f);
+            playbackRing_.write(up, 2);
+            analogPrevSample_ = samples8k[i];
+        }
+    }
     for (int i = 0; i < count; i++) {
         if (modemInputPos_ < (int)modemInputBuf_.size()) {
             modemInputBuf_[modemInputPos_++] = samples8k[i];
@@ -686,7 +721,10 @@ void AudioEngine::synthesizeSpeech(const float *features, int nTotalFeatures) {
         // Normal synthesis: one frame → 160 samples @ 16kHz
         int16_t pcm[FARGAN_FRAME_SIZE];
         fargan_synthesize_int(fargan_, pcm, frameFeatures);
-        playbackRing_.write(pcm, FARGAN_FRAME_SIZE);
+        // While the analog monitor owns the playback ring, decoded speech is
+        // muted (mixed interleaved writes would garble both); WAV recording
+        // below still captures the decoded speech.
+        if (!analogMonitor_.load()) playbackRing_.write(pcm, FARGAN_FRAME_SIZE);
 
         // Write to WAV if recording
         {

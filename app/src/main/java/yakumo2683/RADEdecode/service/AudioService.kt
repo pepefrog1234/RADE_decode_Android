@@ -321,6 +321,13 @@ class AudioService : LifecycleService() {
         audioBridge?.setOutputVolume(volume)
     }
 
+    /** Analog SSB monitor: play the raw channel audio instead of decoded
+     *  speech (RX only) — lets a remote operator check whether the frequency
+     *  is occupied by an analog QSO before keying up. */
+    fun setAnalogMonitor(enabled: Boolean) {
+        audioBridge?.setAnalogMonitor(enabled)
+    }
+
     fun setRxOutputDevice(deviceId: Int) {
         val bridge = audioBridge ?: return
         if (!_state.value.isRunning || _state.value.isTx) return

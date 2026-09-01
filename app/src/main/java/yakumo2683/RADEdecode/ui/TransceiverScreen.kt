@@ -16,6 +16,7 @@ import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.FiberManualRecord
+import androidx.compose.material.icons.filled.GraphicEq
 import androidx.compose.material.icons.filled.Mic
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Stop
@@ -135,6 +136,25 @@ fun TransceiverScreen(viewModel: TransceiverViewModel = viewModel()) {
         }
 
         Spacer(Modifier.weight(1f))
+
+        // ── Analog SSB monitor (RX only): hear the raw channel audio to check
+        //    whether the frequency is occupied before keying up ──
+        if (state.isRunning && !state.isTx) {
+            AnalogMonitorButton(
+                active = state.analogMonitor,
+                onClick = { viewModel.toggleAnalogMonitor() }
+            )
+            if (state.analogMonitor) {
+                Text(
+                    stringResource(R.string.analog_monitor_hint),
+                    fontSize = 11.sp,
+                    color = Amber400,
+                    textAlign = TextAlign.Center,
+                    modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp)
+                )
+            }
+            Spacer(Modifier.height(2.dp))
+        }
 
         // ── TX button — only visible when engine is active ──
         if (isActive) {
@@ -535,6 +555,42 @@ fun LevelMeter(label: String, levelDb: Float, modifier: Modifier = Modifier) {
                 )
             }
         }
+    }
+}
+
+/* ── Analog SSB monitor button ───────────────────────────────── */
+
+@Composable
+private fun AnalogMonitorButton(active: Boolean, onClick: () -> Unit) {
+    val containerColor by animateColorAsState(
+        targetValue = if (active) Color(0xFF4E3A00) else MaterialTheme.colorScheme.surfaceVariant,
+        animationSpec = tween(200), label = "analogbtn"
+    )
+    Button(
+        onClick = onClick,
+        modifier = Modifier
+            .fillMaxWidth()
+            .height(42.dp),
+        shape = RoundedCornerShape(12.dp),
+        colors = ButtonDefaults.buttonColors(
+            containerColor = containerColor,
+            contentColor = if (active) Amber400 else MaterialTheme.colorScheme.onSurfaceVariant
+        )
+    ) {
+        Icon(
+            imageVector = Icons.Filled.GraphicEq,
+            contentDescription = null,
+            modifier = Modifier.size(18.dp)
+        )
+        Spacer(Modifier.width(8.dp))
+        Text(
+            text = stringResource(
+                if (active) R.string.btn_analog_monitor_on else R.string.btn_analog_monitor
+            ),
+            fontSize = 13.sp,
+            fontWeight = FontWeight.SemiBold,
+            letterSpacing = 1.sp
+        )
     }
 }
 

@@ -430,6 +430,12 @@ JNI_AUDIO(nativeSetRadeV2Enabled)(JNIEnv *env, jobject /* this */, jboolean enab
     if (g_audioEngine) g_audioEngine->setRadeV2Enabled(enabled == JNI_TRUE);
 }
 
+/** Analog SSB monitor: play the raw channel audio instead of decoded speech. */
+JNIEXPORT void JNICALL
+JNI_AUDIO(nativeSetAnalogMonitor)(JNIEnv *env, jobject /* this */, jboolean enabled) {
+    if (g_audioEngine) g_audioEngine->setAnalogMonitor(enabled == JNI_TRUE);
+}
+
 JNIEXPORT jboolean JNICALL
 JNI_AUDIO(nativeIsRxUsingJavaOutput)(JNIEnv *env, jobject /* this */) {
     if (!g_audioEngine) return JNI_FALSE;

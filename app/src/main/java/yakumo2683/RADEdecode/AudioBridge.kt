@@ -90,6 +90,12 @@ class AudioBridge private constructor(
      *  V2 the EOO frame carries no callsign payload. Set before start. */
     fun setRadeV2Enabled(enabled: Boolean) = nativeSetRadeV2Enabled(enabled)
 
+    /** Analog SSB monitor (freedv-gui's "Analog"): play the raw 8 kHz channel
+     *  audio instead of the decoded speech, so the operator can hear whether
+     *  the frequency is occupied by an analog QSO. RX only; the modem keeps
+     *  running so the sync indicator stays live. */
+    fun setAnalogMonitor(enabled: Boolean) = nativeSetAnalogMonitor(enabled)
+
     /** Route native RX playback as call audio instead of media audio. */
     fun setRxVoiceCommunicationOutputEnabled(enabled: Boolean) =
         nativeSetRxVoiceCommunicationOutputEnabled(enabled)
@@ -437,6 +443,7 @@ class AudioBridge private constructor(
     private external fun nativeSetOutputDevice(deviceId: Int)
     private external fun nativeSetRxJavaOutputEnabled(enabled: Boolean)
     private external fun nativeSetRadeV2Enabled(enabled: Boolean)
+    private external fun nativeSetAnalogMonitor(enabled: Boolean)
     private external fun nativeSetRxVoiceCommunicationOutputEnabled(enabled: Boolean)
     external fun nativeIsRxUsingJavaOutput(): Boolean
     private external fun nativeSetDevices(inputDeviceId: Int, outputDeviceId: Int)

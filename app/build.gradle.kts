@@ -12,7 +12,7 @@ android {
         minSdk = 26
         targetSdk = 35
         versionCode = 10612
-        versionName = "1.6.12-ptt-robustness"
+        versionName = "1.6.12-ptt-analog-monitor"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 

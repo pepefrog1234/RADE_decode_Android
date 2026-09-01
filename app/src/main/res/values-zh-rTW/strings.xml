@@ -24,6 +24,9 @@
     <string name="label_mic_input">麥克風輸入</string>
     <string name="btn_back_to_rx">返回接收</string>
     <string name="btn_tx">發射</string>
+    <string name="btn_analog_monitor">類比監聽</string>
+    <string name="btn_analog_monitor_on">類比監聽中</string>
+    <string name="analog_monitor_hint">正在直接播放接收音訊 — 發射前可確認頻率是否被其他 SSB 通聯佔用。\n監聽期間 RADE 解碼語音暫停（同步指示仍有效）。再次點按返回 RADE 解碼。</string>
     <string name="tx_hint_ready">對著麥克風說話，然後點擊發射。\n使用手機音量鍵調整發射音量 — ALC 應盡量不起錶。</string>
     <string name="tx_hint_active">發射中… 再次點擊發射以切回接收。\nALC 應盡量不起錶 — 如果 ALC 有偏轉，請降低手機音量。</string>
     <string name="tx_hint_hold_ready">按住發射鍵並說話，放開即返回接收。\n使用手機音量鍵調整發射音量 — ALC 應盡量不起錶。</string>

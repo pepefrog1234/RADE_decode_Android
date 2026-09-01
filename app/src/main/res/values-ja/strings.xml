@@ -24,6 +24,9 @@
     <string name="label_mic_input">マイク入力</string>
     <string name="btn_back_to_rx">受信に戻る</string>
     <string name="btn_tx">送信</string>
+    <string name="btn_analog_monitor">アナログ受信</string>
+    <string name="btn_analog_monitor_on">アナログ受信中</string>
+    <string name="analog_monitor_hint">受信音をそのまま再生中 — 送信前に周波数が使用中でないか確認できます。\nモニター中は RADE 復調音声は一時停止（同期表示は動作継続）。もう一度タップで RADE 復調に戻ります。</string>
     <string name="tx_hint_ready">マイクに向かって話し、送信をタップしてください。\nスマホの音量ボタンで送信音量を調整 — ALC はできるだけ振れないようにしてください。</string>
     <string name="tx_hint_active">送信中… もう一度タップすると受信に戻ります。\nALC はできるだけ振れないように — 振れている場合はスマホの音量を下げてください。</string>
     <string name="tx_hint_hold_ready">送信ボタンを押しながら話してください。離すと受信に戻ります。\nスマホの音量ボタンで送信音量を調整 — ALC はできるだけ振れないようにしてください。</string>

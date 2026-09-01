@@ -24,6 +24,9 @@
     <string name="label_mic_input">麦克风输入</string>
     <string name="btn_back_to_rx">返回接收</string>
     <string name="btn_tx">发射</string>
+    <string name="btn_analog_monitor">模拟监听</string>
+    <string name="btn_analog_monitor_on">模拟监听中</string>
+    <string name="analog_monitor_hint">正在直接播放接收音频 — 发射前可确认频率是否被其他 SSB 通联占用。\n监听期间 RADE 解码语音暂停（同步指示仍有效）。再次点按返回 RADE 解码。</string>
     <string name="tx_hint_ready">对着麦克风说话，然后点击发射。\n使用手机音量键调整发射音量 — ALC 应尽量不起表。</string>
     <string name="tx_hint_active">发射中… 再次点击发射以切回接收。\nALC 应尽量不起表 — 如果 ALC 有偏转，请降低手机音量。</string>
     <string name="tx_hint_hold_ready">按住发射键并说话，松开即返回接收。\n使用手机音量键调整发射音量 — ALC 应尽量不起表。</string>

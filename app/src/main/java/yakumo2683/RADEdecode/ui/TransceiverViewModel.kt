@@ -118,7 +118,8 @@ class TransceiverViewModel(application: Application) : AndroidViewModel(applicat
         val pttHoldMode: Boolean = false,    // hold-to-talk: TX is keyed only while the TX button is held
         val bluetoothMicTx: Boolean = false, // experimental: capture TX voice from the Bluetooth headset mic (SCO)
         val txMicDeviceId: Int = -1,         // selected TX mic input device id (-1 = built-in mic)
-        val radeV2Mode: Boolean = false      // experimental: RADE V2 waveform (not interoperable with V1)
+        val radeV2Mode: Boolean = false,     // experimental: RADE V2 waveform (not interoperable with V1)
+        val analogMonitor: Boolean = false   // RX analog SSB monitor: raw channel audio to speaker (freedv-gui "Analog")
     ) {
         val syncText: String get() = when (syncState) {
             0 -> "SEARCH"
@@ -580,8 +581,30 @@ class TransceiverViewModel(application: Application) : AndroidViewModel(applicat
         doSwitchToTx()
     }
 
+    /** RX analog SSB monitor (freedv-gui's "Analog"): hear the raw channel
+     *  audio instead of decoded speech, to check whether the frequency is
+     *  occupied by an analog QSO before keying up — essential when operating
+     *  the rig remotely. RADE decode keeps running (sync indicator stays
+     *  live); switching to TX or pressing Stop turns the monitor off. */
+    fun toggleAnalogMonitor() {
+        val next = !_uiState.value.analogMonitor
+        _uiState.value = _uiState.value.copy(analogMonitor = next)
+        audioService?.setAnalogMonitor(next)
+    }
+
+    private fun clearAnalogMonitor() {
+        if (_uiState.value.analogMonitor) {
+            _uiState.value = _uiState.value.copy(analogMonitor = false)
+        }
+        audioService?.setAnalogMonitor(false)
+    }
+
     private fun doSwitchToTx() {
         if (!_uiState.value.isRunning || _uiState.value.isTx) return
+        // The analog monitor is an RX-only listening tool: the natural flow is
+        // "monitor → frequency clear → key up in digital", so TX always starts
+        // with the monitor off and RX resumes in normal RADE decode.
+        clearAnalogMonitor()
         // Auto-PTT via rigctld (both paths)
         if (rigController.isConnected) {
             pttKeyedByApp = true
@@ -780,6 +803,7 @@ class TransceiverViewModel(application: Application) : AndroidViewModel(applicat
     /** Stop everything and tear down the service */
     fun stopAll() {
         val app = getApplication<Application>()
+        clearAnalogMonitor()
         if (_uiState.value.isTx || txStopJob?.isActive == true) {
             // Let the EOO finish over the air and unkey before the service dies.
             viewModelScope.launch {
@@ -799,7 +823,8 @@ class TransceiverViewModel(application: Application) : AndroidViewModel(applicat
             freqOffsetHz = 0f,
             inputLevelDb = -100f,
             outputLevelDb = -100f,
-            txLevelDb = -100f
+            txLevelDb = -100f,
+            analogMonitor = false
         )
     }
 
