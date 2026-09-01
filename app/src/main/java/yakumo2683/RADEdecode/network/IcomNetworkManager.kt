@@ -181,35 +181,57 @@ class IcomNetworkManager : NetworkAudioRig {
             val ctrl = IcomStream("control", host, controlPort, scope)
             control = ctrl
             if (!ctrl.open()) {
-                fail("Control handshake failed — check the IP and that the radio is reachable")
+                fail("Control handshake failed — no reply from $host:$controlPort. " +
+                     "Check the IP and that the radio is reachable. Over a VPN the radio " +
+                     "also needs a default gateway (or the VPN must NAT clients into the " +
+                     "radio's subnet), or it cannot send replies back.")
                 disconnect(); return ""
             }
 
-            // Pre-login cleanup: remove the PREVIOUS session's token first. If
-            // the last run ended uncleanly (app killed while connected), the
-            // radio still holds that token and would silently ignore this
-            // login. Removal is idempotent — deleting an already-expired token
-            // is a no-op — so it is sent on every connect. The token is looked
-            // up by its value; the packet rides the fresh control stream.
+            // Pre-login cleanup: remove the PREVIOUS session's token, but only
+            // when one was actually left behind by an UNCLEAN exit (app killed
+            // while connected). The persisted copy is cleared the moment the
+            // removal is sent — and on every clean disconnect — because radios
+            // differ in how they treat a removal for an unknown token: the
+            // IC-705 (fw 1.41) silently ignores it, but a radio that ANSWERS
+            // 0x40 packets (IC-7300MK2) consumes its tracked sequence numbers
+            // before the login reply, and an unconditional removal on every
+            // connect then wedged every login after the first.
             loadStaleToken?.invoke()?.let { hexTok ->
                 parseTokenHex(hexTok)?.let { oldTok ->
-                    Log.i(TAG, "removing stale token from previous session")
-                    repeat(3) { ctrl.sendRaw(buildTokenRemove(ctrl, oldTok)) }
+                    Log.i(TAG, "removing stale token left by an unclean exit")
+                    val remove = buildTokenRemove(ctrl, oldTok)
+                    repeat(3) { ctrl.sendRaw(remove) }   // identical repeats = native retransmit idiom
                     delay(150)
                 }
+                saveStaleToken?.invoke(null)             // one-shot: never resend it
             }
 
+            // Login reply = the 96-byte tracked data packet (type 0x60). Bytes
+            // 6-7 carry the RADIO's running tracking seq — never match on them:
+            // they are 0x0001 only when the reply happens to be the radio's
+            // very first tracked packet. A reply the radio sends to the
+            // pre-login token removal, or a login retry after a lost first
+            // reply, shifts that seq, and a matcher pinned to 0x0001 then
+            // drops every real login reply ("No login reply" although the
+            // radio answered).
+            val loginReply = byteArrayOf(0x60, 0, 0, 0, 0, 0)
+            // Anything already queued arrived BEFORE the login left (e.g. a
+            // radio's ack to the token removal, whatever its shape) — drop it
+            // so it cannot be mistaken for the login reply. The real reply
+            // cannot arrive before the login is sent.
+            ctrl.drainPending()
             ctrl.sendTracked(buildLogin(ctrl))                       // authInnerSeq 0 → login
             // 5 s window per attempt, up to 3 attempts: a lost login packet on a
             // cold path, or a radio still flushing a just-expired previous
             // session, both recover on a resend instead of failing the connect.
-            var r60 = ctrl.expect(96, byteArrayOf(0x60, 0, 0, 0, 0, 0, 0x01, 0), timeoutMs = 5000)
+            var r60 = ctrl.expect(96, loginReply, timeoutMs = 5000)
             var loginAttempt = 1
             while (r60 == null && loginAttempt < 3) {
                 loginAttempt++
                 Log.i(TAG, "no login reply; resending login (attempt $loginAttempt/3)")
                 ctrl.sendTracked(buildLogin(ctrl))
-                r60 = ctrl.expect(96, byteArrayOf(0x60, 0, 0, 0, 0, 0, 0x01, 0), timeoutMs = 5000)
+                r60 = ctrl.expect(96, loginReply, timeoutMs = 5000)
             }
             if (r60 == null) {
                 fail("No login reply — is 'Network control' ON and the control port correct?")
@@ -273,10 +295,20 @@ class IcomNetworkManager : NetworkAudioRig {
                     it.sendTracked(buildSerialOpenClose(close = true))
                 }
             }
-            control?.let { c ->
-                repeat(3) { c.sendRaw(buildAuth(c, magic = 0x01)) }  // token remove
+            // Only deauth when a login actually delivered a token: zero-token
+            // removals after a connect that failed before login are junk the
+            // radio never asked for, and some models answer every 0x40 packet.
+            val haveToken = authID.any { it != 0.toByte() }
+            if (haveToken) {
+                control?.let { c ->
+                    repeat(3) { c.sendRaw(buildAuth(c, magic = 0x01)) }  // token remove
+                }
+                // The radio-side token is being removed right now; drop the
+                // persisted copy so the NEXT connect starts clean instead of
+                // opening with removal packets for a token that is long gone.
+                saveStaleToken?.invoke(null)
             }
-            Thread.sleep(120)
+            if (serialOpened || haveToken) Thread.sleep(120)
         } catch (_: Exception) {}
         try { audio?.close() } catch (_: Exception) {}
         try { serial?.close() } catch (_: Exception) {}
@@ -349,6 +381,9 @@ class IcomNetworkManager : NetworkAudioRig {
         ctrl.remoteSID = u32be(r, 8)
         ctrl.localSID = u32be(r, 12)
         System.arraycopy(r, 26, authID, 0, 6)
+        // The grant may refresh the token — keep the persisted copy current so
+        // an unclean exit removes the token the radio actually holds.
+        saveStaleToken?.invoke(authID.joinToString("") { "%02x".format(it) })
         val devName = parseCString(r, 64)
         _state.value = _state.value.copy(deviceName = devName)
         Log.i(TAG, "serial/audio granted, device='$devName' — opening CI-V stream")
@@ -621,15 +656,17 @@ class IcomNetworkManager : NetworkAudioRig {
     /** Token-removal (deauth) packet for an EXPLICIT token — used by the
      *  pre-login cleanup to delete the previous session's token. Identical to
      *  buildAuth(magic = 0x01) except the token bytes come from the argument
-     *  instead of the live authID. */
+     *  instead of the live authID, and the auth inner seq is left at 0 and NOT
+     *  advanced: the login that follows must still go out as authInnerSeq 0,
+     *  exactly as it does when there is no stale token — advancing it here made
+     *  the login leave as seq 3 and radios stricter than the IC-705 (the
+     *  IC-7300MK2) refused it. */
     private fun buildTokenRemove(s: IcomStream, token: ByteArray): ByteArray {
         val p = ByteArray(64)
         p[0] = 0x40
         p.putSid(8, s.localSID); p.putSid(12, s.remoteSID)
         p[19] = 0x30; p[20] = 0x01; p[21] = 0x01
-        p[23] = authInnerSeq.toByte(); p[24] = (authInnerSeq ushr 8).toByte()
         System.arraycopy(token, 0, p, 26, minOf(token.size, 6))
-        authInnerSeq = (authInnerSeq + 1) and 0xFFFF
         return p
     }
 
@@ -819,6 +856,11 @@ class IcomNetworkManager : NetworkAudioRig {
                     }
                 } catch (_: CancellationException) {}
             }
+        }
+
+        /** Discard every packet already queued on [incoming] (nothing blocks). */
+        fun drainPending() {
+            while (incoming.tryReceive().getOrNull() != null) { /* drop */ }
         }
 
         suspend fun expect(len: Int, prefix: ByteArray, timeoutMs: Long = 3000): ByteArray? =
