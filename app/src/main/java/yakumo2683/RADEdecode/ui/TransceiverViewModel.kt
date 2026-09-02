@@ -155,6 +155,15 @@ class TransceiverViewModel(application: Application) : AndroidViewModel(applicat
      *  (CAT-less interfaces, Rig tab "RTS PTT" option). */
     private var rtsPttKeyed = false
 
+    /** True once the operator has pressed Disconnect on an Icom Wi-Fi session,
+     *  so the link-loss observer doesn't treat that intentional teardown as an
+     *  unexpected drop. Reset when a fresh Icom connect starts. */
+    @Volatile private var icomUserDisconnect = false
+
+    /** Guards the link-loss teardown so overlapping state emissions can't run it
+     *  twice concurrently. */
+    @Volatile private var icomLinkLostHandling = false
+
     private val serviceConnection = object : ServiceConnection {
         override fun onServiceConnected(name: ComponentName?, binder: IBinder?) {
             val service = (binder as AudioService.LocalBinder).service
@@ -303,6 +312,29 @@ class TransceiverViewModel(application: Application) : AndroidViewModel(applicat
                     lastFreq = hs.freqHz
                     reporter.reportFreqChange(hs.freqHz)
                 }
+            }
+        }
+
+        // Icom network transport → detect an UNEXPECTED link loss. The bundled
+        // rigctld keeps its local TCP link to us alive against a now-dead pty, so
+        // RigController would otherwise stay "connected to 127.0.0.1:4532" forever
+        // — the reported green "Connected" that lied, with a stuck TX indicator,
+        // after a weak-LTE drop. When the Icom manager's watchdog reports the
+        // transport dead (connected → false with an error, not an operator
+        // disconnect), tear the local rig stack down so the status is honest and
+        // the operator can reconnect (connect() now retries across the radio's
+        // cleanup window).
+        viewModelScope.launch {
+            var wasConnected = false
+            icomNetwork.state.collect { st ->
+                if (st.connected) {
+                    wasConnected = true
+                    return@collect
+                }
+                val unexpectedLoss = wasConnected && !icomUserDisconnect &&
+                    st.error.isNotEmpty() && !_rigConnecting.value
+                wasConnected = false
+                if (unexpectedLoss) handleIcomLinkLost()
             }
         }
 
@@ -1104,12 +1136,51 @@ class TransceiverViewModel(application: Application) : AndroidViewModel(applicat
     }
 
     fun rigDisconnect() {
+        icomUserDisconnect = true   // this teardown is intentional — not a link loss
         rigController.disconnect()
         rigctldProcess.stop()
         usbSerialManager.close()
         icomNetwork.disconnect()
         hermesNetwork.disconnect()
         vbanNetwork.disconnect()
+    }
+
+    /**
+     * The Icom Wi-Fi transport died unexpectedly (weak LTE/Wi-Fi drop, radio
+     * powered off) and the manager's watchdog tore its own session down. Stop the
+     * local rig stack that was riding on it — the bundled rigctld and its TCP
+     * client stay "connected" to 127.0.0.1 against a dead pty otherwise — so the
+     * Rig screen stops showing a false "Connected" with a stuck TX, and the
+     * operator gets an accurate state to reconnect from. The Icom manager's error
+     * ("Radio stopped responding…") stays on screen for them to see.
+     */
+    private fun handleIcomLinkLost() {
+        if (icomLinkLostHandling) return
+        icomLinkLostHandling = true
+        viewModelScope.launch(Dispatchers.IO) {
+            try {
+                Log.w("TransceiverVM", "Icom transport lost — tearing down local rig stack")
+                // A radio that is gone can't be unkeyed; just drop our TX/RX state
+                // so the engine isn't left pretending to transmit into the void.
+                if (audioService?.state?.value?.isTx == true) {
+                    audioService?.stopTransmitting(drainEoo = false, forceFullTeardown = true)
+                } else if (audioService?.state?.value?.isRunning == true) {
+                    audioService?.stopDecoding()
+                }
+                // Cancel any in-flight key-on retry so it can't keep trying to
+                // key a radio that is gone.
+                pttKeyedByApp = false
+                pttKeyJob?.cancel()
+                pttKeyJob = null
+                rtsPttKeyed = false
+                rigController.disconnect()
+                rigctldProcess.stop()
+            } catch (e: Exception) {
+                Log.w("TransceiverVM", "handleIcomLinkLost", e)
+            } finally {
+                icomLinkLostHandling = false
+            }
+        }
     }
 
     /**
@@ -1217,6 +1288,7 @@ class TransceiverViewModel(application: Application) : AndroidViewModel(applicat
         if (_rigConnecting.value || rigController.isConnected) return
         _rigConnecting.value = true
         rigMfg = "Icom"
+        icomUserDisconnect = false   // a fresh connect intent supersedes a prior disconnect
 
         viewModelScope.launch(Dispatchers.IO) {
             try {

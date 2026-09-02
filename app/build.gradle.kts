@@ -11,8 +11,8 @@ android {
         applicationId = "yakumo2683.RADEdecode"
         minSdk = 26
         targetSdk = 35
-        versionCode = 10612
-        versionName = "1.6.12-ptt-analog-monitor"
+        versionCode = 10613
+        versionName = "1.6.13-icom-reconnect-recover"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 

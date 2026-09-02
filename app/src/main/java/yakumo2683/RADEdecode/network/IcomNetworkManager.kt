@@ -47,6 +47,32 @@ class IcomNetworkManager : NetworkAudioRig {
         const val NET_AUDIO_FRAME_SAMPLES = 960
         private const val TX_BUF_MS = 150
 
+        /** How many times the whole connect handshake is attempted before giving
+         *  up, and the pause after each failed attempt. A radio that has just
+         *  seen its previous session torn down keeps that session (token + the
+         *  serial/audio ports) allocated for up to ~1–2 minutes; a reconnect that
+         *  lands inside that window gets "Auth rejected" or "CI-V stream handshake
+         *  failed" and, before this, forced the operator to keep pressing Connect,
+         *  kill the app, or wait out the radio's timeout by hand. Retrying the
+         *  full handshake — fresh sockets, fresh session id, re-login — across
+         *  that window recovers automatically. Backoff grows so the total span
+         *  (~1+4+8+12+16 s of pauses over 6 tries) brackets the radio's cleanup. */
+        private const val CONNECT_ATTEMPTS = 6
+        private val CONNECT_BACKOFF_MS = longArrayOf(1000, 4000, 8000, 12000, 16000)
+
+        /** Control-stream liveness: if no datagram at all arrives from the radio
+         *  for this long while we believe we are connected, the transport is dead
+         *  (weak LTE/Wi-Fi drop, radio powered off, VPN tunnel gone). On a healthy
+         *  link the radio answers our 3 s pings and sends its own idle/ping
+         *  traffic, so ~5 missed cycles is a real death, not jitter. Without this
+         *  the manager stayed "connected" forever against a silent radio, the rig
+         *  screen kept showing a green "Connected" that was a lie, and TX hung. */
+        private const val LINK_TIMEOUT_MS = 15_000L
+
+        /** Marker prefix on the one connect error that must NOT be retried: wrong
+         *  Network User name/password. Rets would just fail identically for ~1 min. */
+        const val ERR_BAD_CREDENTIALS = "Invalid username / password"
+
         init { System.loadLibrary("rade_jni") }
 
         @JvmStatic external fun nativeIcomPtyOpen(): String?
@@ -156,12 +182,48 @@ class IcomNetworkManager : NetworkAudioRig {
     /**
      * Connect to the radio and bring up the CI-V tunnel.
      * @return the pty slave path (e.g. "/dev/pts/3") to hand to rigctld, or "" on failure.
+     *
+     * Retries the WHOLE handshake, not just the login. A reconnect that lands
+     * while the radio is still holding the previous session (its login token and
+     * the serial/audio ports) fails at whichever stage the radio hasn't freed
+     * yet — "Auth rejected", "CI-V stream handshake failed" or "No login reply".
+     * Before this, the only recovery was to press Connect again, kill the app, or
+     * wait out the radio's ~1–2 min session timeout by hand (all reported on the
+     * IC-7300MK2). Re-running the full handshake with backoff rides over that
+     * window automatically; only a real credential rejection stops early.
      */
     suspend fun connect(host: String, controlPort: Int, user: String, pass: String): String {
         disconnect()  // clean any previous session
 
         username = user
         password = pass
+
+        for (attempt in 1..CONNECT_ATTEMPTS) {
+            val pty = attemptConnect(host, controlPort)
+            if (pty.isNotEmpty()) return pty
+
+            val err = _state.value.error
+            // A genuine name/password rejection fails identically on every retry —
+            // stop now and let the operator fix it instead of burning ~1 min.
+            if (err.startsWith(ERR_BAD_CREDENTIALS)) return ""
+            if (attempt >= CONNECT_ATTEMPTS) break
+
+            val backoff = CONNECT_BACKOFF_MS[(attempt - 1).coerceAtMost(CONNECT_BACKOFF_MS.size - 1)]
+            Log.i(TAG, "connect attempt $attempt/$CONNECT_ATTEMPTS failed ($err); retrying in ${backoff}ms")
+            // Keep the spinner up and say we are still trying, so the automatic
+            // recovery doesn't look like a hang. Preserve the underlying reason.
+            _state.value = State(
+                connecting = true,
+                error = "$err — retrying (${attempt + 1}/$CONNECT_ATTEMPTS)…"
+            )
+            delay(backoff)
+        }
+        return ""
+    }
+
+    /** One full handshake attempt (fresh sockets, fresh session id, re-login).
+     *  Returns the pty path on success, or "" with [State.error] set on failure. */
+    private suspend fun attemptConnect(host: String, controlPort: Int): String {
         authInnerSeq = 0
         authID = ByteArray(6)
         a8ReplyID = ByteArray(16)
@@ -238,7 +300,7 @@ class IcomNetworkManager : NetworkAudioRig {
                 disconnect(); return ""
             }
             if (r60.size >= 52 && r60.u(48) == 0xFF && r60.u(49) == 0xFF && r60.u(50) == 0xFF && r60.u(51) == 0xFE) {
-                fail("Invalid username / password")
+                fail(ERR_BAD_CREDENTIALS)
                 disconnect(); return ""
             }
             System.arraycopy(r60, 26, authID, 0, 6)
@@ -266,6 +328,10 @@ class IcomNetworkManager : NetworkAudioRig {
             // and may have already (or will soon) set audioConnected. Using copy()
             // here instead of a fresh State() avoids clobbering it back to false.
             _state.value = _state.value.copy(connecting = false, connected = true, error = "")
+            // Watch the control stream for sustained silence: a weak-LTE/Wi-Fi drop
+            // (or the radio being powered off) otherwise left us "connected" against
+            // a dead transport — a green "Connected" that lied and a hung TX.
+            ctrl.startWatchdog(LINK_TIMEOUT_MS) { onControlLinkLost() }
             Log.i(TAG, "Icom network connected, pty=$pty device=${_state.value.deviceName}")
             return pty
         } catch (e: CancellationException) {
@@ -277,8 +343,24 @@ class IcomNetworkManager : NetworkAudioRig {
         }
     }
 
-    fun disconnect() {
-        val scope = connScope ?: return
+    /** Fired by the control stream's watchdog when the radio has gone silent for
+     *  [LINK_TIMEOUT_MS]. Tear the session down with a clear reason so the UI
+     *  stops showing a false "connected" and the operator can reconnect (the
+     *  next connect() will retry across the radio's cleanup window). */
+    private fun onControlLinkLost() {
+        if (connScope == null) return
+        Log.w(TAG, "control link silent > ${LINK_TIMEOUT_MS}ms — tearing down")
+        disconnect(reason = "Radio stopped responding — Wi-Fi/LTE link lost. Press Connect to reconnect.")
+    }
+
+    /** @param reason when non-null, the teardown leaves this error on [state]
+     *  (e.g. a watchdog link-loss note) instead of a blank disconnected state. */
+    fun disconnect(reason: String? = null) {
+        val scope = connScope ?: run {
+            // Already torn down; still honor a link-loss reason so the UI shows it.
+            if (reason != null) _state.value = State(error = reason)
+            return
+        }
         onAudioPcm = null
         // Polite shutdown in protocol order, with repeats. The token removal
         // (deauth, magic 0x01) is what frees this USER's session slot on the
@@ -320,10 +402,12 @@ class IcomNetworkManager : NetworkAudioRig {
         scope.cancel()
         connScope = null
         serialOpened = false
-        if (_state.value.connected || _state.value.connecting) {
+        if (reason != null) {
+            _state.value = State(error = reason)
+        } else if (_state.value.connected || _state.value.connecting) {
             _state.value = State()
         }
-        Log.i(TAG, "Icom network disconnected")
+        Log.i(TAG, "Icom network disconnected${if (reason != null) " ($reason)" else ""}")
     }
 
     private fun fail(msg: String) {
@@ -781,6 +865,11 @@ class IcomNetworkManager : NetworkAudioRig {
         private var pingInner = 0x8304
         @Volatile private var keepaliveStarted = false
 
+        /** Wall-clock of the last datagram received from the radio on this
+         *  stream, stamped for every inbound packet (pings and idles included).
+         *  The control-stream watchdog reads it to detect a dead transport. */
+        @Volatile var lastRxMs = System.currentTimeMillis()
+
         val incoming = Channel<ByteArray>(Channel.UNLIMITED)
 
         suspend fun open(): Boolean {
@@ -882,6 +971,24 @@ class IcomNetworkManager : NetworkAudioRig {
             }
         }
 
+        /** Fire [onLost] once if no datagram arrives from the radio for
+         *  [timeoutMs]. Started only after the stream is fully up, so the
+         *  handshake's own retries aren't cut short. */
+        fun startWatchdog(timeoutMs: Long, onLost: () -> Unit) {
+            lastRxMs = System.currentTimeMillis()
+            scope.launch {
+                try {
+                    while (isActive && running) {
+                        delay(2000)
+                        if (System.currentTimeMillis() - lastRxMs > timeoutMs) {
+                            onLost()
+                            break
+                        }
+                    }
+                } catch (_: CancellationException) {}
+            }
+        }
+
         /** Discard every packet already queued on [incoming] (nothing blocks). */
         fun drainPending() {
             while (incoming.tryReceive().getOrNull() != null) { /* drop */ }
@@ -943,6 +1050,7 @@ class IcomNetworkManager : NetworkAudioRig {
                 try {
                     val dp = DatagramPacket(buf, buf.size)
                     sock.receive(dp)
+                    lastRxMs = System.currentTimeMillis()   // any traffic = radio alive
                     val r = buf.copyOf(dp.length)
                     when {
                         isPkt7(r) -> handlePkt7(r)
