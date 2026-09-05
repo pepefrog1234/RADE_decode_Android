@@ -97,6 +97,7 @@ class TransceiverViewModel(application: Application) : AndroidViewModel(applicat
         val isRunning: Boolean = false,    // RX is active
         val leCommActive: Boolean = false, // LE Audio (LC3) communication session active
         val isTx: Boolean = false,         // TX is active
+        val pttControlError: Boolean = false,
         val syncState: Int = 0,
         val snrDb: Int = 0,
         val freqOffsetHz: Float = 0f,
@@ -139,17 +140,16 @@ class TransceiverViewModel(application: Application) : AndroidViewModel(applicat
 
     /** In-flight TX→RX transition (EOO drain → PTT tail → unkey → resume RX). */
     private var txStopJob: Job? = null
+    @Volatile private var txRequestId = 0L
 
     /** True while the app itself has keyed the rig's PTT (doSwitchToTx). The
      *  unkey path checks THIS instead of rigController.isConnected so a
      *  transient Wi-Fi/rigctld drop can't skip the unkey and leave the rig
      *  stuck in TX. */
-    private var pttKeyedByApp = false
-
-    /** In-flight key-ON retry (doSwitchToTx). stopTxAndUnkeyPtt cancels and
-     *  joins it before unkeying, so a late key-on retry can never land after
-     *  the unkey and leave the rig stuck in TX. */
-    private var pttKeyJob: Job? = null
+    @Volatile private var pttKeyedByApp = false
+    /** Submit CAT immediately, even while the main thread is opening audio.
+     *  Join before unkeying so a slow T 1 cannot arrive after T 0. */
+    private var pttKeyJob: Deferred<Boolean>? = null
 
     /** True while the app has keyed the rig by asserting the serial RTS line
      *  (CAT-less interfaces, Rig tab "RTS PTT" option). */
@@ -286,6 +286,9 @@ class TransceiverViewModel(application: Application) : AndroidViewModel(applicat
             var lastConnected = false
             var lastFreq = 0L
             rigController.state.collect { rs ->
+                _uiState.value = _uiState.value.copy(
+                    pttControlError = rs.error.startsWith("PTT ") || (pttKeyedByApp && !rs.connected)
+                )
                 if (rs.connected != lastConnected) {
                     lastConnected = rs.connected
                     lastFreq = 0L  // re-push freq once connected again
@@ -536,21 +539,9 @@ class TransceiverViewModel(application: Application) : AndroidViewModel(applicat
                else _uiState.value.builtInMicId
     }
 
-    /**
-     * Release of the held TX button. A very short press can be released
-     * before TX has finished engaging (isTx still false), and switchToRx()
-     * would no-op then — leaving the rig keyed. Wait briefly for TX to
-     * engage before switching back.
-     */
+    /** Release also cancels a re-key queued behind the previous EOO drain. */
     fun pttHoldRelease() {
-        viewModelScope.launch {
-            var waitedMs = 0
-            while (!_uiState.value.isTx && waitedMs < 3000) {
-                delay(50)
-                waitedMs += 50
-            }
-            if (_uiState.value.isTx) switchToRx()
-        }
+        switchToRx()
     }
 
     fun setReporterGrid(grid: String) {
@@ -596,6 +587,7 @@ class TransceiverViewModel(application: Application) : AndroidViewModel(applicat
 
     /** Switch from RX → TX (stops RX, starts TX, keys PTT) */
     fun switchToTx() {
+        val requestId = ++txRequestId
         if (txStopJob?.isActive == true) {
             // The previous over is still draining its EOO — queue this key-press
             // behind it instead of dropping it (quick re-key in hold-to-talk).
@@ -606,7 +598,7 @@ class TransceiverViewModel(application: Application) : AndroidViewModel(applicat
                     delay(50)
                     waitedMs += 50
                 }
-                doSwitchToTx()
+                if (requestId == txRequestId) doSwitchToTx()
             }
             return
         }
@@ -632,33 +624,31 @@ class TransceiverViewModel(application: Application) : AndroidViewModel(applicat
     }
 
     private fun doSwitchToTx() {
-        if (!_uiState.value.isRunning || _uiState.value.isTx) return
-        // The analog monitor is an RX-only listening tool: the natural flow is
-        // "monitor → frequency clear → key up in digital", so TX always starts
-        // with the monitor off and RX resumes in normal RADE decode.
+        if (!_uiState.value.isRunning || _uiState.value.isTx || pttKeyedByApp) return
+        val requestedAt = System.nanoTime()
+        val requestId = txRequestId
         clearAnalogMonitor()
         // Auto-PTT via rigctld (both paths)
         if (rigController.isConnected) {
             pttKeyedByApp = true
-            // Key-on with a bounded retry, mirroring the unkey loop in
-            // stopTxAndUnkeyPtt: over a lossy LTE/VPN Icom link a single "T 1"
-            // (or its ack) can be lost, and the app then transmits audio while
-            // the rig never keyed — reported as "switching to TX sometimes does
-            // nothing". Each retry re-checks that the over is still wanted.
+            // Preserve the LTE/VPN key-on retries added in v1.6.12. A release
+            // cancels this request, and OFF joins the job before unkeying.
             pttKeyJob?.cancel()
-            pttKeyJob = viewModelScope.launch {
+            pttKeyJob = viewModelScope.async(Dispatchers.IO) {
                 for (attempt in 1..3) {
+                    ensureActive()
+                    if (!pttKeyedByApp || requestId != txRequestId) return@async false
                     try {
-                        if (rigController.setPtt(true)) return@launch
+                        if (rigController.setPtt(true)) return@async true
+                    } catch (e: CancellationException) {
+                        throw e
                     } catch (e: Exception) {
                         Log.w("TransceiverVM", "PTT key attempt $attempt failed", e)
                     }
-                    if (!pttKeyedByApp) return@launch
-                    Log.w("TransceiverVM", "PTT key not acknowledged (attempt $attempt); retrying")
-                    delay(250L * attempt)
-                    if (!pttKeyedByApp) return@launch
+                    if (attempt < 3) delay(250L * attempt)
                 }
-                Log.e("TransceiverVM", "PTT key FAILED after retries — rig may still be in RX")
+                Log.e("TransceiverVM", "PTT key FAILED after retries")
+                false
             }
         } else if (hermesNetwork.isConnected) {
             // HL2 direct: the MOX bit rides the protocol-1 C&C stream.
@@ -679,37 +669,52 @@ class TransceiverViewModel(application: Application) : AndroidViewModel(applicat
             )
             Log.i("TransceiverVM", "RTS PTT: asserted RTS for TX")
         }
-        if (useNetworkAudio()) {
-            // Full wireless: mic → encoder → network (Icom UDP / HL2 I/Q).
-            // The TX MIC picker applies here too — "no USB devices" only ever
-            // held for the Icom full-wireless case, and a USB headset mic
-            // alongside an HL2 (LAN) session is a normal setup (reported:
-            // picker showed the USB headset but the built-in mic captured).
+        try {
+            if (useNetworkAudio()) {
+                // Full wireless: mic → encoder → network (Icom UDP / HL2 I/Q).
+                // The TX MIC picker applies here too — "no USB devices" only ever
+                // held for the Icom full-wireless case, and a USB headset mic
+                // alongside an HL2 (LAN) session is a normal setup (reported:
+                // picker showed the USB headset but the built-in mic captured).
+                refreshDevices()
+                val micId = resolveTxMicId()
+                Log.i("TransceiverVM", "switchToTx (network): micId=$micId btMic=${_uiState.value.bluetoothMicTx}")
+                audioService?.startNetworkTransmitting(
+                    inputDeviceId = micId,
+                    callsign = _uiState.value.txCallsign,
+                    useBluetoothMic = _uiState.value.bluetoothMicTx
+                )
+                return
+            }
+            // Refresh devices to pick up USB audio output if available
             refreshDevices()
-            val micId = resolveTxMicId()
-            Log.i("TransceiverVM", "switchToTx (network): micId=$micId btMic=${_uiState.value.bluetoothMicTx}")
-            audioService?.startNetworkTransmitting(
-                inputDeviceId = micId,
+            val outId = _uiState.value.selectedOutputDeviceId
+            val micId = _uiState.value.builtInMicId
+            Log.i("TransceiverVM", "switchToTx: micId=$micId outDevId=$outId rigConnected=${rigController.isConnected}")
+            // startTransmitting: use built-in mic for TX input (not USB audio input
+            // which is the radio's audio output used for RX decoding)
+            audioService?.startTransmitting(
+                inputDeviceId = resolveTxMicId(),
+                outputDeviceId = outId,
                 callsign = _uiState.value.txCallsign,
-                useBluetoothMic = _uiState.value.bluetoothMicTx
+                useBluetoothMic = _uiState.value.bluetoothMicTx,
+                keepRxAlive = shouldKeepRxAliveAcrossTx(),
+                preferLeAudioCommunication = shouldUseLeAudioCommunicationSession()
             )
-            return
+        } finally {
+            Log.i("TransceiverVM", "TX audio setup elapsedMs=${(System.nanoTime() - requestedAt) / 1_000_000}")
+            val keyJob = pttKeyJob
+            // A failed mic/output open or rejected CAT command must not leave
+            // the radio keyed. This runs after synchronous audio setup returns.
+            viewModelScope.launch {
+                val keyOk = keyJob?.await() ?: true
+                if (pttKeyJob === keyJob && txStopJob?.isActive != true &&
+                    (!keyOk || audioService?.state?.value?.isTx != true)) {
+                    Log.e("TransceiverVM", "TX start failed: keyOk=$keyOk; stopping and unkeying")
+                    txStopJob = viewModelScope.launch { stopTxAndUnkeyPtt(fullTeardown = true) }
+                }
+            }
         }
-        // Refresh devices to pick up USB audio output if available
-        refreshDevices()
-        val outId = _uiState.value.selectedOutputDeviceId
-        val micId = _uiState.value.builtInMicId
-        Log.i("TransceiverVM", "switchToTx: micId=$micId outDevId=$outId rigConnected=${rigController.isConnected}")
-        // startTransmitting: use built-in mic for TX input (not USB audio input
-        // which is the radio's audio output used for RX decoding)
-        audioService?.startTransmitting(
-            inputDeviceId = resolveTxMicId(),
-            outputDeviceId = outId,
-            callsign = _uiState.value.txCallsign,
-            useBluetoothMic = _uiState.value.bluetoothMicTx,
-            keepRxAlive = shouldKeepRxAliveAcrossTx(),
-            preferLeAudioCommunication = shouldUseLeAudioCommunicationSession()
-        )
     }
 
     private fun shouldUseLeAudioCommunicationSession(): Boolean {
@@ -742,8 +747,11 @@ class TransceiverViewModel(application: Application) : AndroidViewModel(applicat
     /** Switch from TX → RX: stop TX (drains the EOO callsign frame), hold the
      *  rig keyed for a short RF tail, then unkey PTT and resume RX. */
     fun switchToRx() {
+        ++txRequestId
         Log.i("TransceiverVM", "switchToRx: isTx=${_uiState.value.isTx}, rigConnected=${rigController.isConnected}")
-        if (!_uiState.value.isTx) return
+        // Service state is authoritative before the UI flow collector catches
+        // up, particularly on a very short press during synchronous TX setup.
+        if (audioService?.state?.value?.isTx != true && !pttKeyedByApp && !rtsPttKeyed) return
         if (txStopJob?.isActive == true) return
         txStopJob = viewModelScope.launch {
             stopTxAndUnkeyPtt()
@@ -823,9 +831,9 @@ class TransceiverViewModel(application: Application) : AndroidViewModel(applicat
                     Log.w("TransceiverVM", "PTT unkey attempt $attempt failed", e)
                 }
                 Log.w("TransceiverVM", "PTT unkey not acknowledged (attempt $attempt); retrying")
-                delay(300L * attempt)
+                if (attempt < 5) delay(300L * attempt)
             }
-            pttKeyedByApp = false
+            pttKeyedByApp = !unkeyed
             if (!unkeyed) {
                 Log.e("TransceiverVM", "PTT unkey FAILED after retries — rig may be stuck in TX")
             }
@@ -834,13 +842,17 @@ class TransceiverViewModel(application: Application) : AndroidViewModel(applicat
 
     /** Stop everything and tear down the service */
     fun stopAll() {
+        ++txRequestId
         val app = getApplication<Application>()
         clearAnalogMonitor()
-        if (_uiState.value.isTx || txStopJob?.isActive == true) {
+        if (_uiState.value.isTx || txStopJob?.isActive == true || pttKeyedByApp || rtsPttKeyed) {
             // Let the EOO finish over the air and unkey before the service dies.
             viewModelScope.launch {
                 txStopJob?.join()
-                if (audioService?.state?.value?.isTx == true) stopTxAndUnkeyPtt(fullTeardown = true)
+                if (audioService?.state?.value?.isTx == true || pttKeyedByApp || rtsPttKeyed) {
+                    if (audioService?.state?.value?.isRunning == true) stopReceiving()
+                    stopTxAndUnkeyPtt(fullTeardown = true)
+                }
                 app.stopService(Intent(app, AudioService::class.java))
             }
         } else {
@@ -1012,7 +1024,7 @@ class TransceiverViewModel(application: Application) : AndroidViewModel(applicat
             arrayOf(
                 "logcat", "-d", "-v", "time",
                 "AudioService:V", "AudioBridge:V", "AudioEngine:V", "RADE_JNI:V",
-                "HermesNet:V", "PureSignalPS:V", "TransceiverVM:V",
+                "HermesNet:V", "PureSignalPS:V", "TransceiverVM:V", "RigController:V",
                 "AndroidRuntime:V", "libc:V", "DEBUG:V", "crash_dump64:V",
                 "tombstoned:V", "*:S"
             )

@@ -66,19 +66,16 @@ fun RADEDecodeApp(viewModel: TransceiverViewModel = viewModel()) {
     val currentRoute = navBackStackEntry?.destination?.route
     val context = LocalContext.current
 
-    // During an LE Audio (LC3) communication session, RX plays as
-    // VOICE_COMMUNICATION and its loudness follows the call-volume stream. Point
-    // the hardware volume keys at that stream while the session is active —
-    // otherwise they adjust media volume and appear to do nothing. (Collected as
-    // its own distinct flow so spectrum updates don't recompose this scope.)
-    val leCommActive by remember {
+    // LE Audio RX uses call volume; the USB/speaker modem TX always uses
+    // media volume, even when its microphone uses the LE communication route.
+    val useCallVolume by remember {
         viewModel.uiState
-            .map { it.leCommActive }
+            .map { it.leCommActive && !it.isTx }
             .distinctUntilChanged()
     }.collectAsState(initial = false)
-    LaunchedEffect(leCommActive) {
+    LaunchedEffect(useCallVolume) {
         (context as? Activity)?.volumeControlStream =
-            if (leCommActive) AudioManager.STREAM_VOICE_CALL else AudioManager.STREAM_MUSIC
+            if (useCallVolume) AudioManager.STREAM_VOICE_CALL else AudioManager.STREAM_MUSIC
     }
 
     // First-launch battery optimization dialog

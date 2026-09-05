@@ -261,4 +261,7 @@
     <string name="notification_stop">停止</string>
     <string name="warning_unprocessed_rejected">音声処理が有効です — デバイスがUnprocessedモードを拒否しました。デコードに失敗する可能性があります。USB音声入力をお試しください。</string>
     <string name="share_audio">デコード音声を共有</string>
+    <string name="settings_tx_media_volume">Android メディア音量：%1$d / %2$d</string>
+    <string name="settings_tx_media_volume_help">USB／スピーカー送信には Android のメディア音量も影響します。出力が低い場合は、リグの ALC を確認しながら、この音量と送信レベルを少しずつ調整してください。TX Mic Gain は声の大きさ用で、RF 出力の調整ではありません。ネットワーク送信はリグ／ネットワーク側のドライブ設定を使用します。</string>
+    <string name="ptt_control_failed">PTT の応答を確認できません。リグの状態を確認し、Stop を押して PTT 解除を再試行してください。</string>
 </resources>

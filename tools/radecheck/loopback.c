@@ -5,6 +5,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <math.h>
 #include "rade_api.h"
 
 static int run(int flags, const char *label) {
@@ -31,6 +32,15 @@ static int run(int flags, const char *label) {
         for (int i = 0; i < nFeat; i++) feat[i] = 0.1f * (float)((i + f) % 7);
         sigLen += rade_tx(r, &sig[sigLen], feat);
     }
+    /* Keep waveform amplitude visible when reviewing modem updates. Measure
+       payload separately from EOO, before any application/system attenuation. */
+    double energy = 0.0, peak = 0.0;
+    for (long i = 0; i < sigLen; i++) {
+        energy += (double)sig[i].real * sig[i].real;
+        if (fabs(sig[i].real) > peak) peak = fabs(sig[i].real);
+    }
+    fprintf(stderr, "TX level %s: real RMS=%.6f peak=%.6f\n",
+            label, sqrt(energy / sigLen), peak);
     if (nEooBits > 0) {
         float *eooBits = calloc(nEooBits, sizeof(float));
         for (int i = 0; i < nEooBits; i++) eooBits[i] = (i & 1) ? 1.0f : -1.0f;

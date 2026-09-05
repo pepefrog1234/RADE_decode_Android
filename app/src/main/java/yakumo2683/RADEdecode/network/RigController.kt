@@ -151,14 +151,24 @@ class RigController {
 
     /* ── Command transport ──────────────────────────────────── */
 
-    private fun sendCommand(cmd: String): String? {
+    private fun sendCommand(cmd: String, acceptsReply: (String) -> Boolean = { true }): String? {
         synchronized(lock) {
             val w = writer ?: return null
             val r = reader ?: return null
+            val s = socket ?: return null
             return try {
                 lastCommand = cmd
                 w.println(cmd)
-                val resp = r.readLine()
+                val deadline = System.nanoTime() + READ_TIMEOUT_MS * 1_000_000L
+                var resp: String
+                do {
+                    val remainingMs = (deadline - System.nanoTime()) / 1_000_000L
+                    if (remainingMs <= 0) throw java.net.SocketTimeoutException("CAT reply deadline")
+                    s.soTimeout = remainingMs.toInt().coerceAtLeast(1)
+                    resp = r.readLine() ?: throw java.io.EOFException("rigctld closed connection")
+                    if (acceptsReply(resp)) break
+                    Log.w(TAG, "Skipping stale reply while waiting for '$cmd': '$resp'")
+                } while (true)
                 if (cmd.isNotEmpty() && !cmd.startsWith("f") && !cmd.startsWith("t") && !cmd.startsWith("l")) {
                     Log.i(TAG, "CMD '$cmd' → '$resp'")
                 }
@@ -171,6 +181,8 @@ class RigController {
                 Log.e(TAG, "Command '$cmd' failed: ${e.message}")
                 handleDisconnect(e)
                 null
+            } finally {
+                try { s.soTimeout = READ_TIMEOUT_MS } catch (_: Exception) {}
             }
         }
     }
@@ -380,22 +392,32 @@ class RigController {
      *  command could not be delivered (socket down/timeout) — the caller must
      *  NOT assume the rig state changed in that case. */
     suspend fun setPtt(on: Boolean): Boolean = withContext(Dispatchers.IO) {
+        val startedNs = System.nanoTime()
         Log.i(TAG, "setPtt($on) sending...")
         // Priority over the poller: keying/unkeying must not wait behind a slow
         // background status read (the Xiegu G90 multi-second PTT delay).
-        val resp = priority { sendCommand("T ${if (on) 1 else 0}") }
-        Log.i(TAG, "setPtt($on) response: $resp")
-        if (resp != null) {
-            _state.value = _state.value.copy(ptt = on)
+        // A prior status read may have timed out with its reply still in flight.
+        // ERP echoes the command/value and result on one line, so that stale
+        // reply cannot acknowledge this key/unkey. Other commands retain their
+        // existing protocol; the read remains bounded by the usual deadline.
+        val resp = priority {
+            sendCommand(";T ${if (on) 1 else 0}") { rigctldPttResult(it, on) != null }
         }
-        resp != null
+        val acknowledged = rigctldPttResult(resp, on) == 0
+        Log.i(TAG, "setPtt($on) response: $resp acknowledged=$acknowledged elapsedMs=${(System.nanoTime() - startedNs) / 1_000_000}")
+        if (acknowledged) {
+            val current = _state.value
+            _state.value = current.copy(ptt = on, error = if (current.error.startsWith("PTT ")) "" else current.error)
+        } else if (isConnected) {
+            _state.value = _state.value.copy(error = "PTT ${if (on) "ON" else "OFF"} not acknowledged: ${resp ?: "timeout"}")
+        }
+        acknowledged
     }
 
     suspend fun getPtt(): Boolean = withContext(Dispatchers.IO) {
-        val resp = sendCommand("t") ?: return@withContext false
-        val ptt = resp.trim() != "0"
-        _state.value = _state.value.copy(ptt = ptt)
-        ptt
+        val ptt = rigctldPtt(sendCommand("t"))
+        if (ptt != null) _state.value = _state.value.copy(ptt = ptt)
+        _state.value.ptt
     }
 
     /* ── Levels (S-meter, RF power, SWR) ────────────────────── */
@@ -456,7 +478,9 @@ class RigController {
                     delay(100)
                     gate(); getPtt()
                     delay(100)
-                    gate(); getSmeter()
+                    // Avoid slow/unsupported RX meter reads holding the CAT
+                    // lock when the operator releases PTT during TX.
+                    gate(); if (!_state.value.ptt) getSmeter()
                     // Re-read mode every ~5s — mode changes rarely but the user
                     // may flip USB/LSB on the rig face, and we want the UI to
                     // reflect that without forcing them to reconnect.

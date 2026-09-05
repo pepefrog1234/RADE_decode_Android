@@ -75,6 +75,9 @@ fun TransceiverScreen(viewModel: TransceiverViewModel = viewModel()) {
         } else {
             SyncHeader(state)
         }
+        if (state.pttControlError) {
+            Text(stringResource(R.string.ptt_control_failed), color = Red400, fontSize = 12.sp)
+        }
 
         // ── Signal info cards (RX) ──
         if (!state.isTx) {

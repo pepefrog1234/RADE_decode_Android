@@ -2,6 +2,9 @@ package yakumo2683.RADEdecode.ui
 
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import android.content.Context
+import android.media.AudioManager
+import android.util.Log
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
@@ -10,10 +13,13 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.ui.platform.LocalUriHandler
 import androidx.compose.ui.platform.LocalClipboardManager
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.AnnotatedString
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import kotlin.math.roundToInt
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Usb
@@ -365,6 +371,8 @@ fun SettingsScreen(viewModel: TransceiverViewModel = viewModel()) {
                     stringResource(R.string.settings_tx_level_help),
                     fontSize = 11.sp, color = OnSurfaceDim, lineHeight = 16.sp
                 )
+                Spacer(Modifier.height(12.dp))
+                TxMediaVolumeControl()
             }
         }
 
@@ -952,6 +960,44 @@ fun SettingsScreen(viewModel: TransceiverViewModel = viewModel()) {
 
         Spacer(Modifier.height(16.dp))
     }
+}
+
+/** Android applies this attenuation in addition to AudioTrack's TX level.
+ * Read it from the system, including changes made with the volume keys. */
+@Composable
+private fun TxMediaVolumeControl() {
+    val context = LocalContext.current
+    val manager = remember(context) { context.getSystemService(Context.AUDIO_SERVICE) as AudioManager }
+    val maxVolume = manager.getStreamMaxVolume(AudioManager.STREAM_MUSIC).coerceAtLeast(1)
+    var mediaVolume by remember { mutableIntStateOf(manager.getStreamVolume(AudioManager.STREAM_MUSIC)) }
+    LaunchedEffect(manager) {
+        while (true) {
+            mediaVolume = manager.getStreamVolume(AudioManager.STREAM_MUSIC)
+            delay(500)
+        }
+    }
+    Text(
+        stringResource(R.string.settings_tx_media_volume, mediaVolume, maxVolume),
+        color = MaterialTheme.colorScheme.onSurface
+    )
+    Slider(
+        value = mediaVolume.toFloat(),
+        onValueChange = { value ->
+            try {
+                manager.setStreamVolume(AudioManager.STREAM_MUSIC, value.roundToInt(), 0)
+            } catch (e: SecurityException) {
+                Log.w("SettingsScreen", "System denied media volume change", e)
+            }
+            mediaVolume = manager.getStreamVolume(AudioManager.STREAM_MUSIC)
+        },
+        valueRange = 0f..maxVolume.toFloat(),
+        steps = (maxVolume - 1).coerceAtLeast(0),
+        enabled = !manager.isVolumeFixed
+    )
+    Text(
+        stringResource(R.string.settings_tx_media_volume_help),
+        fontSize = 11.sp, color = OnSurfaceDim, lineHeight = 16.sp
+    )
 }
 
 @Composable

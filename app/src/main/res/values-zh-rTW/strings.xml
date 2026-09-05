@@ -260,4 +260,7 @@
     <string name="notification_stop">停止</string>
     <string name="warning_unprocessed_rejected">音訊處理未關閉 — 裝置拒絕了 Unprocessed 模式，解碼可能失敗。建議使用 USB 音訊輸入。</string>
     <string name="share_audio">分享解碼音訊</string>
+    <string name="settings_tx_media_volume">Android 媒體音量：%1$d / %2$d</string>
+    <string name="settings_tx_media_volume_help">USB／喇叭發射也會受到 Android 媒體音量影響。功率偏低時，請觀察電台 ALC，逐步調整此音量與發射電平。TX Mic Gain 調整的是語音大小，不是射頻驅動。網路發射請使用電台／網路的驅動設定。</string>
+    <string name="ptt_control_failed">PTT 指令未獲確認。請檢查電台狀態，並按 Stop 再次嘗試解除發射。</string>
 </resources>

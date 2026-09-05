@@ -1,6 +1,7 @@
 package yakumo2683.RADEdecode.service
 
 import android.Manifest
+import android.annotation.SuppressLint
 import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
@@ -66,6 +67,10 @@ class AudioService : LifecycleService() {
     // Current session tracking
     private var currentWavPath: String? = null
     private var currentSession: ReceptionSession? = null
+    // Finite DB writes may finish after onDestroy. They must never delay CAT
+    // or audio startup while SQLite is busy with reception snapshots.
+    private val sessionWrites = SupervisorJob()
+    private val sessionWriteScope = CoroutineScope(Dispatchers.IO + sessionWrites)
     private var sessionStartTime: Long = 0
     private var lastSyncState: Int = 0
     private var totalModemFrames: Int = 0
@@ -406,7 +411,7 @@ class AudioService : LifecycleService() {
     }
 
     /**
-     * TX USB audio output level (0..1). Lowered from the previous hard-coded 5%
+     * TX USB audio output level (0..1). Raised from the previous hard-coded 5%
      * because that was too quiet for some rigs (e.g. IC-7300) — ALC barely moved
      * and the user couldn't reach rated power. The user now drives this from
      * Settings; too hot a value will slam ALC, so document the rig's USB MOD level.
@@ -1489,8 +1494,8 @@ class AudioService : LifecycleService() {
         val am = getSystemService(AUDIO_SERVICE) as AudioManager
         val usbDev = am.getDevices(AudioManager.GET_DEVICES_OUTPUTS).firstOrNull { it.id == outputDeviceId }
         if (usbDev != null) {
-            track.setPreferredDevice(usbDev)
-            Log.i("AudioService", "TX AudioTrack: routing to ${usbDev.productName} (id=$outputDeviceId)")
+            val accepted = track.setPreferredDevice(usbDev)
+            Log.i("AudioService", "TX AudioTrack: routing to ${usbDev.productName} (id=$outputDeviceId) accepted=$accepted")
         } else {
             Log.w("AudioService", "TX AudioTrack: USB device $outputDeviceId not found, using default")
         }
@@ -1530,8 +1535,12 @@ class AudioService : LifecycleService() {
         val done = java.util.concurrent.CountDownLatch(1)
         txPumpDone = done
         txPumpJob = lifecycleScope.launch(Dispatchers.IO) {
-            val buf = ShortArray(800)  // 100ms at 8kHz
-            var framesWritten = 0L
+            val buf = ShortArray(160)  // 20ms at 8kHz
+            val pcmWriter = TxPcmWriter { samples, offset, count -> track.write(samples, offset, count) }
+            var levelSamples = 0L
+            var sumSquares = 0.0
+            var peak = 0
+            var healthAt = System.nanoTime()
             try {
                 if (awaitRoutedDevice) {
                     // Feed silence until the track is actually routed to the
@@ -1549,8 +1558,7 @@ class AudioService : LifecycleService() {
                             routedOk = true
                             break
                         }
-                        track.write(zeros, 0, zeros.size)
-                        framesWritten += zeros.size
+                        pcmWriter.write(zeros, zeros.size)
                         delay(20)
                         waitedMs += 20
                     }
@@ -1565,10 +1573,37 @@ class AudioService : LifecycleService() {
                 while (isActive && bridge.isTxRunning) {
                     val got = bridge.nativeReadTxRing(buf, buf.size)
                     if (got > 0) {
-                        track.write(buf, 0, got)
-                        framesWritten += got
+                        pcmWriter.write(buf, got)
+                        for (i in 0 until got) {
+                            val sample = buf[i].toInt()
+                            sumSquares += sample.toDouble() * sample
+                            peak = maxOf(peak, kotlin.math.abs(sample))
+                        }
+                        levelSamples += got
                     } else {
                         delay(10)
+                    }
+                    if (System.nanoTime() - healthAt >= 1_000_000_000L) {
+                        val rmsDb = if (levelSamples > 0 && sumSquares > 0)
+                            10 * kotlin.math.log10(sumSquares / levelSamples / (32768.0 * 32768.0))
+                        else Double.NEGATIVE_INFINITY
+                        val routed = track.routedDevice
+                        val mediaIndex = am.getStreamVolume(AudioManager.STREAM_MUSIC)
+                        // AudioTrack supplies an output route, but getType()'s
+                        // annotation also includes input-only constants.
+                        @SuppressLint("WrongConstant")
+                        val mediaDb = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P && routed?.isSink == true)
+                            runCatching { am.getStreamVolumeDb(AudioManager.STREAM_MUSIC, mediaIndex, routed.type) }.getOrNull()
+                        else null
+                        Log.i("AudioService", "TX health: pcmRmsDb=$rmsDb pcmPeak=$peak " +
+                            "txGain=$txVolume media=$mediaIndex/${am.getStreamMaxVolume(AudioManager.STREAM_MUSIC)} " +
+                            "mediaDb=$mediaDb muted=${am.isStreamMute(AudioManager.STREAM_MUSIC)} " +
+                            "underruns=${track.underrunCount} ring=${bridge.nativeTxRingAvailable()} " +
+                            "requested=$outputDeviceId routed=${routed?.id} frames=${pcmWriter.framesWritten}")
+                        healthAt = System.nanoTime()
+                        levelSamples = 0
+                        sumSquares = 0.0
+                        peak = 0
                     }
                 }
                 // TX stopped: what's left in the ring is the EOO (callsign)
@@ -1577,19 +1612,18 @@ class AudioService : LifecycleService() {
                 // stopTransmitting() unkeys nothing until then.
                 var remaining = bridge.nativeReadTxRing(buf, buf.size)
                 while (isActive && remaining > 0) {
-                    track.write(buf, 0, remaining)
-                    framesWritten += remaining
+                    pcmWriter.write(buf, remaining)
                     remaining = bridge.nativeReadTxRing(buf, buf.size)
                 }
                 var waitedMs = 0
                 while (isActive && waitedMs < 1500 &&
-                    track.playbackHeadPosition.toLong() < framesWritten
+                    (track.playbackHeadPosition.toLong() and 0xffffffffL) < pcmWriter.framesWritten
                 ) {
                     delay(20)
                     waitedMs += 20
                 }
-            } catch (_: IllegalStateException) {
-                // AudioTrack was released — normal during stop
+            } catch (e: IllegalStateException) {
+                if (isActive) Log.e("AudioService", "TX audio pump stopped before completing playback", e)
             } finally {
                 done.countDown()
             }
@@ -1682,8 +1716,11 @@ class AudioService : LifecycleService() {
         val finalSyncedFrames = syncedFrames
         val wavPath = currentWavPath
 
-        val latch = java.util.concurrent.CountDownLatch(1)
-        lifecycleScope.launch(Dispatchers.IO) {
+        // Detach the completed session before dispatching its immutable snapshot.
+        // RX→TX used to wait up to 5 seconds here for unrelated disk I/O.
+        currentSession = null
+        currentWavPath = null
+        sessionWriteScope.launch {
             try {
                 if (wavPath != null) {
                     val wavFile = java.io.File(wavPath)
@@ -1699,14 +1736,10 @@ class AudioService : LifecycleService() {
                     totalFrames = finalTotalFrames,
                     syncedFrames = finalSyncedFrames
                 )
-            } finally {
-                latch.countDown()
+            } catch (e: Exception) {
+                Log.e("AudioService", "Failed to finalize reception session ${session.id}", e)
             }
         }
-        latch.await(5, java.util.concurrent.TimeUnit.SECONDS)
-
-        currentSession = null
-        currentWavPath = null
     }
 
     private fun handleSyncChange(newState: Int) {
@@ -1948,6 +1981,7 @@ class AudioService : LifecycleService() {
         // Fast teardown on destroy — don't block the main thread draining the EOO.
         if (_state.value.isTx) stopTransmitting(drainEoo = false, forceFullTeardown = true)
         else stopDecoding()
+        sessionWrites.complete() // let already submitted saves finish without blocking
         super.onDestroy()
     }
 }
