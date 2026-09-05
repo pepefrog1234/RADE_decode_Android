@@ -175,6 +175,8 @@
     <string name="rig_network_hint">使用 IC-705 内置服务器通过 Wi-Fi 连接。请在电台上设置：Set ▸ Network ▸ Network Control = ON，并设置网络用户名与密码。在此输入电台的 IP 地址。控制与音频均通过 Wi-Fi 传输，无需 USB 线。</string>
     <string name="rig_net_audio_on">音频 (Wi-Fi)：已连接</string>
     <string name="rig_net_audio_off">音频 (Wi-Fi)：未连接</string>
+    <string name="rig_icom_buffer_label">音频缓冲（网络延迟）</string>
+    <string name="rig_icom_buffer_help">Wi-Fi/局域网使用 150 ms 即可。通过 LTE 或 VPN 连接时请选择 500–800 ms：电台会缓冲这么长的发射音频，数据包延迟或丢失时发射信号不再中断，丢失的数据包也来得及重传。发射结束后 PTT 会保持同样的时间，避免呼号被切断。下次连接时生效。</string>
     <string name="rig_hl2_network_mode">HL2 (局域网)</string>
     <string name="rig_hl2_network_hint">通过 openHPSDR（协议 1）直接控制局域网上的 Hermes-Lite 2：发现、频率、PTT 与 I/Q 流全部走 UDP 端口 1024，无需电脑。主机留空则通过广播自动发现。SSB 调制/解调在应用内完成。</string>
     <string name="rig_hl2_host_auto">自动发现（广播）</string>
@@ -262,5 +264,5 @@
     <string name="share_audio">分享解码音频</string>
     <string name="settings_tx_media_volume">Android 媒体音量：%1$d / %2$d</string>
     <string name="settings_tx_media_volume_help">USB／扬声器发射也会受到 Android 媒体音量影响。功率偏低时，请观察电台 ALC，逐步调整此音量与发射电平。TX Mic Gain 调整的是语音大小，不是射频驱动。网络发射请使用电台／网络的驱动设置。</string>
-    <string name="ptt_control_failed">PTT 指令未获确认。请检查电台状态，并按 Stop 再次尝试解除发射。</string>
+    <string name="ptt_control_failed">PTT 解除未获确认——正在自动重试。请检查电台状态；按 Stop 可立即重试。</string>
 </resources>

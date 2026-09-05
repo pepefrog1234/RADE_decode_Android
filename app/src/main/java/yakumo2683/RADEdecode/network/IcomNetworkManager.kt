@@ -45,7 +45,17 @@ class IcomNetworkManager : NetworkAudioRig {
         const val NET_AUDIO_RATE = 48000
         /** 20 ms TX frame: 48000 × 0.02 = 960 samples = 1920 bytes. */
         const val NET_AUDIO_FRAME_SAMPLES = 960
-        private const val TX_BUF_MS = 150
+
+        /** Radio-side TX audio buffer (ms), requested in the conninfo packet: the
+         *  jitter buffer the radio fills before it plays our TX audio (wfview's
+         *  "TX latency", kappanhang's txSeqBufLength; RS-BA1's default is 150).
+         *  Also sizes our own RX jitter depth. 150 ms suits Wi-Fi/LAN. Over LTE
+         *  or a VPN both the arrival jitter and the retransmit round trip exceed
+         *  it, so the radio's buffer ran dry every few seconds — the reported
+         *  short interruptions of the transmitted RADE signal. */
+        const val DEFAULT_AUDIO_BUFFER_MS = 150
+        const val MIN_AUDIO_BUFFER_MS = 100
+        const val MAX_AUDIO_BUFFER_MS = 1000
 
         /** How many times the whole connect handshake is attempted before giving
          *  up, and the pause after each failed attempt. A radio that has just
@@ -151,6 +161,16 @@ class IcomNetworkManager : NetworkAudioRig {
     override val audioRate: Int get() = NET_AUDIO_RATE
     override val txFrameSamples: Int get() = NET_AUDIO_FRAME_SAMPLES
 
+    /** See [DEFAULT_AUDIO_BUFFER_MS]. Set before connect(); it is sent to the
+     *  radio in the conninfo packet, so a change takes effect on the next connect. */
+    @Volatile var audioBufferMs: Int = DEFAULT_AUDIO_BUFFER_MS
+        set(value) { field = value.coerceIn(MIN_AUDIO_BUFFER_MS, MAX_AUDIO_BUFFER_MS) }
+    override val txBufferMs: Int get() = audioBufferMs
+    /** PTT must stay keyed this long after the last TX frame left the phone:
+     *  the radio still holds up to [audioBufferMs] of it, plus network + DSP
+     *  latency. Cutting PTT earlier truncates the EOO callsign on the air. */
+    override val txTailMs: Int get() = audioBufferMs + 150
+
     private var connScope: CoroutineScope? = null
 
     /** Optional persistence hooks (wired by the ViewModel to SharedPreferences).
@@ -165,6 +185,15 @@ class IcomNetworkManager : NetworkAudioRig {
     private var serial: IcomStream? = null
     private var audio: IcomStream? = null
     private var audioSendSeq = 0
+
+    /** Set by [abortConnect]: makes a running connect() stop retrying after the
+     *  current attempt instead of grinding through all CONNECT_ATTEMPTS. */
+    @Volatile private var abortRequested = false
+
+    /** Cancel an in-flight connect() retry loop (operator pressed the button
+     *  while "CONNECTING…", e.g. to stop an automatic reconnect to a radio that
+     *  is really switched off). Safe to call when nothing is connecting. */
+    fun abortConnect() { abortRequested = true }
 
     // Protocol state (control stream)
     private var username = ""
@@ -197,6 +226,7 @@ class IcomNetworkManager : NetworkAudioRig {
 
         username = user
         password = pass
+        abortRequested = false
 
         for (attempt in 1..CONNECT_ATTEMPTS) {
             val pty = attemptConnect(host, controlPort)
@@ -206,6 +236,11 @@ class IcomNetworkManager : NetworkAudioRig {
             // A genuine name/password rejection fails identically on every retry —
             // stop now and let the operator fix it instead of burning ~1 min.
             if (err.startsWith(ERR_BAD_CREDENTIALS)) return ""
+            if (abortRequested) {
+                Log.i(TAG, "connect aborted by operator after attempt $attempt")
+                _state.value = State()
+                return ""
+            }
             if (attempt >= CONNECT_ATTEMPTS) break
 
             val backoff = CONNECT_BACKOFF_MS[(attempt - 1).coerceAtMost(CONNECT_BACKOFF_MS.size - 1)]
@@ -217,6 +252,11 @@ class IcomNetworkManager : NetworkAudioRig {
                 error = "$err — retrying (${attempt + 1}/$CONNECT_ATTEMPTS)…"
             )
             delay(backoff)
+            if (abortRequested) {
+                Log.i(TAG, "connect aborted by operator during backoff")
+                _state.value = State()
+                return ""
+            }
         }
         return ""
     }
@@ -473,7 +513,13 @@ class IcomNetworkManager : NetworkAudioRig {
         Log.i(TAG, "serial/audio granted, device='$devName' — opening CI-V stream")
 
         scope.launch {
-            val ser = IcomStream("serial", host, SERIAL_PORT, scope)
+            // CI-V replies are few and each one matters (a lost PTT ack costs a
+            // full rigctld timeout+retry round): track the radio's numbering and
+            // ask for anything missing right away.
+            val ser = IcomStream(
+                "serial", host, SERIAL_PORT, scope,
+                rxTracker = IcomRxSeqTracker(giveUpAfterMs = 1000, reRequestMs = 150)
+            )
             serial = ser
             if (!ser.open()) {
                 fail("CI-V stream handshake failed")
@@ -497,6 +543,7 @@ class IcomNetworkManager : NetworkAudioRig {
             scope.launch { serialRxLoop(ser) }
             // pty (rigctld writes) → radio CI-V
             scope.launch { ptyTxLoop(ser) }
+            ser.startStatsLog()
 
             // Phase 2 "full wireless": also bring up the audio stream (UDP 50003).
             // Control still succeeds even if audio fails — the user can fall back
@@ -508,7 +555,12 @@ class IcomNetworkManager : NetworkAudioRig {
     }
 
     private suspend fun openAudio(host: String, scope: CoroutineScope) {
-        val aud = IcomStream("audio", host, AUDIO_PORT, scope)
+        // RX audio: a lost packet is requested again and has audioBufferMs to
+        // arrive before the jitter buffer conceals it (same horizon).
+        val aud = IcomStream(
+            "audio", host, AUDIO_PORT, scope,
+            rxTracker = IcomRxSeqTracker(giveUpAfterMs = audioBufferMs.toLong(), reRequestMs = 100)
+        )
         audio = aud
         if (!aud.open()) {
             Log.w(TAG, "audio stream handshake failed — control works, audio stays on USB")
@@ -520,8 +572,9 @@ class IcomNetworkManager : NetworkAudioRig {
         // packets are tracked) — matching the reference implementation.
         audioSendSeq = 0
         scope.launch { audioRxLoop(aud) }
+        aud.startStatsLog()
         _state.value = _state.value.copy(audioConnected = true)
-        Log.i(TAG, "audio stream up (UDP $AUDIO_PORT, ${NET_AUDIO_RATE}Hz) — full wireless")
+        Log.i(TAG, "audio stream up (UDP $AUDIO_PORT, ${NET_AUDIO_RATE}Hz, radio TX buffer ${audioBufferMs}ms) — full wireless")
     }
 
     /* ───────────────────── audio (UDP 50003) bridge ──────────────── */
@@ -540,9 +593,12 @@ class IcomNetworkManager : NetworkAudioRig {
         var pcmPackets = 0L
         var fedSamples = 0L
         var sawConsumer = false
-        val jitter = AudioJitter { pkt ->
+        // Jitter depth follows the configured buffer: at the radio's 100 pkt/s,
+        // audioBufferMs/10 packets. A lost packet gets that long for the
+        // requested retransmit to arrive before it is concealed with silence.
+        val jitter = IcomAudioJitter(maxPackets = (audioBufferMs / 10).coerceIn(24, 120)) { pkt ->
             val payloadLen = pkt.size - 24
-            if (payloadLen <= 0) return@AudioJitter
+            if (payloadLen <= 0) return@IcomAudioJitter
             val n = payloadLen / 2
             val shorts = ShortArray(n)
             var bi = 24
@@ -563,8 +619,9 @@ class IcomNetworkManager : NetworkAudioRig {
                     ((r.u(0) == 0x6c && r.u(1) == 0x05) || (r.u(0) == 0x44 && r.u(1) == 0x02))) {
                     if (pcmPackets == 0L) Log.i(TAG, "audio RX: first audio packet from radio (size=${r.size})")
                     pcmPackets++
-                    if (pcmPackets % 250L == 0L)
-                        Log.i(TAG, "audio RX: $pcmPackets pkts, fed=$fedSamples samples, consumer=${onAudioPcm != null}")
+                    if (pcmPackets % 500L == 0L)
+                        Log.i(TAG, "audio RX: $pcmPackets pkts, fed=$fedSamples samples, " +
+                            "concealed=${jitter.concealed} late=${jitter.lateDropped} consumer=${onAudioPcm != null}")
                     jitter.add(u16le(r, 6), r)
                 }
             }
@@ -607,50 +664,6 @@ class IcomNetworkManager : NetworkAudioRig {
         System.arraycopy(data, off, p, 24, len)
         // p[6:7] (tracking seq) is filled by sendTracked.
         return p
-    }
-
-    /**
-     * Minimal in-order jitter buffer with 16-bit modular sequence numbers.
-     * Releases contiguous packets immediately; if the next expected packet is
-     * missing and the buffer grows past [MAX], it skips forward to the oldest
-     * buffered packet (accepting the gap) so audio never stalls permanently.
-     * Single-threaded: only touched from one consume coroutine.
-     */
-    private class AudioJitter(private val onPcm: (ByteArray) -> Unit) {
-        private val buf = HashMap<Int, ByteArray>()
-        private var expected = -1
-        companion object { private const val MAX = 24 }  // ~24 packets ≈ 240 ms
-
-        fun add(seq: Int, pkt: ByteArray) {
-            if (expected < 0) expected = seq
-            if (seqLess(seq, expected)) return       // already played / too old
-            buf[seq] = pkt
-            drain()
-            if (buf.size > MAX) {
-                // Stuck on a lost packet — resync to the oldest buffered seq.
-                var oldest = expected
-                var first = true
-                for (k in buf.keys) {
-                    if (first || seqLess(k, oldest)) { oldest = k; first = false }
-                }
-                expected = oldest
-                drain()
-            }
-        }
-
-        private fun drain() {
-            while (true) {
-                val p = buf.remove(expected) ?: break
-                onPcm(p)
-                expected = (expected + 1) and 0xFFFF
-            }
-        }
-
-        /** True if a is strictly "before" b in 16-bit modular sequence space. */
-        private fun seqLess(a: Int, b: Int): Boolean {
-            val d = (b - a) and 0xFFFF
-            return d != 0 && d < 0x8000
-        }
     }
 
     private suspend fun reauthLoop(ctrl: IcomStream) {
@@ -796,7 +809,9 @@ class IcomNetworkManager : NetworkAudioRig {
         p[122] = (NET_AUDIO_RATE ushr 8).toByte(); p[123] = NET_AUDIO_RATE.toByte()  // tx
         p[126] = (SERIAL_PORT ushr 8).toByte(); p[127] = SERIAL_PORT.toByte()
         p[130] = (AUDIO_PORT ushr 8).toByte(); p[131] = AUDIO_PORT.toByte()
-        p[134] = (TX_BUF_MS ushr 8).toByte(); p[135] = TX_BUF_MS.toByte()
+        val bufMs = audioBufferMs                                  // radio TX buffer, u32 BE @132
+        p[132] = (bufMs ushr 24).toByte(); p[133] = (bufMs ushr 16).toByte()
+        p[134] = (bufMs ushr 8).toByte(); p[135] = bufMs.toByte()
         p[136] = 0x01
         authInnerSeq = (authInnerSeq + 1) and 0xFFFF
         return p
@@ -849,7 +864,10 @@ class IcomNetworkManager : NetworkAudioRig {
         val name: String,
         val host: String,
         val port: Int,
-        val scope: CoroutineScope
+        val scope: CoroutineScope,
+        /** When set, the radio's tracked packets on this stream are deduplicated
+         *  and gaps are requested back (kappanhang/wfview behaviour). */
+        private val rxTracker: IcomRxSeqTracker? = null
     ) {
         var localSID = 0
         var remoteSID = 0
@@ -860,6 +878,16 @@ class IcomNetworkManager : NetworkAudioRig {
 
         private var trackSeq = 1                       // pkt0 tracking seq (bytes 6-7)
         private val txBuf = LinkedHashMap<Int, ByteArray>()
+        private val isAudio = name == "audio"
+
+        // Link diagnostics (logged by startStatsLog while they change).
+        private var txTracked = 0L          // tracked packets we sent
+        private var rxPackets = 0L          // datagrams from the radio
+        private var radioReqSingle = 0L     // radio asked for one missing packet
+        private var radioReqRange = 0L      // radio asked for a range
+        private var radioReqPackets = 0L    // packets covered by those requests
+        private var resentPackets = 0L      // resent from txBuf
+        private var resentAsIdle = 0L       // requested but no longer buffered
 
         private var pingSeq = 1
         private var pingInner = 0x8304
@@ -989,6 +1017,27 @@ class IcomNetworkManager : NetworkAudioRig {
             }
         }
 
+        /**
+         * Periodic one-line link report (only while the counters change): how
+         * much the radio had to ask us to resend (uplink loss) and how much we
+         * had to ask the radio (downlink loss). Lets a field log tell packet
+         * loss from a stalled pump or a starved radio buffer without a sniffer.
+         */
+        fun startStatsLog(intervalMs: Long = 5000) {
+            scope.launch {
+                var last = ""
+                try {
+                    while (isActive && running) {
+                        delay(intervalMs)
+                        val rx = rxTracker?.stats?.toString() ?: "pkts=$rxPackets"
+                        val line = "$name link: tx=$txTracked radioReq=${radioReqSingle}s/${radioReqRange}r " +
+                            "(${radioReqPackets} pkts) resent=$resentPackets idleFill=$resentAsIdle | rx: $rx"
+                        if (line != last) { Log.i(TAG, line); last = line }
+                    }
+                } catch (_: CancellationException) {}
+            }
+        }
+
         /** Discard every packet already queued on [incoming] (nothing blocks). */
         fun drainPending() {
             while (incoming.tryReceive().getOrNull() != null) { /* drop */ }
@@ -1013,6 +1062,7 @@ class IcomNetworkManager : NetworkAudioRig {
         /** Assign the next tracking seq, store for retransmit, then send. */
         fun sendTracked(p: ByteArray) {
             synchronized(sendLock) {
+                txTracked++
                 p[6] = trackSeq.toByte(); p[7] = (trackSeq ushr 8).toByte()
                 txBuf[trackSeq and 0xFFFF] = p.copyOf()
                 if (txBuf.size > 512) {
@@ -1051,11 +1101,15 @@ class IcomNetworkManager : NetworkAudioRig {
                     val dp = DatagramPacket(buf, buf.size)
                     sock.receive(dp)
                     lastRxMs = System.currentTimeMillis()   // any traffic = radio alive
+                    rxPackets++
                     val r = buf.copyOf(dp.length)
                     when {
                         isPkt7(r) -> handlePkt7(r)
-                        isPkt0(r) -> handlePkt0(r)
-                        else -> incoming.trySend(r)
+                        isRetransmitRequest(r) -> handleRetransmitRequest(r)
+                        // Everything else the radio sends is one of its TRACKED
+                        // packets — an idle pkt0 or data — numbered at bytes 6-7.
+                        // Dedup + gap detection first; idles carry nothing further.
+                        else -> if (admitTracked(r) && !isIdle(r)) incoming.trySend(r)
                     }
                 } catch (_: SocketTimeoutException) {
                     // loop to re-check `running`
@@ -1069,9 +1123,53 @@ class IcomNetworkManager : NetworkAudioRig {
         private fun isPkt7(r: ByteArray) =
             r.size == 21 && r.u(1) == 0 && r.u(2) == 0 && r.u(3) == 0 && r.u(4) == 0x07 && r.u(5) == 0
 
-        private fun isPkt0(r: ByteArray) = r.size >= 16 && r.u(1) == 0 && r.u(2) == 0 && r.u(3) == 0 &&
-            ((r.u(0) == 0x10 && (r.u(4) == 0x00 || r.u(4) == 0x01) && r.u(5) == 0) ||
-             (r.u(0) == 0x18 && r.u(4) == 0x01 && r.u(5) == 0))
+        /** Radio asks us to resend: single seq (0x10, type 1) or ranges (0x18, type 1). */
+        private fun isRetransmitRequest(r: ByteArray) = r.size >= 16 &&
+            r.u(1) == 0 && r.u(2) == 0 && r.u(3) == 0 && r.u(4) == 0x01 && r.u(5) == 0 &&
+            (r.u(0) == 0x10 || r.u(0) == 0x18)
+
+        /** Idle pkt0 (16 bytes, type 0): keep-alive that still consumes a seq. */
+        private fun isIdle(r: ByteArray) = r.size == 16 && r.u(0) == 0x10 &&
+            r.u(1) == 0 && r.u(2) == 0 && r.u(3) == 0 && r.u(4) == 0 && r.u(5) == 0
+
+        /** Any type-0 packet of 16+ bytes is tracked (radio's seq at bytes 6-7). */
+        private fun isTracked(r: ByteArray) = r.size >= 16 &&
+            r.u(1) == 0 && r.u(2) == 0 && r.u(3) == 0 && r.u(4) == 0 && r.u(5) == 0
+
+        /**
+         * Feed a tracked packet to the gap tracker (when this stream has one) and
+         * send any due retransmit requests. Returns false for a DUPLICATE that
+         * must not be delivered again — the original arrived after all, or the
+         * radio answered a request twice. A duplicated CI-V "OK" would otherwise
+         * be taken by rigctld as the acknowledgement of its NEXT command.
+         */
+        private fun admitTracked(r: ByteArray): Boolean {
+            val tracker = rxTracker ?: return true
+            if (!isTracked(r)) return true
+            val now = System.currentTimeMillis()
+            val fresh = tracker.onPacket(u16le(r, 6), now)
+            for (range in tracker.dueRequests(now)) sendRetransmitRequest(range)
+            return fresh
+        }
+
+        /** Ask the radio to resend [range] — same wire format it uses toward us
+         *  (kappanhang sendRetransmitRequest/…ForRanges), sent twice like it does. */
+        private fun sendRetransmitRequest(range: IcomRxSeqTracker.SeqRange) {
+            val p: ByteArray
+            if (range.first == range.last) {
+                p = ByteArray(16)
+                p[0] = 0x10; p[4] = 0x01
+                p[6] = range.first.toByte(); p[7] = (range.first ushr 8).toByte()
+                p.putSid(8, localSID); p.putSid(12, remoteSID)
+            } else {
+                p = ByteArray(20)
+                p[0] = 0x18; p[4] = 0x01
+                p.putSid(8, localSID); p.putSid(12, remoteSID)
+                p[16] = range.first.toByte(); p[17] = (range.first ushr 8).toByte()
+                p[18] = range.last.toByte(); p[19] = (range.last ushr 8).toByte()
+            }
+            sendRaw(p); sendRaw(p)
+        }
 
         private fun handlePkt7(r: ByteArray) {
             if (r.u(16) == 0x00 && keepaliveStarted) {
@@ -1088,25 +1186,45 @@ class IcomNetworkManager : NetworkAudioRig {
             // else: reply to our own ping — nothing to do.
         }
 
-        private fun handlePkt0(r: ByteArray) {
-            if (r.u(0) == 0x10 && r.u(4) == 0x01) {
-                resend(u16le(r, 6))
-            } else if (r.u(0) == 0x18 && r.u(4) == 0x01) {
+        private fun handleRetransmitRequest(r: ByteArray) {
+            if (r.u(0) == 0x10) {
+                radioReqSingle++; radioReqPackets++
+                resend(u16le(r, 6), burst = false)
+            } else {
+                radioReqRange++
                 var i = 16
                 while (i + 4 <= r.size) {
                     val start = u16le(r, i); val end = u16le(r, i + 2)
                     var s = start
-                    while (true) { resend(s); if (s == end) break; s = (s + 1) and 0xFFFF }
+                    var n = 0
+                    while (n < 512) {   // bound a malformed range
+                        resend(s, burst = true); n++
+                        if (s == end) break
+                        s = (s + 1) and 0xFFFF
+                    }
+                    radioReqPackets += n
                     i += 4
                 }
             }
-            // else: idle — ignore.
         }
 
-        private fun resend(seq: Int) {
+        /**
+         * Resend a tracked packet the radio missed. Singles get the protocol's
+         * customary double send. A RANGE request means a burst was lost; on the
+         * audio stream each packet of it is resent once, so a weak LTE uplink
+         * is not hit with twice the burst it just failed to carry (a lost resend
+         * is simply requested again).
+         */
+        private fun resend(seq: Int, burst: Boolean) {
             val d = txBuf[seq and 0xFFFF]
-            if (d != null) { sendRaw(d); sendRaw(d) }
-            else { val idle = idlePacketWithSeq(seq); sendRaw(idle); sendRaw(idle) }
+            if (d != null) {
+                resentPackets++
+                sendRaw(d)
+                if (!(burst && isAudio)) sendRaw(d)
+            } else {
+                resentAsIdle++
+                val idle = idlePacketWithSeq(seq); sendRaw(idle); sendRaw(idle)
+            }
         }
 
         private fun sendPingRequest() {

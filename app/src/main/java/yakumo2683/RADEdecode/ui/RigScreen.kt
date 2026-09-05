@@ -278,6 +278,8 @@ fun RigScreen(viewModel: TransceiverViewModel = viewModel()) {
     var icomPortInput by remember { mutableStateOf(rigPrefs.getString("icom_port", "50001") ?: "50001") }
     var icomUser by remember { mutableStateOf(rigPrefs.getString("icom_user", "") ?: "") }
     var icomPass by remember { mutableStateOf(rigPrefs.getString("icom_pass", "") ?: "") }
+    // Radio-side TX audio buffer / network latency (ms) for the Icom link.
+    var icomBufferMs by remember { mutableIntStateOf(rigPrefs.getInt("icom_buf_ms", 150)) }
     // Hermes-Lite 2 direct (openHPSDR protocol 1) mode fields
     var hl2HostInput by remember { mutableStateOf(rigPrefs.getString("hl2_host", "") ?: "") }
     var hl2Drive by remember { mutableFloatStateOf(viewModel.getSavedHl2Drive().toFloat()) }
@@ -551,6 +553,50 @@ fun RigScreen(viewModel: TransceiverViewModel = viewModel()) {
                         modifier = Modifier.fillMaxWidth(),
                         textStyle = androidx.compose.ui.text.TextStyle(fontFamily = FontFamily.Monospace, fontSize = 14.sp),
                         colors = OutlinedTextFieldDefaults.colors(focusedBorderColor = Cyan400, focusedLabelColor = Cyan400, cursorColor = Cyan400)
+                    )
+                    // Radio-side TX audio buffer (the conninfo "txbuffer"). 150 ms
+                    // suits Wi-Fi/LAN; over LTE/VPN the radio's buffer ran dry on
+                    // every jitter spike and the transmitted signal broke up.
+                    Text(
+                        stringResource(R.string.rig_icom_buffer_label),
+                        color = OnSurfaceDim,
+                        fontSize = 11.sp,
+                        fontWeight = FontWeight.Bold
+                    )
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        listOf(150, 300, 500, 800).forEach { ms ->
+                            val selected = icomBufferMs == ms
+                            Surface(
+                                onClick = { if (!rigState.connected) icomBufferMs = ms },
+                                modifier = Modifier
+                                    .weight(1f)
+                                    .border(
+                                        1.5f.dp,
+                                        if (selected) Cyan400 else MaterialTheme.colorScheme.outline,
+                                        RoundedCornerShape(10.dp)
+                                    ),
+                                shape = RoundedCornerShape(10.dp),
+                                color = if (selected) Cyan600.copy(alpha = 0.2f) else SurfaceCard,
+                            ) {
+                                Text(
+                                    text = "$ms ms",
+                                    modifier = Modifier.padding(vertical = 8.dp),
+                                    textAlign = TextAlign.Center,
+                                    fontWeight = FontWeight.Bold,
+                                    fontFamily = FontFamily.Monospace,
+                                    fontSize = 12.sp,
+                                    color = if (selected) Cyan400 else OnSurfaceDim
+                                )
+                            }
+                        }
+                    }
+                    Text(
+                        stringResource(R.string.rig_icom_buffer_help),
+                        color = OnSurfaceDim,
+                        fontSize = 11.sp
                     )
                 } else if (connMode == 3) {
                     // Hermes-Lite 2 direct — openHPSDR protocol 1 on the LAN
@@ -1017,7 +1063,9 @@ fun RigScreen(viewModel: TransceiverViewModel = viewModel()) {
                 Button(
                     onClick = {
                         focusManager.clearFocus()
-                        if (anyRigConnected) {
+                        // While CONNECTING… the same button cancels: stops a manual
+                        // connect's retry loop or the automatic Icom reconnect.
+                        if (connecting || anyRigConnected) {
                             viewModel.rigDisconnect()
                         } else {
                             // Persist settings on connect
@@ -1034,6 +1082,7 @@ fun RigScreen(viewModel: TransceiverViewModel = viewModel()) {
                                 .putString("icom_port", icomPortInput)
                                 .putString("icom_user", icomUser)
                                 .putString("icom_pass", icomPass)
+                                .putInt("icom_buf_ms", icomBufferMs)
                                 .putString("hl2_host", hl2HostInput)
                                 .putString("vban_host", vbanHostInput)
                                 .putString("vban_port", vbanPortInput)
@@ -1059,7 +1108,7 @@ fun RigScreen(viewModel: TransceiverViewModel = viewModel()) {
                                 }
                             } else if (connMode == 2) {
                                 val port = icomPortInput.toIntOrNull() ?: 50001
-                                viewModel.rigStartIcomNetwork(hostInput, port, icomUser, icomPass)
+                                viewModel.rigStartIcomNetwork(hostInput, port, icomUser, icomPass, icomBufferMs)
                             } else if (connMode == 3) {
                                 viewModel.rigStartHermesNetwork(hl2HostInput)
                             } else if (connMode == 4) {
@@ -1089,7 +1138,7 @@ fun RigScreen(viewModel: TransceiverViewModel = viewModel()) {
                             }
                         }
                     },
-                    enabled = !connecting && (anyRigConnected || connMode == 0 || connMode == 2 || connMode == 3 || connMode == 4 || usbState.devices.isNotEmpty()),
+                    enabled = connecting || anyRigConnected || connMode == 0 || connMode == 2 || connMode == 3 || connMode == 4 || usbState.devices.isNotEmpty(),
                     modifier = Modifier.fillMaxWidth().height(46.dp),
                     shape = RoundedCornerShape(10.dp),
                     colors = ButtonDefaults.buttonColors(

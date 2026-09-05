@@ -150,6 +150,11 @@ class TransceiverViewModel(application: Application) : AndroidViewModel(applicat
     /** Submit CAT immediately, even while the main thread is opening audio.
      *  Join before unkeying so a slow T 1 cannot arrive after T 0. */
     private var pttKeyJob: Deferred<Boolean>? = null
+    /** Background unkey retry, started when the quick attempts in
+     *  stopTxAndUnkeyPtt all failed. Keeps trying — riding through an Icom
+     *  auto-reconnect — until rigctld acknowledges "T 0" or the operator
+     *  disconnects. A lossy LTE/VPN link must never leave the rig in TX. */
+    private var pttUnkeyJob: Job? = null
 
     /** True while the app has keyed the rig by asserting the serial RTS line
      *  (CAT-less interfaces, Rig tab "RTS PTT" option). */
@@ -163,6 +168,16 @@ class TransceiverViewModel(application: Application) : AndroidViewModel(applicat
     /** Guards the link-loss teardown so overlapping state emissions can't run it
      *  twice concurrently. */
     @Volatile private var icomLinkLostHandling = false
+
+    /** Last Icom connect parameters — the link-loss handler reconnects with them. */
+    private var icomLastHost = ""
+    private var icomLastPort = IcomNetworkManager.DEFAULT_CONTROL_PORT
+    private var icomLastUser = ""
+    private var icomLastPass = ""
+    private var icomAutoReconnectJob: Job? = null
+    /** The engine was running (RX or TX) when the Icom link dropped — resume RX
+     *  decoding after the automatic reconnect. */
+    @Volatile private var icomResumeRxAfterReconnect = false
 
     private val serviceConnection = object : ServiceConnection {
         override fun onServiceConnected(name: ComponentName?, binder: IBinder?) {
@@ -624,6 +639,9 @@ class TransceiverViewModel(application: Application) : AndroidViewModel(applicat
     }
 
     private fun doSwitchToTx() {
+        if (pttKeyedByApp && !_uiState.value.isTx) {
+            Log.w("TransceiverVM", "TX refused: the previous PTT release is still unconfirmed")
+        }
         if (!_uiState.value.isRunning || _uiState.value.isTx || pttKeyedByApp) return
         val requestedAt = System.nanoTime()
         val requestId = txRequestId
@@ -815,7 +833,10 @@ class TransceiverViewModel(application: Application) : AndroidViewModel(applicat
             // stuck in TX.
             pttKeyJob?.let { it.cancel(); it.join() }
             pttKeyJob = null
-            delay(TX_PTT_TAIL_MS)
+            // An unkey retry still running from an earlier over yields to this one.
+            pttUnkeyJob?.cancel()
+            pttUnkeyJob = null
+            delay(pttTailMs())
             if (hermesNetwork.isConnected && !rigController.isConnected) {
                 // HL2 direct: MOX=0 rides every subsequent C&C frame — no ack
                 // round-trip to lose, so no retry loop is needed.
@@ -835,7 +856,52 @@ class TransceiverViewModel(application: Application) : AndroidViewModel(applicat
             }
             pttKeyedByApp = !unkeyed
             if (!unkeyed) {
-                Log.e("TransceiverVM", "PTT unkey FAILED after retries — rig may be stuck in TX")
+                Log.e("TransceiverVM", "PTT unkey not acknowledged after quick retries — keep trying in the background")
+                startPersistentUnkey()
+            }
+        }
+    }
+
+    /** RF tail between the last TX audio leaving the phone and the PTT release.
+     *  On the Icom network path the radio still holds its whole TX buffer of our
+     *  audio when the pump has drained, so the tail follows that buffer depth
+     *  (150 ms default → 300 ms; 800 ms for LTE → 950 ms). */
+    private fun pttTailMs(): Long =
+        if (icomNetwork.isConnected) icomNetwork.txTailMs.toLong().coerceAtLeast(TX_PTT_TAIL_MS)
+        else TX_PTT_TAIL_MS
+
+    /**
+     * Keep releasing PTT until rigctld acknowledges it. The quick retry loop in
+     * stopTxAndUnkeyPtt spans only ~8 s; an LTE stall or a VPN re-key easily
+     * outlasts that, and giving up then left the IC-7300MK2 transmitting until
+     * its own TX time-out (reported). While the Icom transport is down this waits
+     * for the automatic reconnect (handleIcomLinkLost) to bring rigctld back, then
+     * unkeys. Ends when acknowledged or when the operator disconnects the rig.
+     */
+    private fun startPersistentUnkey() {
+        if (pttUnkeyJob?.isActive == true) return
+        pttUnkeyJob = viewModelScope.launch(Dispatchers.IO) {
+            var attempt = 0
+            while (isActive && pttKeyedByApp) {
+                attempt++
+                if (rigController.isConnected) {
+                    val ok = try {
+                        rigController.setPtt(false)
+                    } catch (e: CancellationException) {
+                        throw e
+                    } catch (_: Exception) {
+                        false
+                    }
+                    if (ok) {
+                        pttKeyedByApp = false
+                        Log.i("TransceiverVM", "PTT unkey acknowledged on background attempt $attempt")
+                        break
+                    }
+                    Log.w("TransceiverVM", "PTT unkey background attempt $attempt not acknowledged")
+                } else if (attempt % 5 == 1) {
+                    Log.w("TransceiverVM", "PTT unkey pending: rig link down (attempt $attempt) — waiting for reconnect")
+                }
+                delay(1000)
             }
         }
     }
@@ -978,7 +1044,8 @@ class TransceiverViewModel(application: Application) : AndroidViewModel(applicat
             arrayOf(
                 "logcat", "-d", "-v", "time",
                 "RigController:V", "RigctldProcess:V",
-                "UsbPtyBridge:V", "UsbSerialManager:V", "HermesNet:V", "*:S"
+                "UsbPtyBridge:V", "UsbSerialManager:V", "HermesNet:V",
+                "IcomNetwork:V", "TransceiverVM:V", "*:S"
             )
         )
         val out = proc.inputStream.bufferedReader().use { it.readText() }
@@ -1024,7 +1091,7 @@ class TransceiverViewModel(application: Application) : AndroidViewModel(applicat
             arrayOf(
                 "logcat", "-d", "-v", "time",
                 "AudioService:V", "AudioBridge:V", "AudioEngine:V", "RADE_JNI:V",
-                "HermesNet:V", "PureSignalPS:V", "TransceiverVM:V", "RigController:V",
+                "HermesNet:V", "IcomNetwork:V", "PureSignalPS:V", "TransceiverVM:V", "RigController:V",
                 "AndroidRuntime:V", "libc:V", "DEBUG:V", "crash_dump64:V",
                 "tombstoned:V", "*:S"
             )
@@ -1149,6 +1216,15 @@ class TransceiverViewModel(application: Application) : AndroidViewModel(applicat
 
     fun rigDisconnect() {
         icomUserDisconnect = true   // this teardown is intentional — not a link loss
+        icomAutoReconnectJob?.cancel()
+        icomAutoReconnectJob = null
+        icomResumeRxAfterReconnect = false
+        // A pending unkey can't be delivered once the operator tears the link
+        // down; the radio's own TX time-out is the fallback. Don't leave TX blocked.
+        pttUnkeyJob?.cancel()
+        pttUnkeyJob = null
+        pttKeyedByApp = false
+        icomNetwork.abortConnect()   // also stops a connect() retry loop in flight
         rigController.disconnect()
         rigctldProcess.stop()
         usbSerialManager.close()
@@ -1172,26 +1248,83 @@ class TransceiverViewModel(application: Application) : AndroidViewModel(applicat
         viewModelScope.launch(Dispatchers.IO) {
             try {
                 Log.w("TransceiverVM", "Icom transport lost — tearing down local rig stack")
-                // A radio that is gone can't be unkeyed; just drop our TX/RX state
-                // so the engine isn't left pretending to transmit into the void.
-                if (audioService?.state?.value?.isTx == true) {
+                val wasTx = audioService?.state?.value?.isTx == true
+                val wasRx = audioService?.state?.value?.isRunning == true
+                // Nothing reaches the radio right now: drop the engine's TX/RX state
+                // so it isn't left pretending to transmit into the void.
+                if (wasTx) {
                     audioService?.stopTransmitting(drainEoo = false, forceFullTeardown = true)
-                } else if (audioService?.state?.value?.isRunning == true) {
+                } else if (wasRx) {
                     audioService?.stopDecoding()
                 }
                 // Cancel any in-flight key-on retry so it can't keep trying to
                 // key a radio that is gone.
-                pttKeyedByApp = false
                 pttKeyJob?.cancel()
                 pttKeyJob = null
                 rtsPttKeyed = false
                 rigController.disconnect()
                 rigctldProcess.stop()
+                // The rig may well still be keyed (we were in TX, or an unkey was
+                // pending). Keep pttKeyedByApp so the background unkey fires the
+                // moment the link is back, and so the operator sees an honest
+                // "PTT not confirmed" instead of a clean RX display meanwhile.
+                if (wasTx) pttKeyedByApp = true
+                if (pttKeyedByApp) startPersistentUnkey()
+                icomResumeRxAfterReconnect = wasRx || wasTx
+                // Weak-LTE drops are transient: reconnect by ourselves (connect()
+                // already retries across the radio's session-cleanup window).
+                if (!icomUserDisconnect && icomLastHost.isNotEmpty()) {
+                    scheduleIcomAutoReconnect()
+                } else if (pttKeyedByApp) {
+                    Log.w("TransceiverVM", "PTT release pending but no auto-reconnect (operator disconnect)")
+                }
             } catch (e: Exception) {
                 Log.w("TransceiverVM", "handleIcomLinkLost", e)
             } finally {
                 icomLinkLostHandling = false
             }
+        }
+    }
+
+    /**
+     * Automatic reconnect after an unexpected Icom link loss, then restore what
+     * was running: the pending unkey goes out as soon as rigctld is back (the
+     * persistent unkey job) and RX decoding resumes if it was on. Each round is
+     * a full connect() with its own ~1.5 min of handshake retries; after two
+     * rounds the manager's error stays on screen for a manual Connect — by then
+     * the radio's own TX time-out has long unkeyed it. Pressing the Rig button
+     * while it shows CONNECTING… cancels (rigDisconnect → abortConnect).
+     */
+    private fun scheduleIcomAutoReconnect() {
+        if (icomAutoReconnectJob?.isActive == true) return
+        icomAutoReconnectJob = viewModelScope.launch(Dispatchers.IO) {
+            delay(1500)   // let the radio notice the dead session first
+            for (round in 1..2) {
+                if (icomUserDisconnect) return@launch
+                Log.i("TransceiverVM", "Icom auto-reconnect round $round/2 → $icomLastHost:$icomLastPort")
+                val ok = connectIcomNetwork(icomLastHost, icomLastPort, icomLastUser, icomLastPass)
+                if (icomUserDisconnect) return@launch
+                if (ok) {
+                    Log.i("TransceiverVM", "Icom auto-reconnect succeeded " +
+                        "(pttPending=$pttKeyedByApp resumeRx=$icomResumeRxAfterReconnect)")
+                    if (pttKeyedByApp) startPersistentUnkey()
+                    if (icomResumeRxAfterReconnect) {
+                        icomResumeRxAfterReconnect = false
+                        val st = audioService?.state?.value
+                        if (st?.isRunning != true && st?.isTx != true) startReceiving()
+                    }
+                    return@launch
+                }
+                delay(5000)
+            }
+            Log.e("TransceiverVM", "Icom auto-reconnect gave up — press Connect to retry")
+            // Nothing more we can do for a pending unkey: the radio's TX time-out
+            // takes over. Clear the flag so TX isn't blocked once the operator
+            // reconnects by hand.
+            pttKeyedByApp = false
+            pttUnkeyJob?.cancel()
+            pttUnkeyJob = null
+            icomResumeRxAfterReconnect = false
         }
     }
 
@@ -1296,43 +1429,71 @@ class TransceiverViewModel(application: Application) : AndroidViewModel(applicat
      * then runs the bundled rigctld (model 3085 = IC-705) against that pty so the
      * normal [RigController] path works.  Audio still flows over USB in this phase.
      */
-    fun rigStartIcomNetwork(host: String, controlPort: Int, username: String, password: String) {
+    fun rigStartIcomNetwork(
+        host: String,
+        controlPort: Int,
+        username: String,
+        password: String,
+        audioBufferMs: Int = IcomNetworkManager.DEFAULT_AUDIO_BUFFER_MS
+    ) {
         if (_rigConnecting.value || rigController.isConnected) return
+        icomAutoReconnectJob?.cancel()
+        icomAutoReconnectJob = null
+        // Remembered for the automatic reconnect after a link loss.
+        icomLastHost = host
+        icomLastPort = controlPort
+        icomLastUser = username
+        icomLastPass = password
+        // Radio-side TX audio buffer (Rig tab "Audio buffer"): sent in the
+        // conninfo packet, so it must be set before the handshake.
+        icomNetwork.audioBufferMs = audioBufferMs
+        viewModelScope.launch(Dispatchers.IO) {
+            connectIcomNetwork(host, controlPort, username, password)
+        }
+    }
+
+    /**
+     * One full Icom connect: UDP handshake → pty → bundled rigctld → RigController.
+     * Shared by the Connect button and the automatic reconnect after a link loss.
+     * @return true when RigController ended up connected.
+     */
+    private suspend fun connectIcomNetwork(
+        host: String, controlPort: Int, username: String, password: String
+    ): Boolean {
+        if (_rigConnecting.value || rigController.isConnected) return rigController.isConnected
         _rigConnecting.value = true
         rigMfg = "Icom"
         icomUserDisconnect = false   // a fresh connect intent supersedes a prior disconnect
+        try {
+            rigctldProcess.stop()
+            val ptyPath = icomNetwork.connect(host, controlPort, username, password)
+            if (ptyPath.isEmpty()) return false   // icomNetwork.state carries the error
+            audioService?.networkRig = icomNetwork
 
-        viewModelScope.launch(Dispatchers.IO) {
-            try {
-                rigctldProcess.stop()
-                val ptyPath = icomNetwork.connect(host, controlPort, username, password)
-                if (ptyPath.isEmpty()) return@launch   // icomNetwork.state carries the error
-                audioService?.networkRig = icomNetwork
-
-                val ok = rigctldProcess.startWithPty(
-                    model = 3085,          // IC-705
-                    ptyPath = ptyPath,
-                    speed = 115200,        // baud is irrelevant for a pty
-                    civAddr = ""
-                )
-                if (!ok) {
-                    icomNetwork.disconnect()
-                    return@launch
-                }
-
-                var connected = false
-                for (attempt in 1..10) {
-                    delay(1000)
-                    rigController.connect("127.0.0.1", 4532)
-                    if (rigController.isConnected) { connected = true; break }
-                }
-                if (!connected) {
-                    rigctldProcess.stop()
-                    icomNetwork.disconnect()
-                }
-            } finally {
-                _rigConnecting.value = false
+            val ok = rigctldProcess.startWithPty(
+                model = 3085,          // IC-705
+                ptyPath = ptyPath,
+                speed = 115200,        // baud is irrelevant for a pty
+                civAddr = ""
+            )
+            if (!ok) {
+                icomNetwork.disconnect()
+                return false
             }
+
+            var connected = false
+            for (attempt in 1..10) {
+                delay(1000)
+                rigController.connect("127.0.0.1", 4532)
+                if (rigController.isConnected) { connected = true; break }
+            }
+            if (!connected) {
+                rigctldProcess.stop()
+                icomNetwork.disconnect()
+            }
+            return connected
+        } finally {
+            _rigConnecting.value = false
         }
     }
 

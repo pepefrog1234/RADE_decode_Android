@@ -23,6 +23,15 @@ interface NetworkAudioRig {
     /** Samples per TX pump tick (20 ms at [audioRate]). */
     val txFrameSamples: Int
 
+    /** Depth (ms) of the buffer the RADIO plays our TX frames from, when the
+     *  transport has one (Icom RS-BA1 conninfo "txbuffer"); 0 = none/unknown.
+     *  The TX pump uses it to decide when a stalled backlog is hopeless. */
+    val txBufferMs: Int get() = 0
+
+    /** How long PTT must stay keyed after the last TX frame has been handed to
+     *  the transport, so audio still buffered downstream reaches the air. */
+    val txTailMs: Int get() = 200
+
     /** RX delivery hook: int16 mono at [audioRate]. Invoked on the manager's
      *  network thread; detach by setting null. */
     var onAudioPcm: ((ShortArray) -> Unit)?

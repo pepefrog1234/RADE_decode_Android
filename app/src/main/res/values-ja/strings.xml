@@ -176,6 +176,8 @@
     <string name="rig_network_hint">IC-705 の内蔵サーバーを使って Wi-Fi で接続します。無線機側で Set ▸ Network ▸ Network Control = ON にし、ネットワークユーザー名とパスワードを設定してください。ここに無線機の IP アドレスを入力します。制御も音声も Wi-Fi で動作し、USB ケーブルは不要です。</string>
     <string name="rig_net_audio_on">音声 (Wi-Fi)：接続済み</string>
     <string name="rig_net_audio_off">音声 (Wi-Fi)：未接続</string>
+    <string name="rig_icom_buffer_label">音声バッファ（ネットワーク遅延）</string>
+    <string name="rig_icom_buffer_help">Wi-Fi/LAN では 150 ms が適切です。LTE や VPN 経由では 500〜800 ms を選んでください。無線機がこの長さの送信音声をバッファするため、パケットの遅延や欠落で送信信号が途切れにくくなり、欠落したパケットの再送も間に合います。送信終了後はこの時間だけ PTT を保持するので、コールサインが途切れません。次回の接続から有効です。</string>
     <string name="rig_hl2_network_mode">HL2（LAN）</string>
     <string name="rig_hl2_network_hint">LAN 上の Hermes-Lite 2 を openHPSDR（プロトコル 1）で直接制御します：検出・周波数・PTT・I/Q ストリームはすべて UDP ポート 1024 上で動作し、PC は不要です。Host を空欄にするとブロードキャストで自動検出します。SSB の変復調はアプリ内で行います。</string>
     <string name="rig_hl2_host_auto">自動検出（ブロードキャスト）</string>
@@ -263,5 +265,5 @@
     <string name="share_audio">デコード音声を共有</string>
     <string name="settings_tx_media_volume">Android メディア音量：%1$d / %2$d</string>
     <string name="settings_tx_media_volume_help">USB／スピーカー送信には Android のメディア音量も影響します。出力が低い場合は、リグの ALC を確認しながら、この音量と送信レベルを少しずつ調整してください。TX Mic Gain は声の大きさ用で、RF 出力の調整ではありません。ネットワーク送信はリグ／ネットワーク側のドライブ設定を使用します。</string>
-    <string name="ptt_control_failed">PTT の応答を確認できません。リグの状態を確認し、Stop を押して PTT 解除を再試行してください。</string>
+    <string name="ptt_control_failed">PTT 解除の応答を確認できません — 自動で再試行しています。リグの状態を確認してください。Stop を押すとすぐに再試行します。</string>
 </resources>

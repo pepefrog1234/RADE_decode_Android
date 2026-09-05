@@ -1023,22 +1023,47 @@ class AudioService : LifecycleService() {
                 // send to an absolute deadline keeps the long-term rate at exactly
                 // 50 fps regardless of per-loop overhead.
                 val periodNs = n * 1_000_000_000L / net.audioRate  // 20 ms
-                var nextDeadline = System.nanoTime() + periodNs
+                // Ring samples (8 kHz modem rate) one network frame consumes, and
+                // the reserve a catch-up must leave so it never reads silence.
+                val ringPerFrame = (n.toLong() * 8000L / net.audioRate).toInt().coerceAtLeast(1)
+                val ringReserve = ringPerFrame * 5                    // ~100 ms
+                // When the pump wakes late the radio has kept draining its buffer.
+                // The old "resync and carry on" left those frames unsent, so every
+                // hiccup lowered the radio's buffer for good until it starved (the
+                // interrupted TX signal over LTE/VPN). Now owed frames are sent
+                // back at a gentle 2x; a backlog past the radio's buffer + 0.5 s is
+                // dropped instead — the far end has lost sync by then anyway.
+                val pacer = NetTxPacer(
+                    periodNs = periodNs,
+                    maxCatchupPerTick = 1,
+                    dropBacklogNs = (net.txBufferMs.coerceAtLeast(150) + 500) * 1_000_000L
+                )
+                fun spareFrames() = (bridge.nativeTxRingAvailable() - ringReserve) / ringPerFrame
+                var sent = 0L
+                var lastReportNs = System.nanoTime()
+                pacer.start(System.nanoTime())
                 // Keep pumping after TX stops until the ring is empty — the tail
                 // is the EOO (callsign) frame queued by stopTx().
                 while (isActive && (bridge.isTxRunning || bridge.nativeTxRingAvailable() > 0)) {
                     val got = bridge.fillNetTxFrame(frame, n)
-                    if (got > 0) net.sendAudioFrame(frame)
-                    val sleepNs = nextDeadline - System.nanoTime()
-                    if (sleepNs > 0) {
-                        delay(sleepNs / 1_000_000L)
-                    } else {
-                        // Fell behind (GC/scheduler hiccup) — resync so we don't fire
-                        // a burst of catch-up frames that would overrun the radio.
-                        nextDeadline = System.nanoTime()
+                    if (got > 0) { net.sendAudioFrame(frame); sent++ }
+                    val plan = pacer.afterSend(System.nanoTime(), spareFrames())
+                    repeat(plan.dropFrames) { bridge.fillNetTxFrame(frame, n) }   // discard stale backlog
+                    repeat(plan.extraFrames) {
+                        if (bridge.fillNetTxFrame(frame, n) > 0) { net.sendAudioFrame(frame); sent++ }
                     }
-                    nextDeadline += periodNs
+                    val now = System.nanoTime()
+                    if (now - lastReportNs >= 5_000_000_000L) {
+                        Log.i("AudioService", "Net TX pump: sent=$sent late=${pacer.lateTicks} " +
+                            "maxLate=${pacer.maxBehindNs / 1_000_000}ms catchup=${pacer.catchupFrames} " +
+                            "dropped=${pacer.droppedFrames} reanchor=${pacer.reanchors} " +
+                            "ring=${bridge.nativeTxRingAvailable() / 8}ms")
+                        pacer.resetStats()
+                        lastReportNs = now
+                    }
+                    if (plan.sleepNs > 0) delay(plan.sleepNs / 1_000_000L)
                 }
+                Log.i("AudioService", "Net TX pump done: sent=$sent frames")
             } finally {
                 done.countDown()
             }

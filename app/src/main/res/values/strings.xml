@@ -177,6 +177,8 @@
     <string name="rig_network_hint">Connect to the IC-705 over Wi-Fi using its built-in server. On the radio: Set ▸ Network ▸ Network Control = ON, and set a Network User name/password. Enter the radio\'s IP address. Control and audio both run over Wi-Fi — no USB cable needed.</string>
     <string name="rig_net_audio_on">Audio (Wi-Fi): connected</string>
     <string name="rig_net_audio_off">Audio (Wi-Fi): not connected</string>
+    <string name="rig_icom_buffer_label">Audio buffer (network latency)</string>
+    <string name="rig_icom_buffer_help">150 ms suits Wi-Fi/LAN. Over LTE or a VPN choose 500–800 ms: the radio buffers this much TX audio, so late or lost packets no longer interrupt the transmitted signal and lost packets have time to be resent. PTT is held for the same time after the over so the callsign is not cut off. Applies on the next connect.</string>
     <string name="rig_hl2_network_mode">HL2 (LAN)</string>
     <string name="rig_hl2_network_hint">Direct openHPSDR (protocol 1) control of a Hermes-Lite 2 on your LAN: discovery, frequency, PTT and the I/Q stream all ride UDP port 1024 — no PC needed. Leave Host empty to auto-discover by broadcast. SSB (de)modulation is done in the app.</string>
     <string name="rig_hl2_host_auto">Auto-discover (broadcast)</string>
@@ -264,5 +266,5 @@
     <string name="share_audio">Share decoded audio</string>
     <string name="settings_tx_media_volume">Android media volume: %1$d / %2$d</string>
     <string name="settings_tx_media_volume_help">USB/speaker TX also follows Android media volume. If power is low, adjust this and TX level gradually while checking the rig’s ALC. TX Mic Gain changes speech loudness, not RF drive. Network TX uses the radio/network drive settings instead.</string>
-    <string name="ptt_control_failed">PTT was not confirmed. Check the radio and press Stop to retry releasing PTT.</string>
+    <string name="ptt_control_failed">PTT release not confirmed — retrying automatically. Check the radio; press Stop to retry now.</string>
 </resources>
