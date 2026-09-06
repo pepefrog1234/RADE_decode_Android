@@ -29,6 +29,12 @@ class RigController {
         // CAT response times (tens of ms) but far below "several seconds" — the
         // old 3000 ms let one slow Xiegu G90 status read block a PTT for 3 s.
         private const val READ_TIMEOUT_MS = 1000
+        // PTT set and its readback get a longer deadline: rigctld may spend its
+        // own backend timeout+retry on a slow or lossy CAT link (Xiegu, USB
+        // glitches, Wi-Fi/LTE CI-V) before answering, and a late
+        // "set_ptt: 1;RPRT 0" is still the real answer. 1000 ms cut those off
+        // and made every PTT look unacknowledged.
+        private const val PTT_TIMEOUT_MS = 2500
         private const val DEFAULT_PORT = 4532
     }
 
@@ -151,7 +157,11 @@ class RigController {
 
     /* ── Command transport ──────────────────────────────────── */
 
-    private fun sendCommand(cmd: String, acceptsReply: (String) -> Boolean = { true }): String? {
+    private fun sendCommand(
+        cmd: String,
+        timeoutMs: Int = READ_TIMEOUT_MS,
+        acceptsReply: (String) -> Boolean = { true }
+    ): String? {
         synchronized(lock) {
             val w = writer ?: return null
             val r = reader ?: return null
@@ -159,7 +169,7 @@ class RigController {
             return try {
                 lastCommand = cmd
                 w.println(cmd)
-                val deadline = System.nanoTime() + READ_TIMEOUT_MS * 1_000_000L
+                val deadline = System.nanoTime() + timeoutMs * 1_000_000L
                 var resp: String
                 do {
                     val remainingMs = (deadline - System.nanoTime()) / 1_000_000L
@@ -401,7 +411,7 @@ class RigController {
         // reply cannot acknowledge this key/unkey. Other commands retain their
         // existing protocol; the read remains bounded by the usual deadline.
         val resp = priority {
-            sendCommand(";T ${if (on) 1 else 0}") { rigctldPttResult(it, on) != null }
+            sendCommand(";T ${if (on) 1 else 0}", timeoutMs = PTT_TIMEOUT_MS) { rigctldPttResult(it, on) != null }
         }
         val acknowledged = rigctldPttResult(resp, on) == 0
         Log.i(TAG, "setPtt($on) response: $resp acknowledged=$acknowledged elapsedMs=${(System.nanoTime() - startedNs) / 1_000_000}")
@@ -418,6 +428,27 @@ class RigController {
         val ptt = rigctldPtt(sendCommand("t"))
         if (ptt != null) _state.value = _state.value.copy(ptt = ptt)
         _state.value.ptt
+    }
+
+    /**
+     * Fresh PTT readback ("t") to confirm a key/unkey whose acknowledgement
+     * never arrived. A slow or lossy CAT link loses the reply, or rigctld
+     * answers "RPRT -5" after its own timeout, although the rig DID switch —
+     * treating that as failure cut overs short after ~5 s and left a false
+     * "PTT not confirmed" pending (reported on v1.6.15).
+     * @param expected when the readback matches it, a pending "PTT …" error is
+     *   cleared (the operation is confirmed after all).
+     * @return the rig's PTT state, or null when it could not be read.
+     */
+    suspend fun readPtt(expected: Boolean? = null): Boolean? = withContext(Dispatchers.IO) {
+        val ptt = priority { rigctldPtt(sendCommand("t", timeoutMs = PTT_TIMEOUT_MS)) }
+        Log.i(TAG, "readPtt → $ptt (expected=$expected)")
+        if (ptt != null) {
+            val cur = _state.value
+            val clearError = ptt == expected && cur.error.startsWith("PTT ")
+            _state.value = cur.copy(ptt = ptt, error = if (clearError) "" else cur.error)
+        }
+        ptt
     }
 
     /* ── Levels (S-meter, RF power, SWR) ────────────────────── */

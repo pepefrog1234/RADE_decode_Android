@@ -149,7 +149,13 @@ class TransceiverViewModel(application: Application) : AndroidViewModel(applicat
     @Volatile private var pttKeyedByApp = false
     /** Submit CAT immediately, even while the main thread is opening audio.
      *  Join before unkeying so a slow T 1 cannot arrive after T 0. */
-    private var pttKeyJob: Deferred<Boolean>? = null
+    private var pttKeyJob: Deferred<PttKeyOutcome>? = null
+
+    /** Result of the CAT key-on request. Only REFUSED (the rig itself reports
+     *  PTT still off) aborts the over: a missing or late acknowledgement is no
+     *  reason to cut a QSO the operator can see is on the air (v1.6.14 did,
+     *  ~5 s into every over on rigs with slow CAT replies). */
+    private enum class PttKeyOutcome { ACKED, CONFIRMED, UNKNOWN, REFUSED }
     /** Background unkey retry, started when the quick attempts in
      *  stopTxAndUnkeyPtt all failed. Keeps trying — riding through an Icom
      *  auto-reconnect — until rigctld acknowledges "T 0" or the operator
@@ -653,11 +659,21 @@ class TransceiverViewModel(application: Application) : AndroidViewModel(applicat
             // cancels this request, and OFF joins the job before unkeying.
             pttKeyJob?.cancel()
             pttKeyJob = viewModelScope.async(Dispatchers.IO) {
+                var lastReadback: Boolean? = null
                 for (attempt in 1..3) {
                     ensureActive()
-                    if (!pttKeyedByApp || requestId != txRequestId) return@async false
+                    if (!pttKeyedByApp || requestId != txRequestId) return@async PttKeyOutcome.REFUSED
                     try {
-                        if (rigController.setPtt(true)) return@async true
+                        if (rigController.setPtt(true)) return@async PttKeyOutcome.ACKED
+                        // No usable acknowledgement (timeout, "RPRT -5" from a
+                        // slow CAT link, a lost reply). Ask the rig what it did
+                        // before repeating the command: a slow rig has usually
+                        // keyed by now.
+                        lastReadback = rigController.readPtt(expected = true)
+                        if (lastReadback == true) {
+                            Log.i("TransceiverVM", "PTT ON confirmed by readback after attempt $attempt")
+                            return@async PttKeyOutcome.CONFIRMED
+                        }
                     } catch (e: CancellationException) {
                         throw e
                     } catch (e: Exception) {
@@ -665,8 +681,13 @@ class TransceiverViewModel(application: Application) : AndroidViewModel(applicat
                     }
                     if (attempt < 3) delay(250L * attempt)
                 }
-                Log.e("TransceiverVM", "PTT key FAILED after retries")
-                false
+                if (lastReadback == false) {
+                    Log.e("TransceiverVM", "PTT key REFUSED: rig reports PTT off after retries")
+                    PttKeyOutcome.REFUSED
+                } else {
+                    Log.e("TransceiverVM", "PTT key unconfirmed after retries (no CAT reply) — keeping TX; operator can see the rig")
+                    PttKeyOutcome.UNKNOWN
+                }
             }
         } else if (hermesNetwork.isConnected) {
             // HL2 direct: the MOX bit rides the protocol-1 C&C stream.
@@ -725,11 +746,14 @@ class TransceiverViewModel(application: Application) : AndroidViewModel(applicat
             // A failed mic/output open or rejected CAT command must not leave
             // the radio keyed. This runs after synchronous audio setup returns.
             viewModelScope.launch {
-                val keyOk = keyJob?.await() ?: true
+                val outcome = keyJob?.await() ?: PttKeyOutcome.ACKED
+                val audioUp = audioService?.state?.value?.isTx == true
                 if (pttKeyJob === keyJob && txStopJob?.isActive != true &&
-                    (!keyOk || audioService?.state?.value?.isTx != true)) {
-                    Log.e("TransceiverVM", "TX start failed: keyOk=$keyOk; stopping and unkeying")
+                    (outcome == PttKeyOutcome.REFUSED || !audioUp)) {
+                    Log.e("TransceiverVM", "TX start failed: ptt=$outcome audioTx=$audioUp; stopping and unkeying")
                     txStopJob = viewModelScope.launch { stopTxAndUnkeyPtt(fullTeardown = true) }
+                } else if (outcome == PttKeyOutcome.UNKNOWN) {
+                    Log.w("TransceiverVM", "TX continues without a CAT PTT confirmation (banner shown)")
                 }
             }
         }
@@ -845,14 +869,21 @@ class TransceiverViewModel(application: Application) : AndroidViewModel(applicat
                 return
             }
             var unkeyed = false
-            for (attempt in 1..5) {
+            for (attempt in 1..3) {
                 try {
                     if (rigController.setPtt(false)) { unkeyed = true; break }
+                    // No usable acknowledgement — the rig may well have unkeyed
+                    // (slow CAT, lost reply, "RPRT -5"): read its PTT state back
+                    // before assuming it is stuck in TX.
+                    if (rigController.readPtt(expected = false) == false) {
+                        Log.i("TransceiverVM", "PTT OFF confirmed by readback after attempt $attempt")
+                        unkeyed = true; break
+                    }
                 } catch (e: Exception) {
                     Log.w("TransceiverVM", "PTT unkey attempt $attempt failed", e)
                 }
                 Log.w("TransceiverVM", "PTT unkey not acknowledged (attempt $attempt); retrying")
-                if (attempt < 5) delay(300L * attempt)
+                if (attempt < 3) delay(300L * attempt)
             }
             pttKeyedByApp = !unkeyed
             if (!unkeyed) {
@@ -886,7 +917,8 @@ class TransceiverViewModel(application: Application) : AndroidViewModel(applicat
                 attempt++
                 if (rigController.isConnected) {
                     val ok = try {
-                        rigController.setPtt(false)
+                        rigController.setPtt(false) ||
+                            rigController.readPtt(expected = false) == false   // unkeyed after all
                     } catch (e: CancellationException) {
                         throw e
                     } catch (_: Exception) {

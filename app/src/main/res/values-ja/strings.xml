@@ -265,5 +265,5 @@
     <string name="share_audio">デコード音声を共有</string>
     <string name="settings_tx_media_volume">Android メディア音量：%1$d / %2$d</string>
     <string name="settings_tx_media_volume_help">USB／スピーカー送信には Android のメディア音量も影響します。出力が低い場合は、リグの ALC を確認しながら、この音量と送信レベルを少しずつ調整してください。TX Mic Gain は声の大きさ用で、RF 出力の調整ではありません。ネットワーク送信はリグ／ネットワーク側のドライブ設定を使用します。</string>
-    <string name="ptt_control_failed">PTT 解除の応答を確認できません — 自動で再試行しています。リグの状態を確認してください。Stop を押すとすぐに再試行します。</string>
+    <string name="ptt_control_failed">CAT の PTT 応答を確認できません。無線機の送受信表示を確認してください。切り替わっていればそのまま運用できます（アプリは再試行と状態の読み返しを続けます）。送信のまま戻らない場合は Stop を押してください。</string>
 </resources>

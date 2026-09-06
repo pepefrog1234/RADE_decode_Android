@@ -264,5 +264,5 @@
     <string name="share_audio">分享解码音频</string>
     <string name="settings_tx_media_volume">Android 媒体音量：%1$d / %2$d</string>
     <string name="settings_tx_media_volume_help">USB／扬声器发射也会受到 Android 媒体音量影响。功率偏低时，请观察电台 ALC，逐步调整此音量与发射电平。TX Mic Gain 调整的是语音大小，不是射频驱动。网络发射请使用电台／网络的驱动设置。</string>
-    <string name="ptt_control_failed">PTT 解除未获确认——正在自动重试。请检查电台状态；按 Stop 可立即重试。</string>
+    <string name="ptt_control_failed">未收到 CAT 的 PTT 确认。请查看电台：若已切换可继续操作（应用会持续重试并读回状态）；若卡在发射，请按 Stop。</string>
 </resources>

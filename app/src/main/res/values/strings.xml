@@ -266,5 +266,5 @@
     <string name="share_audio">Share decoded audio</string>
     <string name="settings_tx_media_volume">Android media volume: %1$d / %2$d</string>
     <string name="settings_tx_media_volume_help">USB/speaker TX also follows Android media volume. If power is low, adjust this and TX level gradually while checking the rig’s ALC. TX Mic Gain changes speech loudness, not RF drive. Network TX uses the radio/network drive settings instead.</string>
-    <string name="ptt_control_failed">PTT release not confirmed — retrying automatically. Check the radio; press Stop to retry now.</string>
+    <string name="ptt_control_failed">PTT was not confirmed over CAT. Check the radio: if it did switch, keep operating (the app keeps retrying and reads the state back); if it is stuck in TX, press Stop.</string>
 </resources>
