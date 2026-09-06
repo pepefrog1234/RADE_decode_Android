@@ -55,7 +55,17 @@ class IcomNetworkManager : NetworkAudioRig {
          *  short interruptions of the transmitted RADE signal. */
         const val DEFAULT_AUDIO_BUFFER_MS = 150
         const val MIN_AUDIO_BUFFER_MS = 100
-        const val MAX_AUDIO_BUFFER_MS = 1000
+        /** Field-tested on an IC-7300MK2 (v1.6.16): 500 ms produced long TX
+         *  dropouts and 800 ms keyed the rig with NO modulation at all — the
+         *  radio's TX buffer cannot hold that much. 300 ms is the usable ceiling. */
+        const val MAX_AUDIO_BUFFER_MS = 300
+
+        /** TX audio sample rate offered to the radio (conninfo txsample). 48 kHz
+         *  LPCM is ~860 kbps on the uplink; RS-BA1 also supports 16 kHz, which
+         *  cuts that to ~290 kbps for a weak LTE uplink (experimental — the radio
+         *  does the 16→48 kHz conversion internally). */
+        const val TX_RATE_FULL = 48000
+        const val TX_RATE_LOW = 16000
 
         /** How many times the whole connect handshake is attempted before giving
          *  up, and the pause after each failed attempt. A radio that has just
@@ -159,7 +169,8 @@ class IcomNetworkManager : NetworkAudioRig {
     override val isConnected: Boolean get() = _state.value.connected
     override val audioLinkUp: Boolean get() = _state.value.audioConnected
     override val audioRate: Int get() = NET_AUDIO_RATE
-    override val txFrameSamples: Int get() = NET_AUDIO_FRAME_SAMPLES
+    /** 20 ms of TX audio at [txAudioRate] (960 @ 48 kHz, 320 @ 16 kHz). */
+    override val txFrameSamples: Int get() = txAudioRate / 50
 
     /** See [DEFAULT_AUDIO_BUFFER_MS]. Set before connect(); it is sent to the
      *  radio in the conninfo packet, so a change takes effect on the next connect. */
@@ -169,7 +180,13 @@ class IcomNetworkManager : NetworkAudioRig {
     /** PTT must stay keyed this long after the last TX frame left the phone:
      *  the radio still holds up to [audioBufferMs] of it, plus network + DSP
      *  latency. Cutting PTT earlier truncates the EOO callsign on the air. */
-    override val txTailMs: Int get() = audioBufferMs + 150
+    override val txTailMs: Int get() = audioBufferMs + 100
+
+    /** See [TX_RATE_FULL]/[TX_RATE_LOW]. Set before connect() (conninfo txsample).
+     *  Overrides the interface's read-only rate so the TX pump and native encoder
+     *  pick the same value the radio was told. */
+    @Volatile override var txAudioRate: Int = TX_RATE_FULL
+        set(value) { field = if (value == TX_RATE_LOW) TX_RATE_LOW else TX_RATE_FULL }
 
     private var connScope: CoroutineScope? = null
 
@@ -185,6 +202,13 @@ class IcomNetworkManager : NetworkAudioRig {
     private var serial: IcomStream? = null
     private var audio: IcomStream? = null
     private var audioSendSeq = 0
+
+    /** Every stream created in this session, so disconnect() can close ALL of
+     *  them — not just the ones the control/serial/audio fields point at. A
+     *  stream replaced before it was closed kept its UDP port bound (and its
+     *  reader thread alive) for the life of the process; the next connect then
+     *  got EADDRINUSE on 50002/50003 and had to fall back to ephemeral ports. */
+    private val allStreams = ArrayList<IcomStream>()
 
     /** Set by [abortConnect]: makes a running connect() stop retrying after the
      *  current attempt instead of grinding through all CONNECT_ATTEMPTS. */
@@ -204,6 +228,18 @@ class IcomNetworkManager : NetworkAudioRig {
     private var gotA8 = false
     private var authOk = false
     private var serialOpened = false
+    /** Set SYNCHRONOUSLY when the serial/audio open starts. serialOpened is only
+     *  set once the async CI-V handshake succeeds (~200 ms later), and the
+     *  IC-7300MK2 sends its 0x90 "connected" status twice within a few ms — the
+     *  second copy used to open a SECOND serial stream (EADDRINUSE → ephemeral
+     *  port → "no pkt6 reply" → "CI-V stream handshake failed" 5 s after a good
+     *  connect, which the link-loss handler then treated as a dead radio), and
+     *  it overwrote `serial`, so the CI-V open packet went out with the wrong
+     *  SIDs and every CAT command timed out. */
+    @Volatile private var serialOpening = false
+    /** We only treat a 0x90 "connected" status as OUR grant after we asked for
+     *  the streams; the radio also emits it for a previous, still-alive session. */
+    @Volatile private var connInfoRequested = false
     private var serialInnerSeq = 0
 
     /* ───────────────────────── public API ───────────────────────── */
@@ -270,6 +306,8 @@ class IcomNetworkManager : NetworkAudioRig {
         gotA8 = false
         authOk = false
         serialOpened = false
+        serialOpening = false
+        connInfoRequested = false
         serialInnerSeq = 0
         audioSendSeq = 0
 
@@ -435,6 +473,11 @@ class IcomNetworkManager : NetworkAudioRig {
         try { audio?.close() } catch (_: Exception) {}
         try { serial?.close() } catch (_: Exception) {}
         try { control?.close() } catch (_: Exception) {}
+        // …and anything created but replaced along the way (see allStreams).
+        synchronized(allStreams) {
+            for (s in allStreams) try { s.close() } catch (_: Exception) {}
+            allStreams.clear()
+        }
         audio = null
         serial = null
         control = null
@@ -442,6 +485,8 @@ class IcomNetworkManager : NetworkAudioRig {
         scope.cancel()
         connScope = null
         serialOpened = false
+        serialOpening = false
+        connInfoRequested = false
         if (reason != null) {
             _state.value = State(error = reason)
         } else if (_state.value.connected || _state.value.connecting) {
@@ -452,7 +497,16 @@ class IcomNetworkManager : NetworkAudioRig {
 
     private fun fail(msg: String) {
         Log.e(TAG, msg)
-        _state.value = State(error = msg)
+        val cur = _state.value
+        if (cur.connected) {
+            // A late failure on a secondary stream must not masquerade as a lost
+            // link: the control/CI-V session is still up and rigctld still works.
+            // Show the message, keep the connection (the link watchdog decides
+            // when the radio is really gone).
+            _state.value = cur.copy(error = msg)
+        } else {
+            _state.value = State(error = msg)
+        }
     }
 
     /* ───────────────────── control-stream protocol ───────────────── */
@@ -481,7 +535,15 @@ class IcomNetworkManager : NetworkAudioRig {
                         }
                     }
                     r.size == 144 && r.u(0) == 0x90 && r.u(96) == 0x01 -> {
-                        if (!serialOpened) openSerial(ctrl, host, r, result)
+                        // The radio's "connected" status. Exactly one open per
+                        // session, and only once WE have asked for the streams
+                        // (kappanhang gates on the same synchronous flag).
+                        if (connInfoRequested && !serialOpened && !serialOpening) {
+                            openSerial(ctrl, host, r, result)
+                        } else {
+                            Log.i(TAG, "0x90 connected-status ignored (requested=$connInfoRequested " +
+                                "opening=$serialOpening opened=$serialOpened)")
+                        }
                     }
                 }
             }
@@ -493,14 +555,16 @@ class IcomNetworkManager : NetworkAudioRig {
     }
 
     private fun maybeRequestSerial(ctrl: IcomStream) {
-        if (!serialOpened && authOk && gotA8) {
+        if (!serialOpened && !serialOpening && authOk && gotA8) {
             Log.i(TAG, "requesting serial+audio stream")
+            connInfoRequested = true
             ctrl.sendTracked(buildConnInfo(ctrl))
         }
     }
 
     private fun openSerial(ctrl: IcomStream, host: String, r: ByteArray, result: CompletableDeferred<String>) {
         val scope = connScope ?: return
+        serialOpening = true            // before anything async — see the field doc
         // The grant packet can carry refreshed IDs.
         ctrl.remoteSID = u32be(r, 8)
         ctrl.localSID = u32be(r, 12)
@@ -522,6 +586,7 @@ class IcomNetworkManager : NetworkAudioRig {
             )
             serial = ser
             if (!ser.open()) {
+                serialOpening = false
                 fail("CI-V stream handshake failed")
                 if (!result.isCompleted) result.complete("")
                 return@launch
@@ -533,11 +598,13 @@ class IcomNetworkManager : NetworkAudioRig {
 
             val path = nativeIcomPtyOpen()
             if (path == null) {
+                serialOpening = false
                 fail("Could not create local pty")
                 if (!result.isCompleted) result.complete("")
                 return@launch
             }
             serialOpened = true
+            serialOpening = false
 
             // radio CI-V → pty (rigctld reads it)
             scope.launch { serialRxLoop(ser) }
@@ -574,7 +641,8 @@ class IcomNetworkManager : NetworkAudioRig {
         scope.launch { audioRxLoop(aud) }
         aud.startStatsLog()
         _state.value = _state.value.copy(audioConnected = true)
-        Log.i(TAG, "audio stream up (UDP $AUDIO_PORT, ${NET_AUDIO_RATE}Hz, radio TX buffer ${audioBufferMs}ms) — full wireless")
+        Log.i(TAG, "audio stream up (UDP $AUDIO_PORT, rx ${NET_AUDIO_RATE}Hz tx ${txAudioRate}Hz, " +
+            "radio TX buffer ${audioBufferMs}ms) — full wireless")
     }
 
     /* ───────────────────── audio (UDP 50003) bridge ──────────────── */
@@ -805,8 +873,9 @@ class IcomNetworkManager : NetworkAudioRig {
         System.arraycopy(name, 0, p, 64, name.size)
         System.arraycopy(passcode(username), 0, p, 96, 16)
         p[112] = 0x01; p[113] = 0x01; p[114] = 0x04; p[115] = 0x04
-        p[118] = (NET_AUDIO_RATE ushr 8).toByte(); p[119] = NET_AUDIO_RATE.toByte()  // rx
-        p[122] = (NET_AUDIO_RATE ushr 8).toByte(); p[123] = NET_AUDIO_RATE.toByte()  // tx
+        p[118] = (NET_AUDIO_RATE ushr 8).toByte(); p[119] = NET_AUDIO_RATE.toByte()  // rx sample rate (u32 BE @116)
+        val txRate = txAudioRate                                                      // tx sample rate (u32 BE @120)
+        p[122] = (txRate ushr 8).toByte(); p[123] = txRate.toByte()
         p[126] = (SERIAL_PORT ushr 8).toByte(); p[127] = SERIAL_PORT.toByte()
         p[130] = (AUDIO_PORT ushr 8).toByte(); p[131] = AUDIO_PORT.toByte()
         val bufMs = audioBufferMs                                  // radio TX buffer, u32 BE @132
@@ -879,6 +948,8 @@ class IcomNetworkManager : NetworkAudioRig {
         private var trackSeq = 1                       // pkt0 tracking seq (bytes 6-7)
         private val txBuf = LinkedHashMap<Int, ByteArray>()
         private val isAudio = name == "audio"
+
+        init { synchronized(allStreams) { allStreams.add(this) } }
 
         // Link diagnostics (logged by startStatsLog while they change).
         private var txTracked = 0L          // tracked packets we sent
@@ -1096,7 +1167,9 @@ class IcomNetworkManager : NetworkAudioRig {
         private suspend fun readerLoop() {
             val buf = ByteArray(1500)
             val sock = socket ?: return
-            while (running) {
+            // Also stop when the session scope is cancelled: a stream that was
+            // never closed explicitly must not keep its port and thread forever.
+            while (running && scope.isActive) {
                 try {
                     val dp = DatagramPacket(buf, buf.size)
                     sock.receive(dp)
@@ -1104,19 +1177,26 @@ class IcomNetworkManager : NetworkAudioRig {
                     rxPackets++
                     val r = buf.copyOf(dp.length)
                     when {
-                        isPkt7(r) -> handlePkt7(r)
+                        isPkt7(r) -> { rxTracker?.onPing(u16le(r, 6)); handlePkt7(r) }
                         isRetransmitRequest(r) -> handleRetransmitRequest(r)
                         // Everything else the radio sends is one of its TRACKED
                         // packets — an idle pkt0 or data — numbered at bytes 6-7.
-                        // Dedup + gap detection first; idles carry nothing further.
+                        // Observed (stats only, see admitTracked); idles carry
+                        // nothing further.
                         else -> if (admitTracked(r) && !isIdle(r)) incoming.trySend(r)
                     }
                 } catch (_: SocketTimeoutException) {
-                    // loop to re-check `running`
+                    // loop to re-check `running` / scope
                 } catch (e: Exception) {
                     if (running) Log.w(TAG, "$name reader: ${e.message}")
                     break
                 }
+            }
+            if (running) {
+                // Left because the scope died, not via close(): release the port.
+                running = false
+                try { sock.close() } catch (_: Exception) {}
+                incoming.close()
             }
         }
 
@@ -1132,24 +1212,29 @@ class IcomNetworkManager : NetworkAudioRig {
         private fun isIdle(r: ByteArray) = r.size == 16 && r.u(0) == 0x10 &&
             r.u(1) == 0 && r.u(2) == 0 && r.u(3) == 0 && r.u(4) == 0 && r.u(5) == 0
 
-        /** Any type-0 packet of 16+ bytes is tracked (radio's seq at bytes 6-7). */
-        private fun isTracked(r: ByteArray) = r.size >= 16 &&
-            r.u(1) == 0 && r.u(2) == 0 && r.u(3) == 0 && r.u(4) == 0 && r.u(5) == 0
+        /** Any type-0 packet of 16+ bytes is tracked (radio's seq at bytes 6-7).
+         *  Bytes 0-3 are the u32 LE length — NOT zero for packets over 255 bytes
+         *  (every audio packet), which is why the audio stream tracked nothing
+         *  in v1.6.15/16 while the serial stream did. */
+        private fun isTracked(r: ByteArray) = r.size >= 16 && r.u(4) == 0 && r.u(5) == 0
 
         /**
-         * Feed a tracked packet to the gap tracker (when this stream has one) and
-         * send any due retransmit requests. Returns false for a DUPLICATE that
-         * must not be delivered again — the original arrived after all, or the
-         * radio answered a request twice. A duplicated CI-V "OK" would otherwise
-         * be taken by rigctld as the acknowledgement of its NEXT command.
+         * Sequence bookkeeping for the radio's tracked packets — OBSERVE ONLY.
+         *
+         * v1.6.15 also sent retransmit requests for every hole and dropped
+         * "duplicates". Field stats (IC-7300MK2): the serial stream showed a
+         * steady 10 missing/s — exactly the radio's ping rate — with nothing ever
+         * healed, i.e. the radio's pkt7 pings share its tracking counter, and
+         * every request we sent asked for a ping. Until the model is confirmed
+         * from these counters (see Stats.healedByPing), nothing is requested and
+         * nothing is dropped; the stats still tell downlink loss from ping gaps.
          */
         private fun admitTracked(r: ByteArray): Boolean {
             val tracker = rxTracker ?: return true
             if (!isTracked(r)) return true
-            val now = System.currentTimeMillis()
-            val fresh = tracker.onPacket(u16le(r, 6), now)
-            for (range in tracker.dueRequests(now)) sendRetransmitRequest(range)
-            return fresh
+            tracker.onPacket(u16le(r, 6), System.currentTimeMillis())
+            tracker.expireHoles(System.currentTimeMillis())
+            return true
         }
 
         /** Ask the radio to resend [range] — same wire format it uses toward us

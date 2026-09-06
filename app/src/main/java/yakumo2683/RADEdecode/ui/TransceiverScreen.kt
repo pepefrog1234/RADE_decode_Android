@@ -60,7 +60,9 @@ fun TransceiverScreen(viewModel: TransceiverViewModel = viewModel()) {
         if (hasAudioPermission) viewModel.startReceiving()
     }
 
-    val isActive = state.isRunning || state.isTx  // engine is doing something
+    // Engine is doing something — including the TX→RX hand-over (EOO drain +
+    // RF tail + PTT release), during which neither flag is set for ~0.3–0.5 s.
+    val isActive = state.isRunning || state.isTx || state.txSwitching
 
     Column(
         modifier = Modifier

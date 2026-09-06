@@ -279,7 +279,12 @@ fun RigScreen(viewModel: TransceiverViewModel = viewModel()) {
     var icomUser by remember { mutableStateOf(rigPrefs.getString("icom_user", "") ?: "") }
     var icomPass by remember { mutableStateOf(rigPrefs.getString("icom_pass", "") ?: "") }
     // Radio-side TX audio buffer / network latency (ms) for the Icom link.
-    var icomBufferMs by remember { mutableIntStateOf(rigPrefs.getInt("icom_buf_ms", 150)) }
+    var icomBufferMs by remember {
+        // Older builds offered 500/800 ms; on the IC-7300MK2 those stall or mute TX — clamp.
+        mutableIntStateOf(rigPrefs.getInt("icom_buf_ms", 150).coerceIn(100, 300))
+    }
+    // Experimental: offer the radio 16 kHz TX audio (1/3 of the uplink bitrate).
+    var icomTxLowRate by remember { mutableStateOf(rigPrefs.getBoolean("icom_tx_16k", false)) }
     // Hermes-Lite 2 direct (openHPSDR protocol 1) mode fields
     var hl2HostInput by remember { mutableStateOf(rigPrefs.getString("hl2_host", "") ?: "") }
     var hl2Drive by remember { mutableFloatStateOf(viewModel.getSavedHl2Drive().toFloat()) }
@@ -567,7 +572,7 @@ fun RigScreen(viewModel: TransceiverViewModel = viewModel()) {
                         modifier = Modifier.fillMaxWidth(),
                         horizontalArrangement = Arrangement.spacedBy(8.dp)
                     ) {
-                        listOf(150, 300, 500, 800).forEach { ms ->
+                        listOf(150, 200, 300).forEach { ms ->
                             val selected = icomBufferMs == ms
                             Surface(
                                 onClick = { if (!rigState.connected) icomBufferMs = ms },
@@ -598,6 +603,30 @@ fun RigScreen(viewModel: TransceiverViewModel = viewModel()) {
                         color = OnSurfaceDim,
                         fontSize = 11.sp
                     )
+                    // Experimental low-bitrate TX (16 kHz LPCM instead of 48 kHz).
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text(
+                                stringResource(R.string.rig_icom_tx_rate_label),
+                                color = OnSurfaceDim,
+                                fontSize = 11.sp,
+                                fontWeight = FontWeight.Bold
+                            )
+                            Text(
+                                stringResource(R.string.rig_icom_tx_rate_help),
+                                color = OnSurfaceDim,
+                                fontSize = 11.sp
+                            )
+                        }
+                        Switch(
+                            checked = icomTxLowRate,
+                            onCheckedChange = { if (!rigState.connected) icomTxLowRate = it },
+                            enabled = !rigState.connected
+                        )
+                    }
                 } else if (connMode == 3) {
                     // Hermes-Lite 2 direct — openHPSDR protocol 1 on the LAN
                     Text(
@@ -1083,6 +1112,7 @@ fun RigScreen(viewModel: TransceiverViewModel = viewModel()) {
                                 .putString("icom_user", icomUser)
                                 .putString("icom_pass", icomPass)
                                 .putInt("icom_buf_ms", icomBufferMs)
+                                .putBoolean("icom_tx_16k", icomTxLowRate)
                                 .putString("hl2_host", hl2HostInput)
                                 .putString("vban_host", vbanHostInput)
                                 .putString("vban_port", vbanPortInput)
@@ -1108,7 +1138,10 @@ fun RigScreen(viewModel: TransceiverViewModel = viewModel()) {
                                 }
                             } else if (connMode == 2) {
                                 val port = icomPortInput.toIntOrNull() ?: 50001
-                                viewModel.rigStartIcomNetwork(hostInput, port, icomUser, icomPass, icomBufferMs)
+                                viewModel.rigStartIcomNetwork(
+                                    hostInput, port, icomUser, icomPass, icomBufferMs,
+                                    txAudioRate = if (icomTxLowRate) 16000 else 48000
+                                )
                             } else if (connMode == 3) {
                                 viewModel.rigStartHermesNetwork(hl2HostInput)
                             } else if (connMode == 4) {

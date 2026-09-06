@@ -39,8 +39,11 @@ internal class IcomRxSeqTracker(
         var healed = 0L        // holes later filled (retransmit or late arrival)
         var lost = 0L          // holes given up on
         var resyncs = 0L
+        var pings = 0L         // pkt7 pings seen from the radio
+        var healedByPing = 0L  // holes whose seq turned up as a PING → pings share the counter
         override fun toString() =
-            "pkts=$packets dup=$duplicates missing=$missing req=$requests healed=$healed lost=$lost resync=$resyncs"
+            "pkts=$packets dup=$duplicates missing=$missing req=$requests healed=$healed lost=$lost " +
+            "resync=$resyncs pings=$pings pingFill=$healedByPing"
     }
 
     val stats = Stats()
@@ -112,6 +115,30 @@ internal class IcomRxSeqTracker(
         holes.clear()
         highest = s
         stats.resyncs++
+    }
+
+    /**
+     * A pkt7 ping from the radio carrying [seq] at bytes 6-7. If that seq is one
+     * we thought was missing, the radio's pings consume tracking sequence
+     * numbers — the hole was never a lost packet. Counted so the field log can
+     * confirm or refute the model before gap requests are ever re-enabled.
+     */
+    fun onPing(seq: Int) {
+        stats.pings++
+        if (holes.remove(seq and 0xFFFF) != null) stats.healedByPing++
+    }
+
+    /** Drop holes older than the give-up horizon (counted as lost) without
+     *  producing any requests — for observe-only use. */
+    fun expireHoles(nowMs: Long) {
+        if (holes.isEmpty()) return
+        val it = holes.entries.iterator()
+        while (it.hasNext()) {
+            if (nowMs - it.next().value.firstMissedMs > giveUpAfterMs) {
+                it.remove()
+                stats.lost++
+            }
+        }
     }
 
     /**

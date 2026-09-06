@@ -176,7 +176,9 @@
     <string name="rig_net_audio_on">音频 (Wi-Fi)：已连接</string>
     <string name="rig_net_audio_off">音频 (Wi-Fi)：未连接</string>
     <string name="rig_icom_buffer_label">音频缓冲（网络延迟）</string>
-    <string name="rig_icom_buffer_help">Wi-Fi/局域网使用 150 ms 即可。通过 LTE 或 VPN 连接时请选择 500–800 ms：电台会缓冲这么长的发射音频，数据包延迟或丢失时发射信号不再中断，丢失的数据包也来得及重传。发射结束后 PTT 会保持同样的时间，避免呼号被切断。下次连接时生效。</string>
+    <string name="rig_icom_buffer_help">150 ms 是电台默认值。LTE/VPN 抖动可尝试 200–300 ms。请勿再大：IC-7300MK2 在 500 ms 出现长时间发射中断，800 ms 时 PTT 已按下却完全没有调制。发射结束后 PTT 会保持同样的时间，避免呼号被切断。下次连接时生效。</string>
+    <string name="rig_icom_tx_rate_label">发射音频 16 kHz（实验性）</string>
+    <string name="rig_icom_tx_rate_help">以 16 kHz 而非 48 kHz 向电台发送发射音频，上行数据量约为三分之一（约 860 kbps → 约 290 kbps）。LTE 上行卡顿时可尝试；转换为 48 kHz 由电台完成，接收不受影响。下次连接时生效。</string>
     <string name="rig_hl2_network_mode">HL2 (局域网)</string>
     <string name="rig_hl2_network_hint">通过 openHPSDR（协议 1）直接控制局域网上的 Hermes-Lite 2：发现、频率、PTT 与 I/Q 流全部走 UDP 端口 1024，无需电脑。主机留空则通过广播自动发现。SSB 调制/解调在应用内完成。</string>
     <string name="rig_hl2_host_auto">自动发现（广播）</string>

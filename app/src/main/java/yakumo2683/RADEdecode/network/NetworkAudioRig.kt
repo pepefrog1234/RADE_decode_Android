@@ -20,7 +20,11 @@ interface NetworkAudioRig {
     /** PCM sample rate exchanged with the native modem (multiple of 8000). */
     val audioRate: Int
 
-    /** Samples per TX pump tick (20 ms at [audioRate]). */
+    /** Sample rate of the TX frames handed to [sendAudioFrame]. Defaults to
+     *  [audioRate]; the Icom transport can offer the radio a lower TX rate. */
+    val txAudioRate: Int get() = audioRate
+
+    /** Samples per TX pump tick (20 ms at [txAudioRate]). */
     val txFrameSamples: Int
 
     /** Depth (ms) of the buffer the RADIO plays our TX frames from, when the

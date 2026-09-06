@@ -177,7 +177,9 @@
     <string name="rig_net_audio_on">音声 (Wi-Fi)：接続済み</string>
     <string name="rig_net_audio_off">音声 (Wi-Fi)：未接続</string>
     <string name="rig_icom_buffer_label">音声バッファ（ネットワーク遅延）</string>
-    <string name="rig_icom_buffer_help">Wi-Fi/LAN では 150 ms が適切です。LTE や VPN 経由では 500〜800 ms を選んでください。無線機がこの長さの送信音声をバッファするため、パケットの遅延や欠落で送信信号が途切れにくくなり、欠落したパケットの再送も間に合います。送信終了後はこの時間だけ PTT を保持するので、コールサインが途切れません。次回の接続から有効です。</string>
+    <string name="rig_icom_buffer_help">150 ms が無線機の既定値です。LTE/VPN のゆらぎには 200〜300 ms が有効な場合があります。それ以上にはしないでください：IC-7300MK2 では 500 ms で長い送信途切れ、800 ms では PTT が入っても変調が全く出ませんでした。送信終了後はこの時間だけ PTT を保持するので、コールサインが途切れません。次回の接続から有効です。</string>
+    <string name="rig_icom_tx_rate_label">送信音声 16 kHz（実験的）</string>
+    <string name="rig_icom_tx_rate_help">送信音声を 48 kHz ではなく 16 kHz で無線機へ送ります（上りデータ量が約 1/3：約 860 kbps → 約 290 kbps）。LTE の上りが詰まる場合に試してください。48 kHz への変換は無線機側で行われ、受信は変わりません。次回の接続から有効です。</string>
     <string name="rig_hl2_network_mode">HL2（LAN）</string>
     <string name="rig_hl2_network_hint">LAN 上の Hermes-Lite 2 を openHPSDR（プロトコル 1）で直接制御します：検出・周波数・PTT・I/Q ストリームはすべて UDP ポート 1024 上で動作し、PC は不要です。Host を空欄にするとブロードキャストで自動検出します。SSB の変復調はアプリ内で行います。</string>
     <string name="rig_hl2_host_auto">自動検出（ブロードキャスト）</string>

@@ -178,7 +178,9 @@
     <string name="rig_net_audio_on">Audio (Wi-Fi): connected</string>
     <string name="rig_net_audio_off">Audio (Wi-Fi): not connected</string>
     <string name="rig_icom_buffer_label">Audio buffer (network latency)</string>
-    <string name="rig_icom_buffer_help">150 ms suits Wi-Fi/LAN. Over LTE or a VPN choose 500–800 ms: the radio buffers this much TX audio, so late or lost packets no longer interrupt the transmitted signal and lost packets have time to be resent. PTT is held for the same time after the over so the callsign is not cut off. Applies on the next connect.</string>
+    <string name="rig_icom_buffer_help">150 ms is the radio default. 200–300 ms can smooth LTE/VPN jitter. Do not go higher: on the IC-7300MK2, 500 ms caused long TX dropouts and 800 ms keyed the rig with no modulation at all. PTT is held for the same time after the over so the callsign is not cut off. Applies on the next connect.</string>
+    <string name="rig_icom_tx_rate_label">TX audio 16 kHz (experimental)</string>
+    <string name="rig_icom_tx_rate_help">Sends TX audio to the radio at 16 kHz instead of 48 kHz — one third of the uplink data (~290 kbps instead of ~860 kbps). Worth trying when the LTE uplink stalls; the radio converts to 48 kHz itself. RX is unchanged. Applies on the next connect.</string>
     <string name="rig_hl2_network_mode">HL2 (LAN)</string>
     <string name="rig_hl2_network_hint">Direct openHPSDR (protocol 1) control of a Hermes-Lite 2 on your LAN: discovery, frequency, PTT and the I/Q stream all ride UDP port 1024 — no PC needed. Leave Host empty to auto-discover by broadcast. SSB (de)modulation is done in the app.</string>
     <string name="rig_hl2_host_auto">Auto-discover (broadcast)</string>

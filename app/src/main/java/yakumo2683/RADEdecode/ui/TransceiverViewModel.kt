@@ -97,6 +97,10 @@ class TransceiverViewModel(application: Application) : AndroidViewModel(applicat
         val isRunning: Boolean = false,    // RX is active
         val leCommActive: Boolean = false, // LE Audio (LC3) communication session active
         val isTx: Boolean = false,         // TX is active
+        /** TX→RX hand-over in progress (EOO drain, RF tail, PTT release): the
+         *  engine is momentarily neither RX nor TX, but the UI must not fall back
+         *  to the Start screen for that second. */
+        val txSwitching: Boolean = false,
         val pttControlError: Boolean = false,
         val syncState: Int = 0,
         val snrDb: Int = 0,
@@ -796,20 +800,25 @@ class TransceiverViewModel(application: Application) : AndroidViewModel(applicat
         if (audioService?.state?.value?.isTx != true && !pttKeyedByApp && !rtsPttKeyed) return
         if (txStopJob?.isActive == true) return
         txStopJob = viewModelScope.launch {
-            stopTxAndUnkeyPtt()
-            // Resume RX — brief settle for the audio route to quiesce.
-            delay(20)
-            if (useNetworkAudio()) {
-                audioService?.startNetworkDecoding(
-                    outputDeviceId = _uiState.value.selectedRxOutputDeviceId
-                )
-            } else {
-                audioService?.startDecoding(
-                    inputDeviceId = _uiState.value.selectedDeviceId,
-                    outputDeviceId = _uiState.value.selectedRxOutputDeviceId,
-                    recordWav = false,
-                    useLeAudioCommunication = shouldUseLeAudioCommunicationSession()
-                )
+            _uiState.value = _uiState.value.copy(txSwitching = true)
+            try {
+                stopTxAndUnkeyPtt()
+                // Resume RX — brief settle for the audio route to quiesce.
+                delay(20)
+                if (useNetworkAudio()) {
+                    audioService?.startNetworkDecoding(
+                        outputDeviceId = _uiState.value.selectedRxOutputDeviceId
+                    )
+                } else {
+                    audioService?.startDecoding(
+                        inputDeviceId = _uiState.value.selectedDeviceId,
+                        outputDeviceId = _uiState.value.selectedRxOutputDeviceId,
+                        recordWav = false,
+                        useLeAudioCommunication = shouldUseLeAudioCommunicationSession()
+                    )
+                }
+            } finally {
+                _uiState.value = _uiState.value.copy(txSwitching = false)
             }
         }
     }
@@ -1077,7 +1086,7 @@ class TransceiverViewModel(application: Application) : AndroidViewModel(applicat
                 "logcat", "-d", "-v", "time",
                 "RigController:V", "RigctldProcess:V",
                 "UsbPtyBridge:V", "UsbSerialManager:V", "HermesNet:V",
-                "IcomNetwork:V", "TransceiverVM:V", "*:S"
+                "IcomNetwork:V", "NetTxPump:V", "TransceiverVM:V", "*:S"
             )
         )
         val out = proc.inputStream.bufferedReader().use { it.readText() }
@@ -1123,7 +1132,7 @@ class TransceiverViewModel(application: Application) : AndroidViewModel(applicat
             arrayOf(
                 "logcat", "-d", "-v", "time",
                 "AudioService:V", "AudioBridge:V", "AudioEngine:V", "RADE_JNI:V",
-                "HermesNet:V", "IcomNetwork:V", "PureSignalPS:V", "TransceiverVM:V", "RigController:V",
+                "HermesNet:V", "IcomNetwork:V", "NetTxPump:V", "PureSignalPS:V", "TransceiverVM:V", "RigController:V",
                 "AndroidRuntime:V", "libc:V", "DEBUG:V", "crash_dump64:V",
                 "tombstoned:V", "*:S"
             )
@@ -1466,7 +1475,8 @@ class TransceiverViewModel(application: Application) : AndroidViewModel(applicat
         controlPort: Int,
         username: String,
         password: String,
-        audioBufferMs: Int = IcomNetworkManager.DEFAULT_AUDIO_BUFFER_MS
+        audioBufferMs: Int = IcomNetworkManager.DEFAULT_AUDIO_BUFFER_MS,
+        txAudioRate: Int = IcomNetworkManager.TX_RATE_FULL
     ) {
         if (_rigConnecting.value || rigController.isConnected) return
         icomAutoReconnectJob?.cancel()
@@ -1476,9 +1486,10 @@ class TransceiverViewModel(application: Application) : AndroidViewModel(applicat
         icomLastPort = controlPort
         icomLastUser = username
         icomLastPass = password
-        // Radio-side TX audio buffer (Rig tab "Audio buffer"): sent in the
-        // conninfo packet, so it must be set before the handshake.
+        // Radio-side TX audio buffer and TX sample rate (Rig tab): both ride the
+        // conninfo packet, so they must be set before the handshake.
         icomNetwork.audioBufferMs = audioBufferMs
+        icomNetwork.txAudioRate = txAudioRate
         viewModelScope.launch(Dispatchers.IO) {
             connectIcomNetwork(host, controlPort, username, password)
         }

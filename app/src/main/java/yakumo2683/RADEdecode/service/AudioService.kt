@@ -982,7 +982,7 @@ class AudioService : LifecycleService() {
             "rate=${net.audioRate} mic=$inputDeviceId effectiveMic=$effectiveInputDeviceId " +
             "btMic=$bluetoothMicEngaged (if audio stream down, TX modulation won't reach the radio)")
 
-        if (!bridge.startNetTx(effectiveInputDeviceId, net.audioRate, bleCommMicCapture)) {
+        if (!bridge.startNetTx(effectiveInputDeviceId, net.txAudioRate, bleCommMicCapture)) {
             Log.e("AudioService", "startNetTx failed")
             bridge.release()
             audioBridge = null
@@ -1022,48 +1022,63 @@ class AudioService : LifecycleService() {
                 // sample stream is broken so the far end can't decode. Anchoring each
                 // send to an absolute deadline keeps the long-term rate at exactly
                 // 50 fps regardless of per-loop overhead.
-                val periodNs = n * 1_000_000_000L / net.audioRate  // 20 ms
+                val periodNs = n * 1_000_000_000L / net.txAudioRate  // 20 ms
                 // Ring samples (8 kHz modem rate) one network frame consumes, and
                 // the reserve a catch-up must leave so it never reads silence.
-                val ringPerFrame = (n.toLong() * 8000L / net.audioRate).toInt().coerceAtLeast(1)
+                val ringPerFrame = (n.toLong() * 8000L / net.txAudioRate).toInt().coerceAtLeast(1)
                 val ringReserve = ringPerFrame * 5                    // ~100 ms
-                // When the pump wakes late the radio has kept draining its buffer.
-                // The old "resync and carry on" left those frames unsent, so every
-                // hiccup lowered the radio's buffer for good until it starved (the
-                // interrupted TX signal over LTE/VPN). Now owed frames are sent
-                // back at a gentle 2x; a backlog past the radio's buffer + 0.5 s is
-                // dropped instead — the far end has lost sync by then anyway.
+                // When the pump falls behind (late wakeup, or send() blocked on a
+                // stalled VPN/LTE uplink) the radio has kept draining its buffer.
+                // Owed frames are sent back at a gentle 2x — but only one radio
+                // buffer's worth: the rest is already a hole on the air, and the
+                // IC-7300MK2 cannot hold more than ~300 ms (see NetTxPacer).
+                val radioBufferNs = net.txBufferMs.coerceAtLeast(150) * 1_000_000L
                 val pacer = NetTxPacer(
                     periodNs = periodNs,
                     maxCatchupPerTick = 1,
-                    dropBacklogNs = (net.txBufferMs.coerceAtLeast(150) + 500) * 1_000_000L
+                    maxCatchupFrames = (radioBufferNs / periodNs).toInt().coerceAtLeast(1)
                 )
                 fun spareFrames() = (bridge.nativeTxRingAvailable() - ringReserve) / ringPerFrame
                 var sent = 0L
+                var sendMaxNs = 0L
+                var sendSlow = 0L        // sends that took > 50 ms (socket blocked: uplink back-pressure)
+                fun sendTimed() {
+                    val t0 = System.nanoTime()
+                    net.sendAudioFrame(frame)
+                    val dt = System.nanoTime() - t0
+                    if (dt > sendMaxNs) sendMaxNs = dt
+                    if (dt > 50_000_000L) sendSlow++
+                    sent++
+                }
                 var lastReportNs = System.nanoTime()
                 pacer.start(System.nanoTime())
                 // Keep pumping after TX stops until the ring is empty — the tail
                 // is the EOO (callsign) frame queued by stopTx().
                 while (isActive && (bridge.isTxRunning || bridge.nativeTxRingAvailable() > 0)) {
                     val got = bridge.fillNetTxFrame(frame, n)
-                    if (got > 0) { net.sendAudioFrame(frame); sent++ }
+                    if (got > 0) sendTimed()
                     val plan = pacer.afterSend(System.nanoTime(), spareFrames())
                     repeat(plan.dropFrames) { bridge.fillNetTxFrame(frame, n) }   // discard stale backlog
                     repeat(plan.extraFrames) {
-                        if (bridge.fillNetTxFrame(frame, n) > 0) { net.sendAudioFrame(frame); sent++ }
+                        if (bridge.fillNetTxFrame(frame, n) > 0) sendTimed()
                     }
                     val now = System.nanoTime()
                     if (now - lastReportNs >= 5_000_000_000L) {
-                        Log.i("AudioService", "Net TX pump: sent=$sent late=${pacer.lateTicks} " +
+                        // Own tag so the Rig/CAT diagnostic capture includes it: this
+                        // line tells a stalled pump (late/maxLate) from a blocked
+                        // socket (sendMax/sendSlow) from a lossy link (IcomNetwork stats).
+                        Log.i("NetTxPump", "sent=$sent late=${pacer.lateTicks} " +
                             "maxLate=${pacer.maxBehindNs / 1_000_000}ms catchup=${pacer.catchupFrames} " +
                             "dropped=${pacer.droppedFrames} reanchor=${pacer.reanchors} " +
-                            "ring=${bridge.nativeTxRingAvailable() / 8}ms")
+                            "sendMax=${sendMaxNs / 1_000_000}ms sendSlow=$sendSlow " +
+                            "ring=${bridge.nativeTxRingAvailable() / 8}ms rate=${net.txAudioRate}")
                         pacer.resetStats()
+                        sendMaxNs = 0; sendSlow = 0
                         lastReportNs = now
                     }
                     if (plan.sleepNs > 0) delay(plan.sleepNs / 1_000_000L)
                 }
-                Log.i("AudioService", "Net TX pump done: sent=$sent frames")
+                Log.i("NetTxPump", "done: sent=$sent frames")
             } finally {
                 done.countDown()
             }
