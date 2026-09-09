@@ -439,36 +439,40 @@ class IcomNetworkManager : NetworkAudioRig {
             if (reason != null) _state.value = State(error = reason)
             return
         }
-        onAudioPcm = null
-        // Polite shutdown in protocol order, with repeats. The token removal
-        // (deauth, magic 0x01) is what frees this USER's session slot on the
-        // radio: as a single unacked UDP send it was routinely lost, the radio
-        // then held the stale token and ignored every following login for the
-        // same user until the token expired — the reported "connects once,
-        // then NG until the username/password are changed" pattern. Repeats
-        // are cheap and idempotent; the short sleep lets the packets leave
-        // (and the radio process them) before the sockets vanish underneath.
+        // NOTE: onAudioPcm is deliberately NOT cleared here. AudioService owns
+        // that hook and only (re)installs it from startNetworkDecoding(), so
+        // clearing it on a manual Disconnect left a still-running RX engine
+        // silent after the next Connect until the operator cycled TX→RX
+        // (reported, IC-7300MK2 over LTE). Nothing arrives on a closed session
+        // anyway, and the hook is a no-op once the engine is stopped.
+        //
+        // Polite shutdown in protocol order, REPEATED WITH SPACING. The token
+        // removal (deauth, magic 0x01) frees this user's session slot; the
+        // serial close and the stream goodbyes (0x05) free the CI-V/audio
+        // streams. As single or back-to-back UDP sends they were routinely lost
+        // (LTE/VPN loss comes in bursts), the radio then held the stale session
+        // and rejected or ignored the next login for ~1 min. Three rounds
+        // ~80 ms apart survive a burst; the pauses also let the radio process
+        // them before the sockets vanish underneath.
         try {
-            if (serialOpened) {
-                serial?.let {
-                    it.sendTracked(buildSerialOpenClose(close = true))
-                    it.sendTracked(buildSerialOpenClose(close = true))
-                }
-            }
             // Only deauth when a login actually delivered a token: zero-token
             // removals after a connect that failed before login are junk the
             // radio never asked for, and some models answer every 0x40 packet.
             val haveToken = authID.any { it != 0.toByte() }
+            for (round in 1..3) {
+                if (haveToken) control?.let { c -> c.sendRaw(buildAuth(c, magic = 0x01)) }  // token remove
+                if (serialOpened) serial?.let { it.sendTracked(buildSerialOpenClose(close = true)) }
+                serial?.sendGoodbye()
+                audio?.sendGoodbye()
+                control?.sendGoodbye()
+                Thread.sleep(80)
+            }
             if (haveToken) {
-                control?.let { c ->
-                    repeat(3) { c.sendRaw(buildAuth(c, magic = 0x01)) }  // token remove
-                }
                 // The radio-side token is being removed right now; drop the
                 // persisted copy so the NEXT connect starts clean instead of
                 // opening with removal packets for a token that is long gone.
                 saveStaleToken?.invoke(null)
             }
-            if (serialOpened || haveToken) Thread.sleep(120)
         } catch (_: Exception) {}
         try { audio?.close() } catch (_: Exception) {}
         try { serial?.close() } catch (_: Exception) {}
@@ -704,8 +708,24 @@ class IcomNetworkManager : NetworkAudioRig {
      * Send one 20 ms TX audio frame (960 int16 samples @ 48 kHz) to the radio,
      * fragmented into the two packet sizes the radio expects (1364 B + 556 B).
      */
+    private var audioTxNoStreamLoggedMs = 0L
+
     override fun sendAudioFrame(pcm: ShortArray) {
-        val aud = audio ?: return
+        val aud = audio
+        if (aud == null) {
+            // No audio stream (its handshake failed, or the session is gone):
+            // the rig would sit keyed with no modulation. Say so, once a second.
+            val now = System.currentTimeMillis()
+            if (now - audioTxNoStreamLoggedMs > 1000) {
+                audioTxNoStreamLoggedMs = now
+                Log.w(TAG, "audio TX: no audio stream — frame dropped (rig keyed, no modulation)")
+            }
+            return
+        }
+        if (audioSendSeq == 0) {
+            Log.i(TAG, "audio TX: first frame ${pcm.size} samples @ ${txAudioRate} Hz (${pcm.size * 2} B) " +
+                "on ${aud.name} localSID=${hex(aud.localSID)} remoteSID=${hex(aud.remoteSID)}")
+        }
         val bytes = ByteArray(pcm.size * 2)
         var bi = 0
         for (s in pcm) {
@@ -1007,7 +1027,7 @@ class IcomNetworkManager : NetworkAudioRig {
                     if (r4 != null) break
                     Log.i(TAG, "$name: no SYN reply (attempt $attempt/8)")
                 }
-                if (r4 == null) return false
+                if (r4 == null) { close(); return false }   // free the port + reader thread
                 remoteSID = u32be(r4, 8)
                 var pkt6Ok = false
                 for (attempt in 1..5) {
@@ -1018,14 +1038,20 @@ class IcomNetworkManager : NetworkAudioRig {
                     }
                     Log.i(TAG, "$name: no pkt6 reply (attempt $attempt/5)")
                 }
-                if (!pkt6Ok) return false
+                if (!pkt6Ok) { close(); return false }      // goodbye to the half-open stream, free the port
                 trackSeq = 1
                 Log.i(TAG, "$name stream up: localSID=${hex(localSID)} remoteSID=${hex(remoteSID)}")
                 true
             } catch (e: Exception) {
                 Log.e(TAG, "$name open failed: ${e.message}")
+                try { close() } catch (_: Exception) {}
                 false
             }
+        }
+
+        /** One stream-level goodbye (type 0x05); close() repeats it. */
+        fun sendGoodbye() {
+            if (remoteSID != 0 && running) sendRaw(plain(0x05, withRemote = true))
         }
 
         private fun computeLocalSid(sock: DatagramSocket) {

@@ -63,6 +63,11 @@ class RigController {
      *  error so we can see which command was in flight when rigctld/the link died. */
     @Volatile private var lastCommand: String = ""
 
+    /** Consecutive CAT timeouts with the rigctld socket alive. A long run means
+     *  the CI-V path behind rigctld is dead (radio ignoring our stream), not a
+     *  slow rig — flagged in the log so a field capture shows it at a glance. */
+    @Volatile private var consecutiveTimeouts = 0
+
     /** Optional probe of the local rigctld's liveness/exit cause, supplied by the
      *  ViewModel ([RigctldProcess.exitDiagnostics]). Used to enrich the disconnect
      *  reason: rigctld crash vs. USB-serial bridge/socket failure. */
@@ -179,13 +184,21 @@ class RigController {
                     if (acceptsReply(resp)) break
                     Log.w(TAG, "Skipping stale reply while waiting for '$cmd': '$resp'")
                 } while (true)
+                if (consecutiveTimeouts >= 5) Log.i(TAG, "CAT responding again after $consecutiveTimeouts timeouts")
+                consecutiveTimeouts = 0
                 if (cmd.isNotEmpty() && !cmd.startsWith("f") && !cmd.startsWith("t") && !cmd.startsWith("l")) {
                     Log.i(TAG, "CMD '$cmd' → '$resp'")
                 }
                 resp
             } catch (e: java.net.SocketTimeoutException) {
                 // Timeout is non-fatal — rigctld is just slow (CI-V retries)
-                Log.w(TAG, "Command '$cmd' timed out (non-fatal)")
+                consecutiveTimeouts++
+                if (consecutiveTimeouts % 5 == 0) {
+                    Log.e(TAG, "CAT unresponsive: $consecutiveTimeouts consecutive timeouts " +
+                        "(rigctld socket alive) — CI-V path to the radio looks dead")
+                } else {
+                    Log.w(TAG, "Command '$cmd' timed out (non-fatal)")
+                }
                 null
             } catch (e: Exception) {
                 Log.e(TAG, "Command '$cmd' failed: ${e.message}")

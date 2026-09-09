@@ -1512,6 +1512,8 @@ class TransceiverViewModel(application: Application) : AndroidViewModel(applicat
             val ptyPath = icomNetwork.connect(host, controlPort, username, password)
             if (ptyPath.isEmpty()) return false   // icomNetwork.state carries the error
             audioService?.networkRig = icomNetwork
+            // RX may still be running from before a Disconnect: give it its audio back.
+            audioService?.reattachNetworkRx()
 
             val ok = rigctldProcess.startWithPty(
                 model = 3085,          // IC-705

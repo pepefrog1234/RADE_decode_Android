@@ -809,6 +809,19 @@ class AudioService : LifecycleService() {
     /* ── Network audio (IC-705 Wi-Fi, full wireless) ─────────── */
 
     private var networkAudioMode = false
+
+    /**
+     * Re-install the RX delivery hook on [networkRig] after a (re)connect while
+     * RX decoding is already running. Only startNetworkDecoding() installed it,
+     * so a manual Disconnect → Connect left RX silent until the operator cycled
+     * TX→RX (reported on the IC-7300MK2 over LTE). Harmless when not decoding.
+     */
+    fun reattachNetworkRx() {
+        val net = networkRig ?: return
+        if (!networkAudioMode || !_state.value.isRunning || _state.value.isTx) return
+        net.onAudioPcm = { pcm -> audioBridge?.feedNetRx(pcm, pcm.size) }
+        Log.i("AudioService", "reattachNetworkRx: RX hook re-installed after reconnect")
+    }
     private var netTxPumpJob: Job? = null
     /** Counted down when the net TX pump has drained the EOO out of the ring. */
     private var netTxPumpDone: java.util.concurrent.CountDownLatch? = null
