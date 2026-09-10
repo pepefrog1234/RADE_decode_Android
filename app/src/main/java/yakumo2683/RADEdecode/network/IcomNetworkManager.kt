@@ -89,6 +89,18 @@ class IcomNetworkManager : NetworkAudioRig {
          *  screen kept showing a green "Connected" that was a lie, and TX hung. */
         private const val LINK_TIMEOUT_MS = 15_000L
 
+        /** Session-level liveness. The radio keeps answering and sending pkt7
+         *  pings on a session it has silently dropped: field log (IC-7300MK2,
+         *  v1.6.18) — CI-V idles, CI-V replies and RX audio all stopped at once
+         *  while pings kept flowing for 2.5 minutes, so the ping-fed control
+         *  watchdog never fired, every CAT command timed out, TX could not key
+         *  the rig and RX stayed silent with no error shown. While the radio
+         *  considers us logged in it sends a CI-V idle every ~30 ms (and kept
+         *  doing so during TX and during a 7 s CI-V reply delay), so this much
+         *  silence of TRACKED packets on the serial stream means the session is
+         *  gone: tear down and let the ViewModel reconnect. */
+        private const val DATA_SILENCE_MS = 6_000L
+
         /** Marker prefix on the one connect error that must NOT be retried: wrong
          *  Network User name/password. Rets would just fail identically for ~1 min. */
         const val ERR_BAD_CREDENTIALS = "Invalid username / password"
@@ -433,6 +445,7 @@ class IcomNetworkManager : NetworkAudioRig {
 
     /** @param reason when non-null, the teardown leaves this error on [state]
      *  (e.g. a watchdog link-loss note) instead of a blank disconnected state. */
+    @Synchronized
     fun disconnect(reason: String? = null) {
         val scope = connScope ?: run {
             // Already torn down; still honor a link-loss reason so the UI shows it.
@@ -525,17 +538,34 @@ class IcomNetworkManager : NetworkAudioRig {
                         maybeRequestSerial(ctrl)
                     }
                     r.size == 64 && r.u(0) == 0x40 -> {
+                        // Auth / re-auth reply. Logged so a field capture shows what
+                        // the radio said around a dropped session (re-auth runs every 60 s).
+                        Log.i(TAG, "control 0x40 auth reply: magic=0x${"%02x".format(r.u(21))} opened=$serialOpened")
                         if (r.u(21) == 0x05) { authOk = true; maybeRequestSerial(ctrl) }
                     }
                     r.size == 80 && r.u(0) == 0x50 -> {
-                        if (r.u(48) == 0xFF && r.u(49) == 0xFF && r.u(50) == 0xFF) {
+                        val rejected = r.u(48) == 0xFF && r.u(49) == 0xFF && r.u(50) == 0xFF
+                        val radioDisconnect = r.u(48) == 0 && r.u(49) == 0 && r.u(50) == 0 && r.u(64) == 0x01
+                        Log.i(TAG, "control 0x50 status: b48-50=%02x%02x%02x b64=%02x rejected=%b disconnect=%b opened=%b"
+                            .format(r.u(48), r.u(49), r.u(50), r.u(64), rejected, radioDisconnect, serialOpened))
+                        if (rejected) {
+                            // After the streams are open the radio also emits this
+                            // pattern; kappanhang ignores it there too.
                             if (!serialOpened) {
                                 fail("Auth rejected — try rebooting the radio")
                                 if (!result.isCompleted) result.complete("")
                             }
-                        } else if (r.u(48) == 0 && r.u(49) == 0 && r.u(50) == 0 && r.u(64) == 0x01) {
-                            fail("Radio reported disconnect")
-                            if (!serialOpened && !result.isCompleted) result.complete("")
+                        } else if (radioDisconnect) {
+                            if (serialOpened) {
+                                // The radio ended the session. fail() would only show
+                                // a message and leave a zombie: tear down properly so
+                                // the ViewModel's link-loss handler reconnects.
+                                Log.w(TAG, "radio reported disconnect mid-session — tearing down for reconnect")
+                                Thread { disconnect(reason = "Radio ended the session — reconnecting…") }.start()
+                            } else {
+                                fail("Radio reported disconnect")
+                                if (!result.isCompleted) result.complete("")
+                            }
                         }
                     }
                     r.size == 144 && r.u(0) == 0x90 && r.u(96) == 0x01 -> {
@@ -609,6 +639,9 @@ class IcomNetworkManager : NetworkAudioRig {
             }
             serialOpened = true
             serialOpening = false
+
+            // Session-level liveness (see DATA_SILENCE_MS).
+            scope.launch { serialDataWatchdog(ser) }
 
             // radio CI-V → pty (rigctld reads it)
             scope.launch { serialRxLoop(ser) }
@@ -758,7 +791,32 @@ class IcomNetworkManager : NetworkAudioRig {
         try {
             while (true) {
                 delay(60_000)
+                Log.i(TAG, "reauth sent (60 s token refresh)")
                 ctrl.sendTracked(buildAuth(ctrl, magic = 0x05))
+            }
+        } catch (_: CancellationException) {}
+    }
+
+    /**
+     * Detect a session the radio has silently dropped (see DATA_SILENCE_MS):
+     * no tracked packet (idle or data) on the CI-V stream for a while although
+     * the stream itself is still up. The teardown runs on its own thread
+     * because disconnect() cancels the scope this coroutine lives in.
+     */
+    private suspend fun serialDataWatchdog(ser: IcomStream) {
+        try {
+            while (true) {
+                delay(2000)
+                if (!serialOpened || connScope == null) return
+                val last = ser.lastDataRxMs
+                if (last == 0L) continue                   // never saw one yet: nothing to judge
+                val silent = System.currentTimeMillis() - last
+                if (silent > DATA_SILENCE_MS) {
+                    Log.w(TAG, "serial stream: no idle/data from the radio for ${silent}ms while pings continue " +
+                        "— radio dropped the session; tearing down for reconnect")
+                    Thread { disconnect(reason = "Radio dropped the session (CI-V silent) — reconnecting…") }.start()
+                    return
+                }
             }
         } catch (_: CancellationException) {}
     }
@@ -989,6 +1047,11 @@ class IcomNetworkManager : NetworkAudioRig {
          *  The control-stream watchdog reads it to detect a dead transport. */
         @Volatile var lastRxMs = System.currentTimeMillis()
 
+        /** Wall-clock of the last TRACKED packet (idle pkt0 or data) from the
+         *  radio — pings excluded, since the radio keeps pinging on a session it
+         *  has dropped. The session-level liveness signal; 0 = none seen yet. */
+        @Volatile var lastDataRxMs = 0L
+
         val incoming = Channel<ByteArray>(Channel.UNLIMITED)
 
         suspend fun open(): Boolean {
@@ -1209,7 +1272,10 @@ class IcomNetworkManager : NetworkAudioRig {
                         // packets — an idle pkt0 or data — numbered at bytes 6-7.
                         // Observed (stats only, see admitTracked); idles carry
                         // nothing further.
-                        else -> if (admitTracked(r) && !isIdle(r)) incoming.trySend(r)
+                        else -> {
+                            if (isTracked(r)) lastDataRxMs = System.currentTimeMillis()
+                            if (admitTracked(r) && !isIdle(r)) incoming.trySend(r)
+                        }
                     }
                 } catch (_: SocketTimeoutException) {
                     // loop to re-check `running` / scope

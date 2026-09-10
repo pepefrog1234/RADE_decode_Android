@@ -11,8 +11,8 @@ android {
         applicationId = "yakumo2683.RADEdecode"
         minSdk = 26
         targetSdk = 35
-        versionCode = 10618
-        versionName = "1.6.18-reconnect-rx-hook"
+        versionCode = 10619
+        versionName = "1.6.19-session-liveness"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 
