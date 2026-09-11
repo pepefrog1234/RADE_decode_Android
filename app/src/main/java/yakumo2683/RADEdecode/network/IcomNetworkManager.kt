@@ -7,6 +7,8 @@ import kotlinx.coroutines.channels.consumeEach
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import java.net.DatagramPacket
 import java.net.DatagramSocket
 import java.net.InetAddress
@@ -31,7 +33,9 @@ import java.net.SocketTimeoutException
  * The radio must have "Network control" enabled and a Network User name/password
  * configured in its menu (Set > Network).
  */
-class IcomNetworkManager : NetworkAudioRig {
+class IcomNetworkManager internal constructor(private val pty: IcomPty) : NetworkAudioRig {
+
+    constructor() : this(NativeIcomPty)
 
     companion object {
         private const val TAG = "IcomNetwork"
@@ -100,12 +104,11 @@ class IcomNetworkManager : NetworkAudioRig {
          *  silence of TRACKED packets on the serial stream means the session is
          *  gone: tear down and let the ViewModel reconnect. */
         private const val DATA_SILENCE_MS = 6_000L
+        private const val LOGOUT_GRACE_MS = 500L
 
         /** Marker prefix on the one connect error that must NOT be retried: wrong
          *  Network User name/password. Rets would just fail identically for ~1 min. */
         const val ERR_BAD_CREDENTIALS = "Invalid username / password"
-
-        init { System.loadLibrary("rade_jni") }
 
         @JvmStatic external fun nativeIcomPtyOpen(): String?
         @JvmStatic external fun nativeIcomPtyWrite(data: ByteArray, len: Int): Int
@@ -200,12 +203,14 @@ class IcomNetworkManager : NetworkAudioRig {
     @Volatile override var txAudioRate: Int = TX_RATE_FULL
         set(value) { field = if (value == TX_RATE_LOW) TX_RATE_LOW else TX_RATE_FULL }
 
-    private var connScope: CoroutineScope? = null
+    @Volatile private var connScope: CoroutineScope? = null
+    @Volatile private var disconnecting = false
+    private val connectMutex = Mutex()
 
     /** Optional persistence hooks (wired by the ViewModel to SharedPreferences).
      *  The last session's login token is stored so that a token left behind by
-     *  an UNCLEAN exit (app killed while connected — no logout packet could be
-     *  sent) can be removed at the start of the next connect. Without this the
+     *  an unclean exit or unacknowledged logout can be removed at the start of
+     *  the next connect. Without this the
      *  radio holds the stale token and ignores the login until it expires. */
     @Volatile var saveStaleToken: ((String?) -> Unit)? = null
     @Volatile var loadStaleToken: (() -> String?)? = null
@@ -235,6 +240,7 @@ class IcomNetworkManager : NetworkAudioRig {
     private var username = ""
     private var password = ""
     private var authInnerSeq = 0
+    private var loginRequestId = -1
     private var authID = ByteArray(6)
     private var a8ReplyID = ByteArray(16)
     private var gotA8 = false
@@ -269,7 +275,10 @@ class IcomNetworkManager : NetworkAudioRig {
      * IC-7300MK2). Re-running the full handshake with backoff rides over that
      * window automatically; only a real credential rejection stops early.
      */
-    suspend fun connect(host: String, controlPort: Int, user: String, pass: String): String {
+    suspend fun connect(host: String, controlPort: Int, user: String, pass: String): String =
+        connectMutex.withLock { connectLocked(host, controlPort, user, pass) }
+
+    private suspend fun connectLocked(host: String, controlPort: Int, user: String, pass: String): String {
         disconnect()  // clean any previous session
 
         username = user
@@ -312,27 +321,39 @@ class IcomNetworkManager : NetworkAudioRig {
     /** One full handshake attempt (fresh sockets, fresh session id, re-login).
      *  Returns the pty path on success, or "" with [State.error] set on failure. */
     private suspend fun attemptConnect(host: String, controlPort: Int): String {
-        authInnerSeq = 0
-        authID = ByteArray(6)
-        a8ReplyID = ByteArray(16)
-        gotA8 = false
-        authOk = false
-        serialOpened = false
-        serialOpening = false
-        connInfoRequested = false
-        serialInnerSeq = 0
-        audioSendSeq = 0
-
         val scope = CoroutineScope(Dispatchers.IO + SupervisorJob())
-        connScope = scope
-        _state.value = State(connecting = true)
+        synchronized(this) {
+            // Share the teardown lock: a new session cannot replace the old one's
+            // fields while its logout is still waiting for retransmission.
+            disconnecting = false
+            authInnerSeq = 0
+            var nextId: Int
+            do { nextId = kotlin.random.Random.nextInt(0x10000) } while (nextId == loginRequestId)
+            loginRequestId = nextId
+            authID = ByteArray(6)
+            a8ReplyID = ByteArray(16)
+            gotA8 = false
+            authOk = false
+            serialOpened = false
+            serialOpening = false
+            connInfoRequested = false
+            serialInnerSeq = 0
+            audioSendSeq = 0
 
-        val result = CompletableDeferred<String>()
+            connScope = scope
+            _state.value = State(connecting = true)
+        }
+
+        val result = CompletableDeferred<String>(scope.coroutineContext[Job])
 
         try {
-            val ctrl = IcomStream("control", host, controlPort, scope)
-            control = ctrl
-            if (!ctrl.open()) {
+            val ctrl = synchronized(this) {
+                if (!isCurrentSession(scope)) return ""
+                IcomStream("control", host, controlPort, scope).also { control = it }
+            }
+            val controlOpened = ctrl.open()
+            if (!isCurrentSession(scope)) return ""
+            if (!controlOpened) {
                 fail("Control handshake failed — no reply from $host:$controlPort. " +
                      "Check the IP and that the radio is reachable. Over a VPN the radio " +
                      "also needs a default gateway (or the VPN must NAT clients into the " +
@@ -341,9 +362,8 @@ class IcomNetworkManager : NetworkAudioRig {
             }
 
             // Pre-login cleanup: remove the PREVIOUS session's token, but only
-            // when one was actually left behind by an UNCLEAN exit (app killed
-            // while connected). The persisted copy is cleared the moment the
-            // removal is sent — and on every clean disconnect — because radios
+            // when one was left by an unclean exit or an unacknowledged logout.
+            // Clear this one-shot copy after sending the removal; radios
             // differ in how they treat a removal for an unknown token: the
             // IC-705 (fw 1.41) silently ignores it, but a radio that ANSWERS
             // 0x40 packets (IC-7300MK2) consumes its tracked sequence numbers
@@ -353,7 +373,8 @@ class IcomNetworkManager : NetworkAudioRig {
                 parseTokenHex(hexTok)?.let { oldTok ->
                     Log.i(TAG, "removing stale token left by an unclean exit")
                     val remove = buildTokenRemove(ctrl, oldTok)
-                    repeat(3) { ctrl.sendRaw(remove) }   // identical repeats = native retransmit idiom
+                    ctrl.sendTracked(remove)
+                    repeat(2) { delay(80); ctrl.sendRaw(remove) }
                     delay(150)
                 }
                 saveStaleToken?.invoke(null)             // one-shot: never resend it
@@ -377,14 +398,22 @@ class IcomNetworkManager : NetworkAudioRig {
             // 5 s window per attempt, up to 3 attempts: a lost login packet on a
             // cold path, or a radio still flushing a just-expired previous
             // session, both recover on a resend instead of failing the connect.
-            var r60 = ctrl.expect(96, loginReply, timeoutMs = 5000)
+            val expectedRequestId = loginRequestId
+            val acceptLogin: (ByteArray) -> Boolean = { reply ->
+                val matches = u16le(reply, 26) == expectedRequestId
+                if (!matches) Log.w(TAG, "ignoring stale login reply: request=${u16le(reply, 26)} expected=$expectedRequestId")
+                matches
+            }
+            var r60 = ctrl.expect(96, loginReply, timeoutMs = 5000, accept = acceptLogin)
             var loginAttempt = 1
             while (r60 == null && loginAttempt < 3) {
+                if (!isCurrentSession(scope)) return ""
                 loginAttempt++
                 Log.i(TAG, "no login reply; resending login (attempt $loginAttempt/3)")
                 ctrl.sendTracked(buildLogin(ctrl))
-                r60 = ctrl.expect(96, loginReply, timeoutMs = 5000)
+                r60 = ctrl.expect(96, loginReply, timeoutMs = 5000, accept = acceptLogin)
             }
+            if (!isCurrentSession(scope)) return ""
             if (r60 == null) {
                 fail("No login reply — is 'Network control' ON and the control port correct?")
                 disconnect(); return ""
@@ -393,39 +422,49 @@ class IcomNetworkManager : NetworkAudioRig {
                 fail(ERR_BAD_CREDENTIALS)
                 disconnect(); return ""
             }
-            System.arraycopy(r60, 26, authID, 0, 6)
-            // Persist the token now, while we hold it: if this session later
-            // ends without a clean disconnect, the NEXT connect removes it
-            // before logging in (see the pre-login cleanup above).
-            saveStaleToken?.invoke(authID.joinToString("") { "%02x".format(it) })
+            synchronized(this) {
+                if (!isCurrentSession(scope)) return ""
+                System.arraycopy(r60, 26, authID, 0, 6)
+                // Persist the token now, while we hold it: if this session later
+                // ends without a clean disconnect, the NEXT connect removes it
+                // before logging in (see the pre-login cleanup above).
+                saveStaleToken?.invoke(authID.joinToString("") { "%02x".format(it) })
 
-            ctrl.startPing(firstSeq = 2)
-            ctrl.sendTracked(buildAuth(ctrl, magic = 0x02))          // first auth
-            ctrl.startIdle()
-            ctrl.sendTracked(buildAuth(ctrl, magic = 0x05))          // second auth
+                ctrl.startPing(firstSeq = 2)
+                ctrl.sendTracked(buildAuth(ctrl, magic = 0x02))          // first auth
+                ctrl.startIdle()
+                ctrl.sendTracked(buildAuth(ctrl, magic = 0x05))          // second auth
 
-            // Steady-state control consumer: brings up the serial stream and
-            // completes `result` with the pty path (or "" on failure).
-            scope.launch { controlLoop(ctrl, host, result) }
-            scope.launch { reauthLoop(ctrl) }
+                // Steady-state control consumer: brings up the serial stream and
+                // completes `result` with the pty path (or "" on failure).
+                scope.launch { controlLoop(ctrl, host, result) }
+                scope.launch { reauthLoop(ctrl) }
+            }
 
             val pty = withTimeoutOrNull(9000) { result.await() } ?: ""
-            if (pty.isEmpty()) {
-                if (_state.value.error.isEmpty()) fail("Timed out waiting for the serial/audio grant")
-                disconnect(); return ""
+            synchronized(this) {
+                if (!isCurrentSession(scope)) return ""
+                if (pty.isEmpty()) {
+                    if (_state.value.error.isEmpty()) fail("Timed out waiting for the serial/audio grant")
+                    disconnect(); return ""
+                }
+                // Preserve audioConnected/deviceName — openAudio runs in the background
+                // and may have already (or will soon) set audioConnected. Using copy()
+                // here instead of a fresh State() avoids clobbering it back to false.
+                _state.value = _state.value.copy(connecting = false, connected = true, error = "")
+                // Watch the control stream for sustained silence: a weak-LTE/Wi-Fi drop
+                // (or the radio being powered off) otherwise left us "connected" against
+                // a dead transport — a green "Connected" that lied and a hung TX.
+                ctrl.startWatchdog(LINK_TIMEOUT_MS) { onControlLinkLost(scope) }
+                Log.i(TAG, "Icom network connected, pty=$pty device=${_state.value.deviceName}")
+                return pty
             }
-            // Preserve audioConnected/deviceName — openAudio runs in the background
-            // and may have already (or will soon) set audioConnected. Using copy()
-            // here instead of a fresh State() avoids clobbering it back to false.
-            _state.value = _state.value.copy(connecting = false, connected = true, error = "")
-            // Watch the control stream for sustained silence: a weak-LTE/Wi-Fi drop
-            // (or the radio being powered off) otherwise left us "connected" against
-            // a dead transport — a green "Connected" that lied and a hung TX.
-            ctrl.startWatchdog(LINK_TIMEOUT_MS) { onControlLinkLost() }
-            Log.i(TAG, "Icom network connected, pty=$pty device=${_state.value.deviceName}")
-            return pty
         } catch (e: CancellationException) {
-            throw e
+            disconnectIfCurrent(scope)
+            // A radio-triggered teardown cancels this attempt's result, not the
+            // operator's connect request. Retry it; propagate real caller cancellation.
+            currentCoroutineContext().ensureActive()
+            return ""
         } catch (e: Exception) {
             Log.e(TAG, "connect failed", e)
             fail(e.message ?: "Connection failed")
@@ -437,10 +476,19 @@ class IcomNetworkManager : NetworkAudioRig {
      *  [LINK_TIMEOUT_MS]. Tear the session down with a clear reason so the UI
      *  stops showing a false "connected" and the operator can reconnect (the
      *  next connect() will retry across the radio's cleanup window). */
-    private fun onControlLinkLost() {
-        if (connScope == null) return
+    private fun onControlLinkLost(scope: CoroutineScope) {
+        if (!isCurrentSession(scope)) return
         Log.w(TAG, "control link silent > ${LINK_TIMEOUT_MS}ms — tearing down")
-        disconnect(reason = "Radio stopped responding — Wi-Fi/LTE link lost. Press Connect to reconnect.")
+        disconnectIfCurrent(scope, "Radio stopped responding — Wi-Fi/LTE link lost. Press Connect to reconnect.")
+    }
+
+    private fun isCurrentSession(scope: CoroutineScope) = connScope === scope && !disconnecting && scope.isActive
+
+    @Synchronized
+    private fun disconnectIfCurrent(scope: CoroutineScope, reason: String? = null) {
+        // A watchdog thread can be queued before a manual disconnect/reconnect.
+        // It must not later close that new session or overwrite its status.
+        if (connScope === scope) disconnect(reason)
     }
 
     /** @param reason when non-null, the teardown leaves this error on [state]
@@ -452,6 +500,7 @@ class IcomNetworkManager : NetworkAudioRig {
             if (reason != null) _state.value = State(error = reason)
             return
         }
+        disconnecting = true
         // NOTE: onAudioPcm is deliberately NOT cleared here. AudioService owns
         // that hook and only (re)installs it from startNetworkDecoding(), so
         // clearing it on a manual Disconnect left a still-running RX engine
@@ -459,32 +508,35 @@ class IcomNetworkManager : NetworkAudioRig {
         // (reported, IC-7300MK2 over LTE). Nothing arrives on a closed session
         // anyway, and the hook is a no-op once the engine is stopped.
         //
-        // Polite shutdown in protocol order, REPEATED WITH SPACING. The token
-        // removal (deauth, magic 0x01) frees this user's session slot; the
-        // serial close and the stream goodbyes (0x05) free the CI-V/audio
-        // streams. As single or back-to-back UDP sends they were routinely lost
-        // (LTE/VPN loss comes in bursts), the radio then held the stale session
-        // and rejected or ignored the next login for ~1 min. Three rounds
-        // ~80 ms apart survive a burst; the pauses also let the radio process
-        // them before the sockets vanish underneath.
+        // Freeze application traffic, including queued PTT/audio resends, but
+        // keep readers, ping replies and idles alive for the logout grace period.
+        synchronized(allStreams) { allStreams.forEach { it.beginShutdown() } }
         try {
-            // Only deauth when a login actually delivered a token: zero-token
-            // removals after a connect that failed before login are junk the
-            // radio never asked for, and some models answer every 0x40 packet.
             val haveToken = authID.any { it != 0.toByte() }
-            for (round in 1..3) {
-                if (haveToken) control?.let { c -> c.sendRaw(buildAuth(c, magic = 0x01)) }  // token remove
-                if (serialOpened) serial?.let { it.sendTracked(buildSerialOpenClose(close = true)) }
-                serial?.sendGoodbye()
-                audio?.sendGoodbye()
-                control?.sendGoodbye()
+            val serialClose = if (serialOpened) buildSerialOpenClose(close = true) else null
+            if (serialClose != null) serial?.sendTracked(serialClose, duringShutdown = true)
+            val ctrl = control
+            if (haveToken && ctrl != null) {
+                // Build ONCE and assign a real tracking sequence. The old raw
+                // sends all had outer seq 0 and could not be requested back.
+                val remove = buildAuth(ctrl, magic = 0x01)
+                ctrl.sendDeauth(remove)
+                Log.i(TAG, "logout sent: request=${u16le(remove, 26)} inner=${u16le(remove, 23)} " +
+                    "seq=${u16le(remove, 6)} localSID=${hex(ctrl.localSID)} remoteSID=${hex(ctrl.remoteSID)}")
+                repeat(2) {
+                    Thread.sleep(80)
+                    ctrl.sendRaw(remove, duringShutdown = true)
+                    if (serialClose != null) serial?.sendRaw(serialClose, duringShutdown = true)
+                }
+                // Do NOT send stream goodbye before this wait: the radio needs
+                // this transport to request a lost deauth (kappanhang: 500 ms).
+                Thread.sleep(LOGOUT_GRACE_MS - 160)
+                Log.i(TAG, "logout grace ended: acknowledged=${ctrl.deauthAcknowledged}")
+                if (ctrl.deauthAcknowledged) saveStaleToken?.invoke(null)
+                // With no matching acknowledgement, preserve the token for the
+                // existing one-shot pre-login cleanup instead of assuming success.
+            } else if (serialClose != null) {
                 Thread.sleep(80)
-            }
-            if (haveToken) {
-                // The radio-side token is being removed right now; drop the
-                // persisted copy so the NEXT connect starts clean instead of
-                // opening with removal packets for a token that is long gone.
-                saveStaleToken?.invoke(null)
             }
         } catch (_: Exception) {}
         try { audio?.close() } catch (_: Exception) {}
@@ -498,7 +550,7 @@ class IcomNetworkManager : NetworkAudioRig {
         audio = null
         serial = null
         control = null
-        try { nativeIcomPtyClose() } catch (_: Exception) {}
+        try { pty.close() } catch (_: Exception) {}
         scope.cancel()
         connScope = null
         serialOpened = false
@@ -531,52 +583,57 @@ class IcomNetworkManager : NetworkAudioRig {
     private suspend fun controlLoop(ctrl: IcomStream, host: String, result: CompletableDeferred<String>) {
         try {
             ctrl.incoming.consumeEach { r ->
-                when {
-                    r.size == 168 && r.u(0) == 0xa8 -> {
-                        System.arraycopy(r, 66, a8ReplyID, 0, 16)
-                        gotA8 = true
-                        maybeRequestSerial(ctrl)
-                    }
-                    r.size == 64 && r.u(0) == 0x40 -> {
-                        // Auth / re-auth reply. Logged so a field capture shows what
-                        // the radio said around a dropped session (re-auth runs every 60 s).
-                        Log.i(TAG, "control 0x40 auth reply: magic=0x${"%02x".format(r.u(21))} opened=$serialOpened")
-                        if (r.u(21) == 0x05) { authOk = true; maybeRequestSerial(ctrl) }
-                    }
-                    r.size == 80 && r.u(0) == 0x50 -> {
-                        val rejected = r.u(48) == 0xFF && r.u(49) == 0xFF && r.u(50) == 0xFF
-                        val radioDisconnect = r.u(48) == 0 && r.u(49) == 0 && r.u(50) == 0 && r.u(64) == 0x01
-                        Log.i(TAG, "control 0x50 status: b48-50=%02x%02x%02x b64=%02x rejected=%b disconnect=%b opened=%b"
-                            .format(r.u(48), r.u(49), r.u(50), r.u(64), rejected, radioDisconnect, serialOpened))
-                        if (rejected) {
-                            // After the streams are open the radio also emits this
-                            // pattern; kappanhang ignores it there too.
-                            if (!serialOpened) {
-                                fail("Auth rejected — try rebooting the radio")
-                                if (!result.isCompleted) result.complete("")
-                            }
-                        } else if (radioDisconnect) {
-                            if (serialOpened) {
-                                // The radio ended the session. fail() would only show
-                                // a message and leave a zombie: tear down properly so
-                                // the ViewModel's link-loss handler reconnects.
-                                Log.w(TAG, "radio reported disconnect mid-session — tearing down for reconnect")
-                                Thread { disconnect(reason = "Radio ended the session — reconnecting…") }.start()
-                            } else {
-                                fail("Radio reported disconnect")
-                                if (!result.isCompleted) result.complete("")
+                synchronized(this) {
+                    if (!isCurrentSession(ctrl.scope)) return@consumeEach
+                    when {
+                        r.size == 168 && r.u(0) == 0xa8 -> {
+                            System.arraycopy(r, 66, a8ReplyID, 0, 16)
+                            gotA8 = true
+                            maybeRequestSerial(ctrl)
+                        }
+                        r.size == 64 && r.u(0) == 0x40 -> {
+                            // Auth / re-auth reply. Logged so a field capture shows what
+                            // the radio said around a dropped session (re-auth runs every 60 s).
+                            Log.i(TAG, "control 0x40 auth reply: magic=0x${"%02x".format(r.u(21))} " +
+                                "response=${hex(u32be(r, 48))} request=${u16le(r, 26)} inner=${u16le(r, 23)} " +
+                                "localSID=${hex(u32be(r, 12))} remoteSID=${hex(u32be(r, 8))} opened=$serialOpened")
+                            if (r.u(21) == 0x05) { authOk = true; maybeRequestSerial(ctrl) }
+                        }
+                        r.size == 80 && r.u(0) == 0x50 -> {
+                            val rejected = r.u(48) == 0xFF && r.u(49) == 0xFF && r.u(50) == 0xFF
+                            val radioDisconnect = r.u(48) == 0 && r.u(49) == 0 && r.u(50) == 0 && r.u(64) == 0x01
+                            Log.i(TAG, "control 0x50 status: b48-50=%02x%02x%02x b64=%02x rejected=%b disconnect=%b opened=%b"
+                                .format(r.u(48), r.u(49), r.u(50), r.u(64), rejected, radioDisconnect, serialOpened))
+                            if (rejected) {
+                                // After the streams are open the radio also emits this
+                                // pattern; kappanhang ignores it there too.
+                                if (!serialOpened) {
+                                    fail("Auth rejected — try rebooting the radio")
+                                    if (!result.isCompleted) result.complete("")
+                                }
+                            } else if (radioDisconnect) {
+                                if (serialOpened) {
+                                    // The radio ended the session. fail() would only show
+                                    // a message and leave a zombie: tear down properly so
+                                    // the ViewModel's link-loss handler reconnects.
+                                    Log.w(TAG, "radio reported disconnect mid-session — tearing down for reconnect")
+                                    Thread { disconnectIfCurrent(ctrl.scope, "Radio ended the session — reconnecting…") }.start()
+                                } else {
+                                    fail("Radio reported disconnect")
+                                    if (!result.isCompleted) result.complete("")
+                                }
                             }
                         }
-                    }
-                    r.size == 144 && r.u(0) == 0x90 && r.u(96) == 0x01 -> {
-                        // The radio's "connected" status. Exactly one open per
-                        // session, and only once WE have asked for the streams
-                        // (kappanhang gates on the same synchronous flag).
-                        if (connInfoRequested && !serialOpened && !serialOpening) {
-                            openSerial(ctrl, host, r, result)
-                        } else {
-                            Log.i(TAG, "0x90 connected-status ignored (requested=$connInfoRequested " +
-                                "opening=$serialOpening opened=$serialOpened)")
+                        r.size == 144 && r.u(0) == 0x90 && r.u(96) == 0x01 -> {
+                            // The radio's "connected" status. Exactly one open per
+                            // session, and only once WE have asked for the streams
+                            // (kappanhang gates on the same synchronous flag).
+                            if (connInfoRequested && !serialOpened && !serialOpening) {
+                                openSerial(ctrl, host, r, result)
+                            } else {
+                                Log.i(TAG, "0x90 connected-status ignored (requested=$connInfoRequested " +
+                                    "opening=$serialOpening opened=$serialOpened)")
+                            }
                         }
                     }
                 }
@@ -614,72 +671,85 @@ class IcomNetworkManager : NetworkAudioRig {
             // CI-V replies are few and each one matters (a lost PTT ack costs a
             // full rigctld timeout+retry round): track the radio's numbering and
             // ask for anything missing right away.
-            val ser = IcomStream(
-                "serial", host, SERIAL_PORT, scope,
-                rxTracker = IcomRxSeqTracker(giveUpAfterMs = 1000, reRequestMs = 150)
-            )
-            serial = ser
-            if (!ser.open()) {
-                serialOpening = false
-                fail("CI-V stream handshake failed")
-                if (!result.isCompleted) result.complete("")
-                return@launch
+            val ser = synchronized(this) {
+                if (!isCurrentSession(scope)) return@launch
+                IcomStream(
+                    "serial", host, SERIAL_PORT, scope,
+                    rxTracker = IcomRxSeqTracker(giveUpAfterMs = 1000, reRequestMs = 150)
+                ).also { serial = it }
             }
-            ser.startPing(firstSeq = 1)
-            ser.startIdle()
-            serialInnerSeq = 0
-            ser.sendTracked(buildSerialOpenClose(close = false))  // open CI-V
+            val serialReady = ser.open()
+            val path = synchronized(this) {
+                if (!isCurrentSession(scope)) return@launch
+                if (!serialReady) {
+                    serialOpening = false
+                    fail("CI-V stream handshake failed")
+                    if (!result.isCompleted) result.complete("")
+                    return@launch
+                }
+                ser.startPing(firstSeq = 1)
+                ser.startIdle()
+                serialInnerSeq = 0
+                ser.sendTracked(buildSerialOpenClose(close = false))  // open CI-V
 
-            val path = nativeIcomPtyOpen()
-            if (path == null) {
+                val path = pty.open()
+                if (path == null) {
+                    serialOpening = false
+                    fail("Could not create local pty")
+                    if (!result.isCompleted) result.complete("")
+                    return@launch
+                }
+                serialOpened = true
                 serialOpening = false
-                fail("Could not create local pty")
-                if (!result.isCompleted) result.complete("")
-                return@launch
+
+                // Session-level liveness (see DATA_SILENCE_MS).
+                scope.launch { serialDataWatchdog(ser) }
+
+                // radio CI-V → pty (rigctld reads it)
+                scope.launch { serialRxLoop(ser) }
+                // pty (rigctld writes) → radio CI-V
+                scope.launch { ptyTxLoop(ser) }
+                ser.startStatsLog()
+                path
             }
-            serialOpened = true
-            serialOpening = false
-
-            // Session-level liveness (see DATA_SILENCE_MS).
-            scope.launch { serialDataWatchdog(ser) }
-
-            // radio CI-V → pty (rigctld reads it)
-            scope.launch { serialRxLoop(ser) }
-            // pty (rigctld writes) → radio CI-V
-            scope.launch { ptyTxLoop(ser) }
-            ser.startStatsLog()
 
             // Phase 2 "full wireless": also bring up the audio stream (UDP 50003).
             // Control still succeeds even if audio fails — the user can fall back
             // to USB audio.
             openAudio(host, scope)
 
-            if (!result.isCompleted) result.complete(path)
+            if (isCurrentSession(scope) && !result.isCompleted) result.complete(path)
         }
     }
 
     private suspend fun openAudio(host: String, scope: CoroutineScope) {
         // RX audio: a lost packet is requested again and has audioBufferMs to
         // arrive before the jitter buffer conceals it (same horizon).
-        val aud = IcomStream(
-            "audio", host, AUDIO_PORT, scope,
-            rxTracker = IcomRxSeqTracker(giveUpAfterMs = audioBufferMs.toLong(), reRequestMs = 100)
-        )
-        audio = aud
-        if (!aud.open()) {
-            Log.w(TAG, "audio stream handshake failed — control works, audio stays on USB")
-            audio = null
-            return
+        val aud = synchronized(this) {
+            if (!isCurrentSession(scope)) return
+            IcomStream(
+                "audio", host, AUDIO_PORT, scope,
+                rxTracker = IcomRxSeqTracker(giveUpAfterMs = audioBufferMs.toLong(), reRequestMs = 100)
+            ).also { audio = it }
         }
-        aud.startPing(firstSeq = 1)
-        // NOTE: the audio stream sends NO periodic idle pkt0 (only the audio data
-        // packets are tracked) — matching the reference implementation.
-        audioSendSeq = 0
-        scope.launch { audioRxLoop(aud) }
-        aud.startStatsLog()
-        _state.value = _state.value.copy(audioConnected = true)
-        Log.i(TAG, "audio stream up (UDP $AUDIO_PORT, rx ${NET_AUDIO_RATE}Hz tx ${txAudioRate}Hz, " +
+        val audioReady = aud.open()
+        synchronized(this) {
+            if (!isCurrentSession(scope)) return
+            if (!audioReady) {
+                Log.w(TAG, "audio stream handshake failed — control works, audio stays on USB")
+                audio = null
+                return
+            }
+            aud.startPing(firstSeq = 1)
+            // NOTE: the audio stream sends NO periodic idle pkt0 (only the audio data
+            // packets are tracked) — matching the reference implementation.
+            audioSendSeq = 0
+            scope.launch { audioRxLoop(aud) }
+            aud.startStatsLog()
+            _state.value = _state.value.copy(audioConnected = true)
+            Log.i(TAG, "audio stream up (UDP $AUDIO_PORT, rx ${NET_AUDIO_RATE}Hz tx ${txAudioRate}Hz, " +
             "radio TX buffer ${audioBufferMs}ms) — full wireless")
+        }
     }
 
     /* ───────────────────── audio (UDP 50003) bridge ──────────────── */
@@ -720,6 +790,7 @@ class IcomNetworkManager : NetworkAudioRig {
         }
         try {
             aud.incoming.consumeEach { r ->
+                if (!isCurrentSession(aud.scope)) return@consumeEach
                 if (r.size >= 580 &&
                     ((r.u(0) == 0x6c && r.u(1) == 0x05) || (r.u(0) == 0x44 && r.u(1) == 0x02))) {
                     if (pcmPackets == 0L) Log.i(TAG, "audio RX: first audio packet from radio (size=${r.size})")
@@ -791,8 +862,11 @@ class IcomNetworkManager : NetworkAudioRig {
         try {
             while (true) {
                 delay(60_000)
-                Log.i(TAG, "reauth sent (60 s token refresh)")
-                ctrl.sendTracked(buildAuth(ctrl, magic = 0x05))
+                synchronized(this) {
+                    if (!isCurrentSession(ctrl.scope)) return
+                    Log.i(TAG, "reauth sent (60 s token refresh)")
+                    ctrl.sendTracked(buildAuth(ctrl, magic = 0x05))
+                }
             }
         } catch (_: CancellationException) {}
     }
@@ -807,14 +881,14 @@ class IcomNetworkManager : NetworkAudioRig {
         try {
             while (true) {
                 delay(2000)
-                if (!serialOpened || connScope == null) return
+                if (!serialOpened || !isCurrentSession(ser.scope)) return
                 val last = ser.lastDataRxMs
                 if (last == 0L) continue                   // never saw one yet: nothing to judge
                 val silent = System.currentTimeMillis() - last
                 if (silent > DATA_SILENCE_MS) {
                     Log.w(TAG, "serial stream: no idle/data from the radio for ${silent}ms while pings continue " +
                         "— radio dropped the session; tearing down for reconnect")
-                    Thread { disconnect(reason = "Radio dropped the session (CI-V silent) — reconnecting…") }.start()
+                    Thread { disconnectIfCurrent(ser.scope, "Radio dropped the session (CI-V silent) — reconnecting…") }.start()
                     return
                 }
             }
@@ -826,12 +900,13 @@ class IcomNetworkManager : NetworkAudioRig {
     private suspend fun serialRxLoop(ser: IcomStream) {
         try {
             ser.incoming.consumeEach { r ->
+                if (!isCurrentSession(ser.scope)) return@consumeEach
                 // CI-V data packet: r[0]=0x15+len, r[16]=0xc1, r[17]=len, payload at 21.
                 if (r.size >= 22 && r.u(16) == 0xc1 && (r.u(0) - 0x15) == r.u(17)) {
                     val len = r.u(17)
                     if (21 + len <= r.size && len > 0) {
                         val civ = r.copyOfRange(21, 21 + len)
-                        nativeIcomPtyWrite(civ, civ.size)
+                        pty.write(civ, civ.size)
                     }
                 }
             }
@@ -847,7 +922,7 @@ class IcomNetworkManager : NetworkAudioRig {
         try {
             while (true) {
                 yield()                                   // cancellation point
-                val d = nativeIcomPtyRead(100) ?: break   // null = pty closed
+                val d = pty.read(100) ?: break   // null = pty closed
                 if (d.isEmpty()) continue
                 for (b in d) {
                     frame.add(b)
@@ -891,8 +966,9 @@ class IcomNetworkManager : NetworkAudioRig {
         p.putSid(8, s.localSID); p.putSid(12, s.remoteSID)
         p[19] = 0x70; p[20] = 0x01
         p[23] = authInnerSeq.toByte(); p[24] = (authInnerSeq ushr 8).toByte()
-        // p[26],p[27] = a random "auth start" id (any value works; the reply echoes it)
-        p[26] = (authInnerSeq and 0xFF).toByte(); p[27] = 0x42
+        // The radio echoes this per-attempt nonce in the login reply. Keep it
+        // stable for retries, but never reuse the previous attempt's identity.
+        p[26] = loginRequestId.toByte(); p[27] = (loginRequestId ushr 8).toByte()
         System.arraycopy(passcode(username), 0, p, 64, 16)
         System.arraycopy(passcode(password), 0, p, 80, 16)
         val app = "icom-pc".toByteArray(Charsets.US_ASCII)
@@ -1021,7 +1097,11 @@ class IcomNetworkManager : NetworkAudioRig {
 
         private var socket: DatagramSocket? = null
         @Volatile private var running = false
+        @Volatile private var shuttingDown = false
         private val sendLock = Any()
+        @Volatile private var deauthRequest: ByteArray? = null
+        @Volatile var deauthAcknowledged = false
+            private set
 
         private var trackSeq = 1                       // pkt0 tracking seq (bytes 6-7)
         private val txBuf = LinkedHashMap<Int, ByteArray>()
@@ -1056,24 +1136,27 @@ class IcomNetworkManager : NetworkAudioRig {
 
         suspend fun open(): Boolean {
             return try {
-                // Bind the LOCAL udp port to the same number as the radio's port
-                // (control 50001 / serial 50002 / audio 50003). The IC-705 streams
-                // data — especially audio on 50003 — back to that specific local
-                // port, so an ephemeral source port can leave audio never arriving
-                // even though the handshake succeeds. kappanhang binds local==remote
-                // for all three streams. Fall back to ephemeral if the port is busy.
-                val sock = try {
-                    DatagramSocket(port)
-                } catch (e: Exception) {
-                    Log.w(TAG, "$name: bind local port $port failed (${e.message}); using ephemeral")
-                    DatagramSocket()
+                synchronized(this@IcomNetworkManager) {
+                    if (!isCurrentSession(scope) || shuttingDown) return false
+                    // Bind the LOCAL udp port to the same number as the radio's port
+                    // (control 50001 / serial 50002 / audio 50003). The IC-705 streams
+                    // data — especially audio on 50003 — back to that specific local
+                    // port, so an ephemeral source port can leave audio never arriving
+                    // even though the handshake succeeds. kappanhang binds local==remote
+                    // for all three streams. Fall back to ephemeral if the port is busy.
+                    val sock = try {
+                        DatagramSocket(port)
+                    } catch (e: Exception) {
+                        Log.w(TAG, "$name: bind local port $port failed (${e.message}); using ephemeral")
+                        DatagramSocket()
+                    }
+                    sock.connect(InetSocketAddress(InetAddress.getByName(host), port))
+                    sock.soTimeout = 400
+                    socket = sock
+                    computeLocalSid(sock)
+                    running = true
+                    scope.launch(Dispatchers.IO) { readerLoop() }
                 }
-                sock.connect(InetSocketAddress(InetAddress.getByName(host), port))
-                sock.soTimeout = 400
-                socket = sock
-                computeLocalSid(sock)
-                running = true
-                scope.launch(Dispatchers.IO) { readerLoop() }
 
                 // Handshake with retries. Over LTE/VPN the first packets are
                 // routinely lost while the path warms up (LTE idle→active, VPN
@@ -1105,6 +1188,9 @@ class IcomNetworkManager : NetworkAudioRig {
                 trackSeq = 1
                 Log.i(TAG, "$name stream up: localSID=${hex(localSID)} remoteSID=${hex(remoteSID)}")
                 true
+            } catch (e: CancellationException) {
+                close()
+                throw e
             } catch (e: Exception) {
                 Log.e(TAG, "$name open failed: ${e.message}")
                 try { close() } catch (_: Exception) {}
@@ -1114,7 +1200,21 @@ class IcomNetworkManager : NetworkAudioRig {
 
         /** One stream-level goodbye (type 0x05); close() repeats it. */
         fun sendGoodbye() {
-            if (remoteSID != 0 && running) sendRaw(plain(0x05, withRemote = true))
+            if (remoteSID != 0 && running) sendRaw(plain(0x05, withRemote = true), duringShutdown = true)
+        }
+
+        fun beginShutdown() {
+            synchronized(sendLock) {
+                shuttingDown = true
+                // A late retransmit request must never replay an old PTT-on or
+                // re-auth after logout. Only teardown packets/idles remain.
+                txBuf.clear()
+            }
+        }
+
+        fun sendDeauth(packet: ByteArray) {
+            deauthRequest = packet.copyOf()
+            sendTracked(packet, duringShutdown = true)
         }
 
         private fun computeLocalSid(sock: DatagramSocket) {
@@ -1153,7 +1253,9 @@ class IcomNetworkManager : NetworkAudioRig {
                 try {
                     while (isActive && running) {
                         delay(100)
-                        sendTracked(idlePacket())
+                        // A later seq lets the radio notice a missing deauth
+                        // and request it during the logout grace period.
+                        sendTracked(idlePacket(), duringShutdown = true)
                     }
                 } catch (_: CancellationException) {}
             }
@@ -1203,25 +1305,30 @@ class IcomNetworkManager : NetworkAudioRig {
             while (incoming.tryReceive().getOrNull() != null) { /* drop */ }
         }
 
-        suspend fun expect(len: Int, prefix: ByteArray, timeoutMs: Long = 3000): ByteArray? =
+        suspend fun expect(
+            len: Int, prefix: ByteArray, timeoutMs: Long = 3000,
+            accept: (ByteArray) -> Boolean = { true }
+        ): ByteArray? =
             withTimeoutOrNull(timeoutMs) {
                 while (isActive) {
                     val r = incoming.receiveCatching().getOrNull() ?: return@withTimeoutOrNull null
-                    if (r.size == len && r.startsWith(prefix)) return@withTimeoutOrNull r
+                    if (r.size == len && r.startsWith(prefix) && accept(r)) return@withTimeoutOrNull r
                 }
                 null
             }
 
-        fun sendRaw(p: ByteArray) {
+        fun sendRaw(p: ByteArray, duringShutdown: Boolean = false) {
             synchronized(sendLock) {
+                if (!running || (shuttingDown && !duringShutdown)) return
                 try { socket?.send(DatagramPacket(p, p.size)) }
                 catch (e: Exception) { if (running) Log.w(TAG, "$name send failed: ${e.message}") }
             }
         }
 
         /** Assign the next tracking seq, store for retransmit, then send. */
-        fun sendTracked(p: ByteArray) {
+        fun sendTracked(p: ByteArray, duringShutdown: Boolean = false) {
             synchronized(sendLock) {
+                if (!running || (shuttingDown && !duringShutdown)) return
                 txTracked++
                 p[6] = trackSeq.toByte(); p[7] = (trackSeq ushr 8).toByte()
                 txBuf[trackSeq and 0xFFFF] = p.copyOf()
@@ -1235,22 +1342,25 @@ class IcomNetworkManager : NetworkAudioRig {
         }
 
         fun close() {
-            // Polite stream-level disconnect (kappanhang/wfview send type 0x05
-            // before closing). Without it the radio keeps this session alive
-            // until its own timeout and silently ignores the NEXT login —
-            // the reported "first connect works, later connects get 'No login
-            // reply'" pattern. Sent twice: a single unacked UDP packet on a
-            // link we are about to drop.
-            if (remoteSID != 0) {
-                try {
-                    sendRaw(plain(0x05, withRemote = true))
-                    sendRaw(plain(0x05, withRemote = true))
-                } catch (_: Exception) {}
+            synchronized(sendLock) {
+                if (!running && socket == null) return
+                // Polite stream-level disconnect (kappanhang/wfview send type 0x05
+                // before closing). Without it the radio keeps this session alive
+                // until its own timeout and silently ignores the NEXT login —
+                // the reported "first connect works, later connects get 'No login
+                // reply'" pattern. Sent twice: a single unacked UDP packet on a
+                // link we are about to drop.
+                if (remoteSID != 0) {
+                    try {
+                        sendGoodbye()
+                        sendGoodbye()
+                    } catch (_: Exception) {}
+                }
+                running = false
+                try { socket?.close() } catch (_: Exception) {}
+                socket = null
+                incoming.close()
             }
-            running = false
-            try { socket?.close() } catch (_: Exception) {}
-            socket = null
-            incoming.close()
         }
 
         private suspend fun readerLoop() {
@@ -1265,6 +1375,10 @@ class IcomNetworkManager : NetworkAudioRig {
                     lastRxMs = System.currentTimeMillis()   // any traffic = radio alive
                     rxPackets++
                     val r = buf.copyOf(dp.length)
+                    // Read the logout acknowledgement here, not in controlLoop:
+                    // its state mutations are deliberately blocked by teardown.
+                    val deauth = deauthRequest
+                    if (deauth != null && matchesDeauthReply(r, deauth)) deauthAcknowledged = true
                     when {
                         isPkt7(r) -> { rxTracker?.onPing(u16le(r, 6)); handlePkt7(r) }
                         isRetransmitRequest(r) -> handleRetransmitRequest(r)
@@ -1291,6 +1405,13 @@ class IcomNetworkManager : NetworkAudioRig {
                 incoming.close()
             }
         }
+
+        private fun matchesDeauthReply(r: ByteArray, request: ByteArray): Boolean =
+            r.size == 64 && r.u(0) == 0x40 && r.u(4) == 0 && r.u(5) == 0 &&
+                r.u(20) == 0x02 && r.u(21) == 0x01 && u32be(r, 48) == 0 &&
+                u16le(r, 23) == u16le(request, 23) &&
+                u32be(r, 8) == u32be(request, 12) && u32be(r, 12) == u32be(request, 8) &&
+                (26..31).all { r[it] == request[it] }
 
         private fun isPkt7(r: ByteArray) =
             r.size == 21 && r.u(1) == 0 && r.u(2) == 0 && r.u(3) == 0 && r.u(4) == 0x07 && r.u(5) == 0
@@ -1358,7 +1479,7 @@ class IcomNetworkManager : NetworkAudioRig {
                 p.putSid(8, localSID); p.putSid(12, remoteSID)
                 p[16] = 0x01
                 System.arraycopy(r, 17, p, 17, 4)
-                sendRaw(p)
+                sendRaw(p, duringShutdown = true)
             }
             // else: reply to our own ping — nothing to do.
         }
@@ -1393,14 +1514,17 @@ class IcomNetworkManager : NetworkAudioRig {
          * is simply requested again).
          */
         private fun resend(seq: Int, burst: Boolean) {
-            val d = txBuf[seq and 0xFFFF]
-            if (d != null) {
-                resentPackets++
-                sendRaw(d)
-                if (!(burst && isAudio)) sendRaw(d)
-            } else {
-                resentAsIdle++
-                val idle = idlePacketWithSeq(seq); sendRaw(idle); sendRaw(idle)
+            synchronized(sendLock) {
+                val d = txBuf[seq and 0xFFFF]
+                if (d != null) {
+                    resentPackets++
+                    sendRaw(d, duringShutdown = true)
+                    if (!(burst && isAudio)) sendRaw(d, duringShutdown = true)
+                } else {
+                    resentAsIdle++
+                    val idle = idlePacketWithSeq(seq)
+                    sendRaw(idle, duringShutdown = true); sendRaw(idle, duringShutdown = true)
+                }
             }
         }
 

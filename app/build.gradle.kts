@@ -11,8 +11,8 @@ android {
         applicationId = "yakumo2683.RADEdecode"
         minSdk = 26
         targetSdk = 35
-        versionCode = 10619
-        versionName = "1.6.19-session-liveness"
+        versionCode = 10620
+        versionName = "1.6.20-session-logout"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 
@@ -47,6 +47,12 @@ android {
         compose = true
         // Version banner in connection logs (BuildConfig.VERSION_NAME).
         buildConfig = true
+    }
+
+    testOptions {
+        // Protocol integration tests use real UDP and a fake PTY; only Android
+        // logging is stubbed by the local JVM test runtime.
+        unitTests.isReturnDefaultValues = true
     }
 
     externalNativeBuild {
