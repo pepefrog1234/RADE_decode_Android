@@ -6,13 +6,19 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ```bash
 ./gradlew assembleDebug        # Build debug APK
-./gradlew bundleRelease        # Build release AAB
-./gradlew build                # Full build (debug + release)
+./gradlew assembleRelease      # Build signed release APK (signing credentials required)
+./scripts/verify-release-apk.sh app/build/outputs/apk/release/app-release.apk
+./gradlew bundleRelease        # Build signed release AAB (signing credentials required)
+./gradlew build                # Full build (debug + release; signing credentials required)
 ./gradlew testDebugUnitTest    # Run unit tests
 ./gradlew connectedDebugAndroidTest  # Run instrumented tests (device required)
 ```
 
 Native C++ is built automatically via CMake 3.22.1 integration in AGP. No separate native build step needed.
+
+Follow the [release signing and Google registration guide (繁體中文)](docs/signing/README.zh-TW.md).
+Use the existing release key; never regenerate it or fall back to debug signing.
+Private signing material belongs only in ignored local files or CI secrets.
 
 ## Architecture
 

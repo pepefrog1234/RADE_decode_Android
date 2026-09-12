@@ -119,6 +119,11 @@ This app runs the full RADE V1 signal chain natively on the phone:
 
 The app is not on the Play Store; updates are published as GitHub releases.
 
+Future releases use a persistent release signing key. Switching from an older
+debug APK requires uninstalling it first, which deletes its local app data;
+save any recordings and information you need before switching. See the
+[signing, backup, and Google registration guide (繁體中文)](docs/signing/README.zh-TW.md).
+
 ## Quick start — receiving
 
 1. **Connect audio.** Options, best first:
