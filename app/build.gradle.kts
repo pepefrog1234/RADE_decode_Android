@@ -72,8 +72,8 @@ android {
         applicationId = "yakumo2683.RADEdecode"
         minSdk = 26
         targetSdk = 35
-        versionCode = 10620
-        versionName = "1.6.20-session-logout"
+        versionCode = 10621
+        versionName = "1.6.21-cat-rx-lifecycle"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 

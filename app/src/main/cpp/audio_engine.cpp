@@ -96,7 +96,7 @@ AudioEngine::AudioEngine() {
     txOutputCb_ = std::make_shared<TxOutputCallback>(this);
 }
 
-AudioEngine::~AudioEngine() { stop(); stopTx(false); }
+AudioEngine::~AudioEngine() { stopTx(false); stop(); }
 
 /* ── Polyphase FIR decimation filter design ──────────────────── */
 
@@ -768,12 +768,13 @@ void AudioEngine::computeFFT() {
         }
         tmp[k] = 20.0f * log10f(sqrtf(re * re + im * im) + 1e-10f);
     }
-    { std::lock_guard<std::mutex> lk(spectrumMutex_); std::memcpy(spectrumDb_, tmp, sizeof(tmp)); }
+    { std::lock_guard<std::mutex> lk(spectrumMutex_); std::memcpy(spectrumDb_, tmp, sizeof(tmp)); ++spectrumFrame_; }
 }
 
-void AudioEngine::getSpectrum(float *out, int maxBins) {
+uint64_t AudioEngine::getSpectrum(float *out, int maxBins) {
     std::lock_guard<std::mutex> lk(spectrumMutex_);
     std::memcpy(out, spectrumDb_, std::min(maxBins, FFT_BINS) * (int)sizeof(float));
+    return spectrumFrame_;
 }
 
 std::string AudioEngine::getLastCallsign() {

@@ -209,7 +209,7 @@ class AudioBridge private constructor(
     /** Last decoded callsign, or empty string. */
     val lastCallsign: String get() = nativeGetLastCallsign()
 
-    /** Copy current FFT spectrum (512 bins, dB scale, 0-4kHz). */
+    /** Copy FFT bins and return their frame ID (0 until the first FFT). */
     fun getSpectrum(out: FloatArray) = nativeGetSpectrum(out)
 
     /** Start recording decoded speech to WAV file. */
@@ -223,8 +223,8 @@ class AudioBridge private constructor(
     fun release() {
         if (!ownsNativeEngine || released) return
         released = true
-        stop()
         stopTx(drainEoo = false)
+        stop()
         nativeDestroy()
     }
 
@@ -455,7 +455,7 @@ class AudioBridge private constructor(
     private external fun nativeGetInputSessionId(): Int
     private external fun nativeGetInputLevel(): Float
     private external fun nativeGetOutputLevel(): Float
-    private external fun nativeGetSpectrum(out: FloatArray)
+    private external fun nativeGetSpectrum(out: FloatArray): Long
     private external fun nativeGetLastCallsign(): String
 
     /* TX native methods */

@@ -50,8 +50,8 @@ class AudioService : LifecycleService() {
     /** Set by the ViewModel when rig control runs over the IC-705's Wi-Fi.
      *  When non-null and its audio stream is up, RX/TX audio rides UDP 50003
      *  instead of a USB sound card ("full wireless"). */
-    var networkRig: yakumo2683.RADEdecode.network.NetworkAudioRig? = null
-    private var audioBridge: AudioBridge? = null
+    @Volatile var networkRig: yakumo2683.RADEdecode.network.NetworkAudioRig? = null
+    @Volatile private var audioBridge: AudioBridge? = null
     private var pollingJob: Job? = null
     private var notificationUpdateJob: Job? = null
     private var db: AppDatabase? = null
@@ -166,6 +166,7 @@ class AudioService : LifecycleService() {
         return START_STICKY
     }
 
+    @Synchronized
     fun startDecoding(
         inputDeviceId: Int = -1,
         outputDeviceId: Int = RX_OUTPUT_AUTO,
@@ -295,6 +296,7 @@ class AudioService : LifecycleService() {
         audioBridge?.setTxMicGain(gain)
     }
 
+    @Synchronized
     fun stopDecoding() {
         txKeepRxAliveActive = false  // never let a keep-alive flag survive a full RX teardown
         stopPolling()
@@ -361,6 +363,7 @@ class AudioService : LifecycleService() {
         if (useJavaRxOutput) startRxAudioTrackPump(bridge, resolved)
     }
 
+    @Synchronized
     fun setRxAudioDevices(inputDeviceId: Int?, outputDeviceId: Int) {
         val bridge = audioBridge ?: return
         if (!_state.value.isRunning || _state.value.isTx) return
@@ -816,10 +819,21 @@ class AudioService : LifecycleService() {
      * so a manual Disconnect → Connect left RX silent until the operator cycled
      * TX→RX (reported on the IC-7300MK2 over LTE). Harmless when not decoding.
      */
-    fun reattachNetworkRx() {
+    @Synchronized
+    fun reattachNetworkRx(outputDeviceId: Int = RX_OUTPUT_AUTO) {
         val net = networkRig ?: return
-        if (!networkAudioMode || !_state.value.isRunning || _state.value.isTx) return
-        net.onAudioPcm = { pcm -> audioBridge?.feedNetRx(pcm, pcm.size) }
+        if (!_state.value.isRunning || _state.value.isTx || !net.audioLinkUp) return
+        if (!networkAudioMode) {
+            // RX may have started on the phone mic before Icom connected (e.g.
+            // after an app restart). Reattaching alone cannot turn that local
+            // modem into a network receiver.
+            Log.i("AudioService", "Icom connected during local RX; switching to network RX")
+            stopDecoding()
+            startNetworkDecoding(outputDeviceId)
+            return
+        }
+        val bridge = audioBridge ?: return
+        net.onAudioPcm = { pcm -> bridge.feedNetRx(pcm, pcm.size) }
         Log.i("AudioService", "reattachNetworkRx: RX hook re-installed after reconnect")
     }
     private var netTxPumpJob: Job? = null
@@ -831,6 +845,7 @@ class AudioService : LifecycleService() {
      * UDP audio, or a Hermes-Lite 2's demodulated I/Q stream) and play the
      * recovered speech on the selected RX output. No USB sound card involved.
      */
+    @Synchronized
     fun startNetworkDecoding(outputDeviceId: Int = RX_OUTPUT_AUTO) {
         if (_state.value.isRunning || _state.value.isTx) return
         val net = networkRig ?: run {
@@ -880,9 +895,10 @@ class AudioService : LifecycleService() {
         }
         if (useJavaRxOutput) startRxAudioTrackPump(bridge, rxOutputDeviceId)
 
-        // Received UDP PCM → modem. The callback fires on the audio stream's
-        // consume coroutine; feedNetRx is a no-op once the engine is stopped.
-        net.onAudioPcm = { pcm -> audioBridge?.feedNetRx(pcm, pcm.size) }
+        // Capture this bridge, not the service's mutable current bridge. A
+        // callback already in flight during teardown must not feed its PCM to a
+        // later RX/TX engine; JNI also checks ownership under its lifecycle lock.
+        net.onAudioPcm = { pcm -> bridge.feedNetRx(pcm, pcm.size) }
 
         networkAudioMode = true
         currentInputDeviceId = -1
@@ -899,6 +915,7 @@ class AudioService : LifecycleService() {
      *   experimental toggle) — LE Audio (LC3) preferred, classic SCO fallback,
      *   same as the USB-rig TX path.
      */
+    @Synchronized
     fun startNetworkTransmitting(
         inputDeviceId: Int,
         callsign: String,
@@ -1207,6 +1224,7 @@ class AudioService : LifecycleService() {
 
     /* ── TX (Transmit) ──────────────────────────────────────── */
 
+    @Synchronized
     fun startTransmitting(
         inputDeviceId: Int = -1,
         outputDeviceId: Int = -1,
@@ -1444,6 +1462,7 @@ class AudioService : LifecycleService() {
      *   torn down (bridge released, foreground stopped) instead of resuming RX —
      *   used by the Stop button / ACTION_STOP / onDestroy so the service can die.
      */
+    @Synchronized
     fun stopTransmitting(drainEoo: Boolean = true, forceFullTeardown: Boolean = false) {
         stopTxPolling()
         stopNotificationUpdates()
@@ -1846,14 +1865,15 @@ class AudioService : LifecycleService() {
 
     private fun startPolling() {
         pollingJob = lifecycleScope.launch {
+            var lastSpectrumFrame = 0L
             while (isActive) {
                 val bridge = audioBridge ?: break
                 // Power-save mode: skip the native FFT entirely — it's the most
                 // expensive per-poll work and the UI hides the spectrum anyway.
                 val saving = powerSaveMode
-                if (!saving) {
-                    bridge.getSpectrum(spectrumBuffer)
-                }
+                val frame = if (!saving) bridge.getSpectrum(spectrumBuffer) else 0L
+                val freshSpectrum = frame > 0 && frame != lastSpectrumFrame
+                if (freshSpectrum) lastSpectrumFrame = frame
 
                 val now = System.currentTimeMillis()
                 val isSynced = _state.value.syncState == 2
@@ -1888,7 +1908,11 @@ class AudioService : LifecycleService() {
                 val inLvl = bridge.inputLevel
                 val outLvl = if (rxAudioTrack != null) rxJavaOutputLevelDb else bridge.outputLevel
                 val cs = bridge.lastCallsign
-                val spec = if (saving) FLAT_SPECTRUM else spectrumBuffer.copyOf()
+                val spec = when {
+                    saving -> FLAT_SPECTRUM
+                    freshSpectrum -> spectrumBuffer.copyOf()
+                    else -> _state.value.spectrum // Same array: no duplicate waterfall row.
+                }
                 val rejected = bridge.isUnprocessedRejected
                 _state.update { it.copy(
                     snrDb = snr,

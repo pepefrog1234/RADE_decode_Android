@@ -5,9 +5,7 @@ import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
-import java.io.BufferedReader
-import java.io.InputStreamReader
-import java.io.PrintWriter
+import kotlinx.coroutines.flow.update
 import java.net.InetSocketAddress
 import java.net.Socket
 
@@ -15,26 +13,27 @@ import java.net.Socket
  * rigctld TCP protocol client for controlling amateur radios.
  *
  * Connects to a hamlib rigctld daemon and sends/receives text commands.
- * All I/O runs on Dispatchers.IO. Thread-safe via synchronized socket access.
+ * All I/O runs on Dispatchers.IO. RigctldTransport owns ordered ERP replies.
  *
  * Protocol reference: https://hamlib.sourceforge.net/manuals/hamlib.html#rigctld-protocol
  */
-class RigController {
+class RigController internal constructor(private val pollingEnabled: Boolean) {
+
+    constructor() : this(pollingEnabled = true)
 
     companion object {
         private const val TAG = "RigController"
         private const val CONNECT_TIMEOUT_MS = 3000
-        // Per-command socket read timeout. Bounds how long a single (possibly
-        // unanswered) CAT command can hold the serial lock. Kept well above real
-        // CAT response times (tens of ms) but far below "several seconds" — the
-        // old 3000 ms let one slow Xiegu G90 status read block a PTT for 3 s.
-        private const val READ_TIMEOUT_MS = 1000
+        // Caller deadlines do not abandon the reader's FIFO transaction slot.
+        // A late response is still drained, while polls stand down and OFF can
+        // be sent behind an in-flight command without blocking cancellation.
+        private const val READ_TIMEOUT_MS = 1000L
         // PTT set and its readback get a longer deadline: rigctld may spend its
         // own backend timeout+retry on a slow or lossy CAT link (Xiegu, USB
         // glitches, Wi-Fi/LTE CI-V) before answering, and a late
         // "set_ptt: 1;RPRT 0" is still the real answer. 1000 ms cut those off
         // and made every PTT look unacknowledged.
-        private const val PTT_TIMEOUT_MS = 2500
+        private const val PTT_TIMEOUT_MS = 2500L
         private const val DEFAULT_PORT = 4532
     }
 
@@ -54,18 +53,16 @@ class RigController {
     private val _state = MutableStateFlow(RigState())
     val state: StateFlow<RigState> = _state.asStateFlow()
 
-    private var socket: Socket? = null
-    private var writer: PrintWriter? = null
-    private var reader: BufferedReader? = null
-    private val lock = Object()
+    @Volatile private var connection: RigctldTransport? = null
+    private val lock = Any()
+    private var connectionGeneration = 0L
+    private val pttOperation = java.util.concurrent.atomic.AtomicLong()
 
     /** Last CAT command written to the socket — reported in the "connection lost"
      *  error so we can see which command was in flight when rigctld/the link died. */
     @Volatile private var lastCommand: String = ""
 
-    /** Consecutive CAT timeouts with the rigctld socket alive. A long run means
-     *  the CI-V path behind rigctld is dead (radio ignoring our stream), not a
-     *  slow rig — flagged in the log so a field capture shows it at a glance. */
+    /** Caller deadlines exceeded without a successful CAT response. */
     @Volatile private var consecutiveTimeouts = 0
 
     /** Optional probe of the local rigctld's liveness/exit cause, supplied by the
@@ -83,12 +80,9 @@ class RigController {
     private val stableConnectionMs = 5000L
 
     /**
-     * Number of user-initiated commands (PTT, set freq, etc.) currently waiting
-     * for or holding the serial lock. The background status poller yields to
-     * these: JVM `synchronized` is not fair, so without this a chatty poller can
-     * repeatedly re-acquire the lock ahead of a waiting PTT and starve it for
-     * seconds — the cause of the multi-second PTT delay on slow-CAT rigs like the
-     * Xiegu G90.
+     * User operations currently waiting for their replies. Polls yield while
+     * these are active, and the transport also suppresses polls until all old
+     * transactions have been drained after a timeout/cancellation.
      */
     private val userCmdPending = java.util.concurrent.atomic.AtomicInteger(0)
 
@@ -107,52 +101,61 @@ class RigController {
 
     suspend fun connect(host: String, port: Int = DEFAULT_PORT) {
         disconnect()
-        userDisconnected = false   // a (re)connect intent supersedes a prior disconnect
+        val generation = synchronized(lock) {
+            userDisconnected = false
+            connectionGeneration
+        }
         withContext(Dispatchers.IO) {
+            val socket = Socket()
             try {
-                val s = Socket()
-                s.connect(InetSocketAddress(host, port), CONNECT_TIMEOUT_MS)
-                s.soTimeout = READ_TIMEOUT_MS
-
+                socket.connect(InetSocketAddress(host, port), CONNECT_TIMEOUT_MS)
+                ensureActive()
                 synchronized(lock) {
-                    socket = s
-                    writer = PrintWriter(s.getOutputStream(), true)
-                    reader = BufferedReader(InputStreamReader(s.getInputStream()))
+                    if (userDisconnected || generation != connectionGeneration) {
+                        socket.close()
+                        return@withContext
+                    }
+                    val transport = RigctldTransport(socket, ::transportFailed)
+                    connection = transport
+                    consecutiveTimeouts = 0
+                    _state.update { it.copy(connected = true, host = host, port = port, error = "") }
+                    lastConnectMs = System.currentTimeMillis()
+                    Log.i(TAG, "Connected to rigctld at $host:$port (ordered ERP)")
+                    transport.start()
+                    if (pollingEnabled) startPolling()
                 }
-
-                _state.value = _state.value.copy(
-                    connected = true, host = host, port = port, error = ""
-                )
-                lastConnectMs = System.currentTimeMillis()
-                Log.i(TAG, "Connected to rigctld at $host:$port")
-
-                startPolling()
-            } catch (e: java.net.ConnectException) {
-                // ECONNREFUSED during retry — don't show as error
-                _state.value = _state.value.copy(connected = false, error = "")
             } catch (e: Exception) {
-                Log.e(TAG, "Connect failed: ${e.message}")
-                _state.value = _state.value.copy(
-                    connected = false, error = e.message ?: "Connection failed"
-                )
+                try { socket.close() } catch (_: Exception) {}
+                if (e is CancellationException) throw e
+                synchronized(lock) {
+                    if (generation == connectionGeneration && !userDisconnected) {
+                        val error = if (e is java.net.ConnectException) "" else e.message ?: "Connection failed"
+                        _state.update { it.copy(connected = false, error = error) }
+                    }
+                }
             }
         }
     }
 
     fun disconnect() {
-        userDisconnected = true   // stops any pending auto-reconnect
-        pollingJob?.cancel()
-        pollingJob = null
         synchronized(lock) {
-            try { writer?.close() } catch (_: Exception) {}
-            try { reader?.close() } catch (_: Exception) {}
-            try { socket?.close() } catch (_: Exception) {}
-            writer = null
-            reader = null
-            socket = null
+            userDisconnected = true
+            connectionGeneration++
+            pollingJob?.cancel()
+            pollingJob = null
+            connection?.close()
+            connection = null
+            _state.update { it.copy(connected = false) }
         }
-        _state.value = _state.value.copy(connected = false)
         Log.i(TAG, "Disconnected")
+    }
+
+    private fun transportFailed(transport: RigctldTransport, cause: Exception) {
+        synchronized(lock) {
+            if (connection !== transport || userDisconnected) return
+            connection = null
+            handleDisconnect(cause)
+        }
     }
 
     fun destroy() {
@@ -162,78 +165,29 @@ class RigController {
 
     /* ── Command transport ──────────────────────────────────── */
 
-    private fun sendCommand(
-        cmd: String,
-        timeoutMs: Int = READ_TIMEOUT_MS,
-        acceptsReply: (String) -> Boolean = { true }
-    ): String? {
-        synchronized(lock) {
-            val w = writer ?: return null
-            val r = reader ?: return null
-            val s = socket ?: return null
-            return try {
-                lastCommand = cmd
-                w.println(cmd)
-                val deadline = System.nanoTime() + timeoutMs * 1_000_000L
-                var resp: String
-                do {
-                    val remainingMs = (deadline - System.nanoTime()) / 1_000_000L
-                    if (remainingMs <= 0) throw java.net.SocketTimeoutException("CAT reply deadline")
-                    s.soTimeout = remainingMs.toInt().coerceAtLeast(1)
-                    resp = r.readLine() ?: throw java.io.EOFException("rigctld closed connection")
-                    if (acceptsReply(resp)) break
-                    Log.w(TAG, "Skipping stale reply while waiting for '$cmd': '$resp'")
-                } while (true)
-                if (consecutiveTimeouts >= 5) Log.i(TAG, "CAT responding again after $consecutiveTimeouts timeouts")
-                consecutiveTimeouts = 0
-                if (cmd.isNotEmpty() && !cmd.startsWith("f") && !cmd.startsWith("t") && !cmd.startsWith("l")) {
-                    Log.i(TAG, "CMD '$cmd' → '$resp'")
-                }
-                resp
-            } catch (e: java.net.SocketTimeoutException) {
-                // Timeout is non-fatal — rigctld is just slow (CI-V retries)
-                consecutiveTimeouts++
-                if (consecutiveTimeouts % 5 == 0) {
-                    Log.e(TAG, "CAT unresponsive: $consecutiveTimeouts consecutive timeouts " +
-                        "(rigctld socket alive) — CI-V path to the radio looks dead")
-                } else {
-                    Log.w(TAG, "Command '$cmd' timed out (non-fatal)")
-                }
-                null
-            } catch (e: Exception) {
-                Log.e(TAG, "Command '$cmd' failed: ${e.message}")
-                handleDisconnect(e)
-                null
-            } finally {
-                try { s.soTimeout = READ_TIMEOUT_MS } catch (_: Exception) {}
-            }
+    private suspend fun sendCommand(
+        name: String,
+        args: String = "",
+        timeoutMs: Long = READ_TIMEOUT_MS,
+        allowQueue: Boolean = false
+    ): RigctldResponse? {
+        val transport = connection ?: return null
+        // Polling must not add work behind a timed-out transaction. Its reader
+        // continues draining independently, and PTT can still queue an OFF.
+        if (!allowQueue && (transport.hasPending || userCmdPending.get() > 0)) return null
+        lastCommand = "$name $args".trim()
+        val response = transport.command(name, args, timeoutMs, allowQueue)
+        if (connection !== transport) return null
+        if (response == null) {
+            consecutiveTimeouts++
+            Log.w(TAG, "CAT '$name $args' reply pending/timed out; old reply remains assigned to its transaction")
+        } else if (response.result == 0) {
+            consecutiveTimeouts = 0
         }
-    }
-
-    /** Send command, read multi-line response until RPRT line. */
-    private fun sendCommandMulti(cmd: String): List<String> {
-        synchronized(lock) {
-            val w = writer ?: return emptyList()
-            val r = reader ?: return emptyList()
-            return try {
-                lastCommand = cmd
-                w.println(cmd)
-                val lines = mutableListOf<String>()
-                while (true) {
-                    val line = r.readLine() ?: break
-                    if (line.startsWith("RPRT")) break
-                    lines.add(line)
-                }
-                lines
-            } catch (e: java.net.SocketTimeoutException) {
-                Log.w(TAG, "Multi-command '$cmd' timed out (non-fatal)")
-                emptyList()
-            } catch (e: Exception) {
-                Log.e(TAG, "Multi-command '$cmd' failed: ${e.message}")
-                handleDisconnect(e)
-                emptyList()
-            }
+        if (name.startsWith("set_") || response?.result?.let { it != 0 } == true) {
+            Log.i(TAG, "CMD '$name $args' → RPRT ${response?.result} ${response?.lines}")
         }
+        return response
     }
 
     private fun handleDisconnect(cause: Throwable? = null) {
@@ -279,32 +233,14 @@ class RigController {
     /* ── Frequency ──────────────────────────────────────────── */
 
     suspend fun setFreq(hz: Long) = withContext(Dispatchers.IO) {
-        val resp = priority { sendCommand("F $hz") }
-        // "RPRT 0" = accepted; "RPRT -n" = the rig/rigctld rejected the set.
-        // Recording a rejected frequency here made the display show the new
-        // value for ~1s until the poller snapped it back — looking like the
-        // set "not working" with no clue why. Keep the last real frequency
-        // and log the reason instead.
-        if (resp != null && !resp.trim().startsWith("RPRT -")) {
-            _state.value = _state.value.copy(freqHz = hz)
-        } else if (resp != null) {
-            Log.w(TAG, "set_freq $hz rejected: ${resp.trim()}")
-        }
+        val resp = priority { sendCommand("set_freq", "$hz", allowQueue = true) }
+        if (resp?.result == 0) _state.update { it.copy(freqHz = hz) }
     }
 
     suspend fun getFreq(): Long = withContext(Dispatchers.IO) {
-        val resp = sendCommand("f")
-        val freq = resp?.trim()?.toLongOrNull()
-        // Only accept a plausible HF/VHF/UHF frequency. rigctld get_freq can return
-        // "RPRT -n" (error), an empty/partial line, or — if the text response
-        // stream ever desyncs — a value belonging to another field (passband,
-        // s-meter, ptt). The old code wrote whatever it got (0 on any failure)
-        // straight into freqHz, so a momentarily-slow rig flashed "00000"/garbage
-        // to the display and made the set-frequency field jump so it couldn't be
-        // set — the reported fault after long receive, made frequent by v1.5.5's
-        // retry=0. Reject implausible reads and keep the last good frequency.
+        val freq = sendCommand("get_freq")?.value("Frequency")?.toLongOrNull()
         if (freq != null && freq in 10_000L..1_300_000_000L) {
-            _state.value = _state.value.copy(freqHz = freq)
+            _state.update { it.copy(freqHz = freq) }
         }
         _state.value.freqHz
     }
@@ -325,33 +261,26 @@ class RigController {
      * manually on the rig.
      */
     suspend fun setMode(mode: String, bandwidth: Int = -1) = withContext(Dispatchers.IO) {
-        var actualMode = mode
-        val resp = sendCommand("M $mode $bandwidth")
-        if (resp != null && resp.contains("-9")) {
-            val baseMode = when (mode) {
-                "PKTUSB" -> "USB"
-                "PKTLSB" -> "LSB"
-                else -> null
-            }
-            if (baseMode != null) {
-                val preservedFilter = queryIcomDataFilter()
-                Log.i(TAG, "setMode($mode) rejected; preserved filter byte=$preservedFilter")
-                val baseResp = sendCommand("M $baseMode $bandwidth")
-                if (baseResp == null || !baseResp.contains("-")) {
-                    if (preservedFilter != null) {
-                        sendCommand(
-                            "w \\0xFE\\0xFE\\0x00\\0xE0\\0x1A\\0x06\\0x01\\0x$preservedFilter\\0xFD"
-                        )
-                        actualMode = mode
-                    } else {
-                        actualMode = baseMode
-                    }
-                } else {
-                    actualMode = baseMode
-                }
+        priority {
+            val resp = sendCommand("set_mode", "$mode $bandwidth", allowQueue = true)
+            if (resp?.result == 0) {
+                _state.update { it.copy(mode = mode, bandwidth = bandwidth) }
+            } else if (resp?.result == -9) {
+                val baseMode = when (mode) {
+                    "PKTUSB" -> "USB"
+                    "PKTLSB" -> "LSB"
+                    else -> null
+                } ?: return@priority
+                val filter = queryIcomDataFilter()
+                if (sendCommand("set_mode", "$baseMode $bandwidth", allowQueue = true)?.result != 0) return@priority
+                var actualMode = baseMode
+                if (filter != null && sendCommand(
+                        "send_cmd", "\\0xFE\\0xFE\\0x00\\0xE0\\0x1A\\0x06\\0x01\\0x$filter\\0xFD",
+                        allowQueue = true
+                    )?.result == 0) actualMode = mode
+                _state.update { it.copy(mode = actualMode, bandwidth = bandwidth) }
             }
         }
-        _state.value = _state.value.copy(mode = actualMode, bandwidth = bandwidth)
     }
 
     /**
@@ -361,8 +290,9 @@ class RigController {
      * Returns the filter byte as a two-char hex string (e.g. "01", "02", "03"),
      * or null if no valid response was parsed.
      */
-    private fun queryIcomDataFilter(): String? {
-        val lines = sendCommandMulti("w \\0xFE\\0xFE\\0x00\\0xE0\\0x1A\\0x06\\0xFD")
+    private suspend fun queryIcomDataFilter(): String? {
+        val lines = sendCommand("send_cmd", "\\0xFE\\0xFE\\0x00\\0xE0\\0x1A\\0x06\\0xFD", allowQueue = true)
+            ?.takeIf { it.result == 0 }?.lines ?: return null
         val bytePat = Regex("""\\0x([0-9A-Fa-f]{2})""")
         for (line in lines) {
             val bytes = bytePat.findAll(line)
@@ -378,88 +308,52 @@ class RigController {
     }
 
     suspend fun getMode(): Pair<String, Int> = withContext(Dispatchers.IO) {
-        // Simple protocol: "m" returns mode on line 1, passband on line 2
-        var mode = ""
-        var bw = 0
-        synchronized(lock) {
-            val w = writer ?: return@withContext Pair("", 0)
-            val r = reader ?: return@withContext Pair("", 0)
-            try {
-                w.println("m")
-                // get_mode succeeds with TWO lines (mode, then passband); on error
-                // rigctld sends a SINGLE "RPRT -n". Reading a 2nd line unconditionally
-                // meant that on error we either stalled the full read timeout or, if
-                // the response arrived late, consumed the NEXT command's reply —
-                // desyncing the stream so every later "f" read returned the wrong
-                // field (garbage frequency). Only consume the passband line when the
-                // first line is a real mode token (starts with a letter, not RPRT).
-                val line1 = r.readLine()?.trim() ?: ""
-                if (line1.isNotEmpty() && !line1.startsWith("RPRT") &&
-                    line1.first().isLetter()) {
-                    mode = line1
-                    bw = r.readLine()?.trim()?.toIntOrNull() ?: 0
-                }
-            } catch (_: java.net.SocketTimeoutException) {
-                // Non-fatal
-            } catch (_: Exception) {}
-        }
-        if (mode.isNotEmpty()) {
-            _state.value = _state.value.copy(mode = mode, bandwidth = bw)
-        }
-        Pair(mode, bw)
+        val resp = sendCommand("get_mode")
+        val mode = resp?.value("Mode")
+        val bandwidth = resp?.value("Passband")?.toIntOrNull()
+        if (mode != null && bandwidth != null) _state.update { it.copy(mode = mode, bandwidth = bandwidth) }
+        Pair(_state.value.mode, _state.value.bandwidth)
     }
 
     /* ── PTT ────────────────────────────────────────────────── */
 
-    /** @return true when rigctld acknowledged the command; false when the
-     *  command could not be delivered (socket down/timeout) — the caller must
-     *  NOT assume the rig state changed in that case. */
     suspend fun setPtt(on: Boolean): Boolean = withContext(Dispatchers.IO) {
+        val operation = pttOperation.incrementAndGet()
         val startedNs = System.nanoTime()
         Log.i(TAG, "setPtt($on) sending...")
-        // Priority over the poller: keying/unkeying must not wait behind a slow
-        // background status read (the Xiegu G90 multi-second PTT delay).
-        // A prior status read may have timed out with its reply still in flight.
-        // ERP echoes the command/value and result on one line, so that stale
-        // reply cannot acknowledge this key/unkey. Other commands retain their
-        // existing protocol; the read remains bounded by the usual deadline.
         val resp = priority {
-            sendCommand(";T ${if (on) 1 else 0}", timeoutMs = PTT_TIMEOUT_MS) { rigctldPttResult(it, on) != null }
+            sendCommand("set_ptt", if (on) "1" else "0", PTT_TIMEOUT_MS, allowQueue = true)
         }
-        val acknowledged = rigctldPttResult(resp, on) == 0
-        Log.i(TAG, "setPtt($on) response: $resp acknowledged=$acknowledged elapsedMs=${(System.nanoTime() - startedNs) / 1_000_000}")
-        if (acknowledged) {
-            val current = _state.value
-            _state.value = current.copy(ptt = on, error = if (current.error.startsWith("PTT ")) "" else current.error)
-        } else if (isConnected) {
-            _state.value = _state.value.copy(error = "PTT ${if (on) "ON" else "OFF"} not acknowledged: ${resp ?: "timeout"}")
+        val acknowledged = resp?.result == 0
+        Log.i(TAG, "setPtt($on) result=${resp?.result} acknowledged=$acknowledged " +
+            "elapsedMs=${(System.nanoTime() - startedNs) / 1_000_000}")
+        if (acknowledged && operation == pttOperation.get()) {
+            _state.update { it.copy(ptt = on, error = if (it.error.startsWith("PTT ")) "" else it.error) }
+        } else if (!acknowledged && isConnected && operation == pttOperation.get()) {
+            _state.update { it.copy(error = "PTT ${if (on) "ON" else "OFF"} not acknowledged: ${resp?.result ?: "pending"}") }
         }
         acknowledged
     }
 
     suspend fun getPtt(): Boolean = withContext(Dispatchers.IO) {
-        val ptt = rigctldPtt(sendCommand("t"))
-        if (ptt != null) _state.value = _state.value.copy(ptt = ptt)
+        val operation = pttOperation.get()
+        val ptt = rigctldPtt(sendCommand("get_ptt")?.value("PTT"))
+        if (ptt != null && operation == pttOperation.get()) _state.update { it.copy(ptt = ptt) }
         _state.value.ptt
     }
 
-    /**
-     * Fresh PTT readback ("t") to confirm a key/unkey whose acknowledgement
-     * never arrived. A slow or lossy CAT link loses the reply, or rigctld
-     * answers "RPRT -5" after its own timeout, although the rig DID switch —
-     * treating that as failure cut overs short after ~5 s and left a false
-     * "PTT not confirmed" pending (reported on v1.6.15).
-     * @param expected when the readback matches it, a pending "PTT …" error is
-     *   cleared (the operation is confirmed after all).
-     * @return the rig's PTT state, or null when it could not be read.
-     */
+    /** Only a complete, correctly assigned get_ptt reply may confirm RF state.
+     * Do not queue more readbacks while a slow set/status command is unresolved. */
     suspend fun readPtt(expected: Boolean? = null): Boolean? = withContext(Dispatchers.IO) {
-        val ptt = priority { rigctldPtt(sendCommand("t", timeoutMs = PTT_TIMEOUT_MS)) }
+        if (connection?.hasPending != false) return@withContext null
+        val operation = pttOperation.get()
+        val ptt = priority {
+            rigctldPtt(sendCommand("get_ptt", timeoutMs = PTT_TIMEOUT_MS, allowQueue = true)?.value("PTT"))
+        }
+        if (operation != pttOperation.get()) return@withContext null
         Log.i(TAG, "readPtt → $ptt (expected=$expected)")
         if (ptt != null) {
-            val cur = _state.value
-            val clearError = ptt == expected && cur.error.startsWith("PTT ")
-            _state.value = cur.copy(ptt = ptt, error = if (clearError) "" else cur.error)
+            _state.update { it.copy(ptt = ptt, error = if (ptt == expected && it.error.startsWith("PTT ")) "" else it.error) }
         }
         ptt
     }
@@ -467,35 +361,25 @@ class RigController {
     /* ── Levels (S-meter, RF power, SWR) ────────────────────── */
 
     suspend fun getSmeter(): Int = withContext(Dispatchers.IO) {
-        val resp = sendCommand("l STRENGTH")
-        val db = resp?.trim()?.toIntOrNull()
-        // Hamlib STRENGTH is dB relative to S9. If the rigctld text stream ever
-        // desyncs, this read can accidentally consume a frequency line such as
-        // "14115000", which previously rendered as "S9+14115000dB". Reject
-        // implausible readings and keep the last valid meter value.
-        if (db != null && db in -80..80) {
-            _state.value = _state.value.copy(sMeter = db)
-        }
+        val db = sendCommand("get_level", "STRENGTH")?.level()?.toIntOrNull()
+        if (db != null && db in -80..80) _state.update { it.copy(sMeter = db) }
         _state.value.sMeter
     }
 
     suspend fun getRfPower(): Float = withContext(Dispatchers.IO) {
-        val resp = sendCommand("l RFPOWER") ?: return@withContext 0f
-        val power = resp.trim().toFloatOrNull() ?: 0f
-        _state.value = _state.value.copy(rfPower = power)
-        power
+        val power = sendCommand("get_level", "RFPOWER")?.level()?.toFloatOrNull()
+        if (power != null) _state.update { it.copy(rfPower = power) }
+        _state.value.rfPower
     }
-
-    /* ── Power control ──────────────────────────────────────── */
 
     suspend fun setPowerstat(on: Boolean) = withContext(Dispatchers.IO) {
-        priority { sendCommand("\\set_powerstat ${if (on) 1 else 0}") }
+        priority { sendCommand("set_powerstat", if (on) "1" else "0", allowQueue = true) }
+        Unit
     }
 
-    /* ── VFO ────────────────────────────────────────────────── */
-
     suspend fun setVfo(vfo: String) = withContext(Dispatchers.IO) {
-        priority { sendCommand("V $vfo") }
+        priority { sendCommand("set_vfo", vfo, allowQueue = true) }
+        Unit
     }
 
     /* ── Polling loop ───────────────────────────────────────── */
@@ -504,10 +388,7 @@ class RigController {
         pollingJob?.cancel()
         pollingJob = scope.launch {
             var cycle = 0
-            // Before each status read, stand down if a user command (PTT, freq…)
-            // is pending or in flight, and don't issue a new one until it clears.
-            // This is what keeps PTT responsive on slow-CAT rigs (Xiegu G90):
-            // the poller voluntarily yields the unfair `synchronized` lock.
+            // User commands take priority over background status traffic.
             suspend fun gate() { while (userCmdPending.get() > 0 && isActive) delay(15) }
 
             // Query mode on the very first cycle so the UI shows USB/LSB/etc.
@@ -516,8 +397,7 @@ class RigController {
             try { gate(); getMode() } catch (_: Exception) {}
             while (isActive && _state.value.connected) {
                 try {
-                    // Each command releases the lock between calls; gate() ahead of
-                    // each one yields priority to user-initiated commands.
+                    // Gate each read, not just the start of a polling cycle.
                     gate(); getFreq()
                     delay(100)
                     gate(); getPtt()

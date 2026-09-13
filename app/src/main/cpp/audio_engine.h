@@ -172,7 +172,7 @@ public:
     float getInputLevel() const { return inputLevelDb_.load(); }
     float getOutputLevel() const { return outputLevelDb_.load(); }
 
-    void getSpectrum(float *out, int maxBins);
+    uint64_t getSpectrum(float *out, int maxBins);
     std::string getLastCallsign();
     void setCallback(AudioEngineCallback *cb) { callback_ = cb; }
 
@@ -217,6 +217,7 @@ private:
     std::vector<float> fftInput_;
     int fftInputPos_ = 0;
     float spectrumDb_[FFT_BINS];
+    uint64_t spectrumFrame_ = 0; // protected by spectrumMutex_
     std::mutex spectrumMutex_;
 
     std::atomic<float> inputLevelDb_{-100.0f};

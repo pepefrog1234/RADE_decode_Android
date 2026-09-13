@@ -8,6 +8,7 @@
 #include <cstring>
 #include <cstdlib>
 #include <string>
+#include <mutex>
 #include <android/log.h>
 
 #include "audio_engine.h"
@@ -289,7 +290,26 @@ JNI_METHOD(nativeEooCallsignDecode)(JNIEnv *env, jobject /* this */,
  *  C++ code must be outside extern "C"
  * ──────────────────────────────────────────────────────────── */
 
+// Every JNI entry holds this lock through the native call. Network PCM and
+// Java pump/poller calls must finish before stop/destroy frees the modem. The
+// Java owner check also rejects a cancelled old pump after a new RX/TX engine
+// has been created. Oboe callbacks do not acquire this lifecycle lock.
+static std::recursive_mutex g_audioEngineMutex;
 static AudioEngine *g_audioEngine = nullptr;
+static jobject g_audioOwnerRef = nullptr;
+static std::mutex g_audioCallbackMutex;
+
+class AudioEngineAccess {
+public:
+    AudioEngineAccess(JNIEnv *env, jobject owner) : lock_(g_audioEngineMutex) {
+        engine_ = g_audioOwnerRef && env->IsSameObject(owner, g_audioOwnerRef)
+            ? g_audioEngine : nullptr;
+    }
+    AudioEngine *get() const { return engine_; }
+private:
+    std::unique_lock<std::recursive_mutex> lock_;
+    AudioEngine *engine_;
+};
 
 /* JNI callback bridge: forwards native events to Kotlin */
 static JavaVM *g_jvm = nullptr;
@@ -322,20 +342,30 @@ public:
 private:
     template <typename Func>
     void callKotlin(Func fn) {
-        if (!g_jvm || !g_audioCallbackRef) return;
+        JavaVM *vm;
+        {
+            std::lock_guard<std::mutex> lk(g_audioCallbackMutex);
+            vm = g_jvm;
+        }
+        if (!vm) return;
         JNIEnv *env = nullptr;
         bool attached = false;
-        int status = g_jvm->GetEnv((void **)&env, JNI_VERSION_1_6);
+        int status = vm->GetEnv((void **)&env, JNI_VERSION_1_6);
         if (status == JNI_EDETACHED) {
-            g_jvm->AttachCurrentThread(&env, nullptr);
-            attached = true;
+            attached = vm->AttachCurrentThread(&env, nullptr) == JNI_OK;
         }
         if (env) {
-            fn(env, g_audioCallbackRef);
+            jobject callback;
+            {
+                std::lock_guard<std::mutex> lk(g_audioCallbackMutex);
+                callback = g_audioCallbackRef ? env->NewLocalRef(g_audioCallbackRef) : nullptr;
+            }
+            if (callback) {
+                fn(env, callback);
+                env->DeleteLocalRef(callback);
+            }
         }
-        if (attached) {
-            g_jvm->DetachCurrentThread();
-        }
+        if (attached) vm->DetachCurrentThread();
     }
 };
 
@@ -347,45 +377,47 @@ static JniAudioCallback g_jniCallback;
 extern "C" {
 
 JNIEXPORT jboolean JNICALL
-JNI_AUDIO(nativeCreate)(JNIEnv *env, jobject /* this */) {
-    if (g_audioEngine != nullptr) {
-        delete g_audioEngine;
-    }
+JNI_AUDIO(nativeCreate)(JNIEnv *env, jobject owner) {
+    std::lock_guard<std::recursive_mutex> lk(g_audioEngineMutex);
+    delete g_audioEngine;
+    if (g_audioOwnerRef) env->DeleteGlobalRef(g_audioOwnerRef);
+    g_audioOwnerRef = env->NewGlobalRef(owner);
     g_audioEngine = new AudioEngine();
     g_audioEngine->setCallback(&g_jniCallback);
     return JNI_TRUE;
 }
 
 JNIEXPORT void JNICALL
-JNI_AUDIO(nativeDestroy)(JNIEnv *env, jobject /* this */) {
-    if (g_audioEngine) {
-        delete g_audioEngine;
-        g_audioEngine = nullptr;
-    }
-    if (g_audioCallbackRef) {
-        env->DeleteGlobalRef(g_audioCallbackRef);
-        g_audioCallbackRef = nullptr;
-    }
+JNI_AUDIO(nativeDestroy)(JNIEnv *env, jobject owner) {
+    AudioEngineAccess access(env, owner);
+    if (!access.get()) return;
+    delete g_audioEngine;
+    g_audioEngine = nullptr;
+    env->DeleteGlobalRef(g_audioOwnerRef);
+    g_audioOwnerRef = nullptr;
+    std::lock_guard<std::mutex> lk(g_audioCallbackMutex);
+    if (g_audioCallbackRef) env->DeleteGlobalRef(g_audioCallbackRef);
+    g_audioCallbackRef = nullptr;
 }
 
 JNIEXPORT void JNICALL
-JNI_AUDIO(nativeSetCallback)(JNIEnv *env, jobject /* this */, jobject callback) {
+JNI_AUDIO(nativeSetCallback)(JNIEnv *env, jobject owner, jobject callback) {
+    AudioEngineAccess access(env, owner);
+    if (!access.get()) return;
+    std::lock_guard<std::mutex> lk(g_audioCallbackMutex);
     env->GetJavaVM(&g_jvm);
-    if (g_audioCallbackRef) {
-        env->DeleteGlobalRef(g_audioCallbackRef);
-        g_audioCallbackRef = nullptr;
-    }
-    if (callback) {
-        g_audioCallbackRef = env->NewGlobalRef(callback);
-    }
+    if (g_audioCallbackRef) env->DeleteGlobalRef(g_audioCallbackRef);
+    g_audioCallbackRef = callback ? env->NewGlobalRef(callback) : nullptr;
 }
 
 JNIEXPORT jboolean JNICALL
-JNI_AUDIO(nativeStart)(JNIEnv *env, jobject /* this */,
+JNI_AUDIO(nativeStart)(JNIEnv *env, jobject owner,
                        jint inputDeviceId, jint outputDeviceId,
                        jboolean voiceCommunicationOutput, jboolean bleAudioOutput) {
-    if (!g_audioEngine) return JNI_FALSE;
-    return g_audioEngine->start(
+    AudioEngineAccess access(env, owner);
+    auto *engine = access.get();
+    if (!engine) return JNI_FALSE;
+    return engine->start(
         inputDeviceId,
         outputDeviceId,
         voiceCommunicationOutput == JNI_TRUE,
@@ -394,160 +426,214 @@ JNI_AUDIO(nativeStart)(JNIEnv *env, jobject /* this */,
 }
 
 JNIEXPORT void JNICALL
-JNI_AUDIO(nativeStop)(JNIEnv *env, jobject /* this */) {
-    if (g_audioEngine) g_audioEngine->stop();
+JNI_AUDIO(nativeStop)(JNIEnv *env, jobject owner) {
+    AudioEngineAccess access(env, owner);
+    auto *engine = access.get();
+    if (engine) engine->stop();
 }
 
 JNIEXPORT jboolean JNICALL
-JNI_AUDIO(nativeIsRunning)(JNIEnv *env, jobject /* this */) {
-    if (!g_audioEngine) return JNI_FALSE;
-    return g_audioEngine->isRunning() ? JNI_TRUE : JNI_FALSE;
+JNI_AUDIO(nativeIsRunning)(JNIEnv *env, jobject owner) {
+    AudioEngineAccess access(env, owner);
+    auto *engine = access.get();
+    if (!engine) return JNI_FALSE;
+    return engine->isRunning() ? JNI_TRUE : JNI_FALSE;
 }
 
 JNIEXPORT void JNICALL
-JNI_AUDIO(nativeSetInputDevice)(JNIEnv *env, jobject /* this */, jint deviceId) {
-    if (g_audioEngine) g_audioEngine->setInputDevice(deviceId);
+JNI_AUDIO(nativeSetInputDevice)(JNIEnv *env, jobject owner, jint deviceId) {
+    AudioEngineAccess access(env, owner);
+    auto *engine = access.get();
+    if (engine) engine->setInputDevice(deviceId);
 }
 
 JNIEXPORT void JNICALL
-JNI_AUDIO(nativeSetOutputDevice)(JNIEnv *env, jobject /* this */, jint deviceId) {
-    if (g_audioEngine) g_audioEngine->setOutputDevice(deviceId);
+JNI_AUDIO(nativeSetOutputDevice)(JNIEnv *env, jobject owner, jint deviceId) {
+    AudioEngineAccess access(env, owner);
+    auto *engine = access.get();
+    if (engine) engine->setOutputDevice(deviceId);
 }
 
 JNIEXPORT void JNICALL
-JNI_AUDIO(nativeSetRxJavaOutputEnabled)(JNIEnv *env, jobject /* this */, jboolean enabled) {
-    if (g_audioEngine) g_audioEngine->setRxJavaOutputEnabled(enabled == JNI_TRUE);
+JNI_AUDIO(nativeSetRxJavaOutputEnabled)(JNIEnv *env, jobject owner, jboolean enabled) {
+    AudioEngineAccess access(env, owner);
+    auto *engine = access.get();
+    if (engine) engine->setRxJavaOutputEnabled(enabled == JNI_TRUE);
 }
 
 JNIEXPORT void JNICALL
-JNI_AUDIO(nativeSetRxVoiceCommunicationOutputEnabled)(JNIEnv *env, jobject /* this */, jboolean enabled) {
-    if (g_audioEngine) g_audioEngine->setRxVoiceCommunicationOutputEnabled(enabled == JNI_TRUE);
+JNI_AUDIO(nativeSetRxVoiceCommunicationOutputEnabled)(JNIEnv *env, jobject owner, jboolean enabled) {
+    AudioEngineAccess access(env, owner);
+    auto *engine = access.get();
+    if (engine) engine->setRxVoiceCommunicationOutputEnabled(enabled == JNI_TRUE);
 }
 
 /** Select the RADE V2 waveform (experimental) for subsequent modem opens. */
 JNIEXPORT void JNICALL
-JNI_AUDIO(nativeSetRadeV2Enabled)(JNIEnv *env, jobject /* this */, jboolean enabled) {
-    if (g_audioEngine) g_audioEngine->setRadeV2Enabled(enabled == JNI_TRUE);
+JNI_AUDIO(nativeSetRadeV2Enabled)(JNIEnv *env, jobject owner, jboolean enabled) {
+    AudioEngineAccess access(env, owner);
+    auto *engine = access.get();
+    if (engine) engine->setRadeV2Enabled(enabled == JNI_TRUE);
 }
 
 /** Analog SSB monitor: play the raw channel audio instead of decoded speech. */
 JNIEXPORT void JNICALL
-JNI_AUDIO(nativeSetAnalogMonitor)(JNIEnv *env, jobject /* this */, jboolean enabled) {
-    if (g_audioEngine) g_audioEngine->setAnalogMonitor(enabled == JNI_TRUE);
+JNI_AUDIO(nativeSetAnalogMonitor)(JNIEnv *env, jobject owner, jboolean enabled) {
+    AudioEngineAccess access(env, owner);
+    auto *engine = access.get();
+    if (engine) engine->setAnalogMonitor(enabled == JNI_TRUE);
 }
 
 JNIEXPORT jboolean JNICALL
-JNI_AUDIO(nativeIsRxUsingJavaOutput)(JNIEnv *env, jobject /* this */) {
-    if (!g_audioEngine) return JNI_FALSE;
-    return g_audioEngine->isRxUsingJavaOutput() ? JNI_TRUE : JNI_FALSE;
+JNI_AUDIO(nativeIsRxUsingJavaOutput)(JNIEnv *env, jobject owner) {
+    AudioEngineAccess access(env, owner);
+    auto *engine = access.get();
+    if (!engine) return JNI_FALSE;
+    return engine->isRxUsingJavaOutput() ? JNI_TRUE : JNI_FALSE;
 }
 
 JNIEXPORT void JNICALL
-JNI_AUDIO(nativeSetDevices)(JNIEnv *env, jobject /* this */, jint inputDeviceId, jint outputDeviceId) {
-    if (g_audioEngine) g_audioEngine->setDevices(inputDeviceId, outputDeviceId);
+JNI_AUDIO(nativeSetDevices)(JNIEnv *env, jobject owner, jint inputDeviceId, jint outputDeviceId) {
+    AudioEngineAccess access(env, owner);
+    auto *engine = access.get();
+    if (engine) engine->setDevices(inputDeviceId, outputDeviceId);
 }
 
 JNIEXPORT void JNICALL
-JNI_AUDIO(nativeSetOutputVolume)(JNIEnv *env, jobject /* this */, jfloat volume) {
-    if (g_audioEngine) g_audioEngine->setOutputVolume(volume);
+JNI_AUDIO(nativeSetOutputVolume)(JNIEnv *env, jobject owner, jfloat volume) {
+    AudioEngineAccess access(env, owner);
+    auto *engine = access.get();
+    if (engine) engine->setOutputVolume(volume);
 }
 
 JNIEXPORT void JNICALL
-JNI_AUDIO(nativeSetInputGain)(JNIEnv *env, jobject /* this */, jfloat gain) {
-    if (g_audioEngine) g_audioEngine->setInputGain(gain);
+JNI_AUDIO(nativeSetInputGain)(JNIEnv *env, jobject owner, jfloat gain) {
+    AudioEngineAccess access(env, owner);
+    auto *engine = access.get();
+    if (engine) engine->setInputGain(gain);
 }
 
 JNIEXPORT jfloat JNICALL
-JNI_AUDIO(nativeGetInputGain)(JNIEnv *env, jobject /* this */) {
-    if (!g_audioEngine) return 1.0f;
-    return g_audioEngine->getInputGain();
+JNI_AUDIO(nativeGetInputGain)(JNIEnv *env, jobject owner) {
+    AudioEngineAccess access(env, owner);
+    auto *engine = access.get();
+    if (!engine) return 1.0f;
+    return engine->getInputGain();
 }
 
 JNIEXPORT void JNICALL
-JNI_AUDIO(nativeSetTxMicGain)(JNIEnv *env, jobject /* this */, jfloat gain) {
-    if (g_audioEngine) g_audioEngine->setTxMicGain(gain);
+JNI_AUDIO(nativeSetTxMicGain)(JNIEnv *env, jobject owner, jfloat gain) {
+    AudioEngineAccess access(env, owner);
+    auto *engine = access.get();
+    if (engine) engine->setTxMicGain(gain);
 }
 
 JNIEXPORT jint JNICALL
-JNI_AUDIO(nativeGetSyncState)(JNIEnv *env, jobject /* this */) {
-    if (!g_audioEngine) return 0;
-    return g_audioEngine->getSyncState();
+JNI_AUDIO(nativeGetSyncState)(JNIEnv *env, jobject owner) {
+    AudioEngineAccess access(env, owner);
+    auto *engine = access.get();
+    if (!engine) return 0;
+    return engine->getSyncState();
 }
 
 JNIEXPORT jint JNICALL
-JNI_AUDIO(nativeGetSnrEstimate)(JNIEnv *env, jobject /* this */) {
-    if (!g_audioEngine) return 0;
-    return g_audioEngine->getSnrEstimate();
+JNI_AUDIO(nativeGetSnrEstimate)(JNIEnv *env, jobject owner) {
+    AudioEngineAccess access(env, owner);
+    auto *engine = access.get();
+    if (!engine) return 0;
+    return engine->getSnrEstimate();
 }
 
 JNIEXPORT jfloat JNICALL
-JNI_AUDIO(nativeGetFreqOffset)(JNIEnv *env, jobject /* this */) {
-    if (!g_audioEngine) return 0.0f;
-    return g_audioEngine->getFreqOffset();
+JNI_AUDIO(nativeGetFreqOffset)(JNIEnv *env, jobject owner) {
+    AudioEngineAccess access(env, owner);
+    auto *engine = access.get();
+    if (!engine) return 0.0f;
+    return engine->getFreqOffset();
 }
 
 JNIEXPORT jboolean JNICALL
-JNI_AUDIO(nativeIsUnprocessedRejected)(JNIEnv *env, jobject /* this */) {
-    if (!g_audioEngine) return JNI_FALSE;
-    return g_audioEngine->isUnprocessedRejected() ? JNI_TRUE : JNI_FALSE;
+JNI_AUDIO(nativeIsUnprocessedRejected)(JNIEnv *env, jobject owner) {
+    AudioEngineAccess access(env, owner);
+    auto *engine = access.get();
+    if (!engine) return JNI_FALSE;
+    return engine->isUnprocessedRejected() ? JNI_TRUE : JNI_FALSE;
 }
 
 JNIEXPORT jint JNICALL
-JNI_AUDIO(nativeGetInputSessionId)(JNIEnv *env, jobject /* this */) {
-    if (!g_audioEngine) return -1;
-    return (jint)g_audioEngine->getInputSessionId();
+JNI_AUDIO(nativeGetInputSessionId)(JNIEnv *env, jobject owner) {
+    AudioEngineAccess access(env, owner);
+    auto *engine = access.get();
+    if (!engine) return -1;
+    return (jint)engine->getInputSessionId();
 }
 
 JNIEXPORT jfloat JNICALL
-JNI_AUDIO(nativeGetInputLevel)(JNIEnv *env, jobject /* this */) {
-    if (!g_audioEngine) return -100.0f;
-    return g_audioEngine->getInputLevel();
+JNI_AUDIO(nativeGetInputLevel)(JNIEnv *env, jobject owner) {
+    AudioEngineAccess access(env, owner);
+    auto *engine = access.get();
+    if (!engine) return -100.0f;
+    return engine->getInputLevel();
 }
 
 JNIEXPORT jfloat JNICALL
-JNI_AUDIO(nativeGetOutputLevel)(JNIEnv *env, jobject /* this */) {
-    if (!g_audioEngine) return -100.0f;
-    return g_audioEngine->getOutputLevel();
+JNI_AUDIO(nativeGetOutputLevel)(JNIEnv *env, jobject owner) {
+    AudioEngineAccess access(env, owner);
+    auto *engine = access.get();
+    if (!engine) return -100.0f;
+    return engine->getOutputLevel();
 }
 
-JNIEXPORT void JNICALL
-JNI_AUDIO(nativeGetSpectrum)(JNIEnv *env, jobject /* this */, jfloatArray out) {
-    if (!g_audioEngine) return;
+JNIEXPORT jlong JNICALL
+JNI_AUDIO(nativeGetSpectrum)(JNIEnv *env, jobject owner, jfloatArray out) {
+    AudioEngineAccess access(env, owner);
+    auto *engine = access.get();
+    if (!engine) return 0;
     int len = env->GetArrayLength(out);
     jfloat *buf = env->GetFloatArrayElements(out, nullptr);
-    g_audioEngine->getSpectrum(buf, len);
+    if (!buf) return 0;
+    auto frame = engine->getSpectrum(buf, len);
     env->ReleaseFloatArrayElements(out, buf, 0);
+    return static_cast<jlong>(frame);
 }
 
 JNIEXPORT jstring JNICALL
-JNI_AUDIO(nativeGetLastCallsign)(JNIEnv *env, jobject /* this */) {
-    if (!g_audioEngine) return env->NewStringUTF("");
-    std::string cs = g_audioEngine->getLastCallsign();
+JNI_AUDIO(nativeGetLastCallsign)(JNIEnv *env, jobject owner) {
+    AudioEngineAccess access(env, owner);
+    auto *engine = access.get();
+    if (!engine) return env->NewStringUTF("");
+    std::string cs = engine->getLastCallsign();
     return env->NewStringUTF(cs.c_str());
 }
 
 JNIEXPORT jboolean JNICALL
-JNI_AUDIO(nativeStartRecording)(JNIEnv *env, jobject /* this */, jstring path) {
-    if (!g_audioEngine) return JNI_FALSE;
+JNI_AUDIO(nativeStartRecording)(JNIEnv *env, jobject owner, jstring path) {
+    AudioEngineAccess access(env, owner);
+    auto *engine = access.get();
+    if (!engine) return JNI_FALSE;
     const char *p = env->GetStringUTFChars(path, nullptr);
-    bool ok = g_audioEngine->startRecording(p);
+    bool ok = engine->startRecording(p);
     env->ReleaseStringUTFChars(path, p);
     return ok ? JNI_TRUE : JNI_FALSE;
 }
 
 JNIEXPORT void JNICALL
-JNI_AUDIO(nativeStopRecording)(JNIEnv *env, jobject /* this */) {
-    if (g_audioEngine) g_audioEngine->stopRecording();
+JNI_AUDIO(nativeStopRecording)(JNIEnv *env, jobject owner) {
+    AudioEngineAccess access(env, owner);
+    auto *engine = access.get();
+    if (engine) engine->stopRecording();
 }
 
 /* ── TX (Transmit) JNI methods ───────────────────────────────── */
 
 JNIEXPORT jboolean JNICALL
-JNI_AUDIO(nativeStartTx)(JNIEnv *env, jobject /* this */,
+JNI_AUDIO(nativeStartTx)(JNIEnv *env, jobject owner,
                           jint inputDeviceId, jint outputDeviceId, jboolean keepRxAlive,
                           jboolean voiceCommunicationInput, jboolean voiceRecognitionInput) {
-    if (!g_audioEngine) return JNI_FALSE;
-    return g_audioEngine->startTx(
+    AudioEngineAccess access(env, owner);
+    auto *engine = access.get();
+    if (!engine) return JNI_FALSE;
+    return engine->startTx(
         inputDeviceId,
         outputDeviceId,
         keepRxAlive == JNI_TRUE,
@@ -557,34 +643,44 @@ JNI_AUDIO(nativeStartTx)(JNIEnv *env, jobject /* this */,
 }
 
 JNIEXPORT jboolean JNICALL
-JNI_AUDIO(nativePauseRxInput)(JNIEnv *env, jobject /* this */) {
-    if (!g_audioEngine) return JNI_FALSE;
-    return g_audioEngine->pauseRxInput() ? JNI_TRUE : JNI_FALSE;
+JNI_AUDIO(nativePauseRxInput)(JNIEnv *env, jobject owner) {
+    AudioEngineAccess access(env, owner);
+    auto *engine = access.get();
+    if (!engine) return JNI_FALSE;
+    return engine->pauseRxInput() ? JNI_TRUE : JNI_FALSE;
 }
 
 JNIEXPORT jboolean JNICALL
-JNI_AUDIO(nativeResumeRxInput)(JNIEnv *env, jobject /* this */) {
-    if (!g_audioEngine) return JNI_FALSE;
-    return g_audioEngine->resumeRxInput() ? JNI_TRUE : JNI_FALSE;
+JNI_AUDIO(nativeResumeRxInput)(JNIEnv *env, jobject owner) {
+    AudioEngineAccess access(env, owner);
+    auto *engine = access.get();
+    if (!engine) return JNI_FALSE;
+    return engine->resumeRxInput() ? JNI_TRUE : JNI_FALSE;
 }
 
 JNIEXPORT void JNICALL
-JNI_AUDIO(nativeStopTx)(JNIEnv *env, jobject /* this */, jboolean drainEoo) {
-    if (g_audioEngine) g_audioEngine->stopTx(drainEoo == JNI_TRUE);
+JNI_AUDIO(nativeStopTx)(JNIEnv *env, jobject owner, jboolean drainEoo) {
+    AudioEngineAccess access(env, owner);
+    auto *engine = access.get();
+    if (engine) engine->stopTx(drainEoo == JNI_TRUE);
 }
 
 JNIEXPORT void JNICALL
-JNI_AUDIO(nativeSetTxCallsign)(JNIEnv *env, jobject /* this */, jstring callsign) {
-    if (!g_audioEngine) return;
+JNI_AUDIO(nativeSetTxCallsign)(JNIEnv *env, jobject owner, jstring callsign) {
+    AudioEngineAccess access(env, owner);
+    auto *engine = access.get();
+    if (!engine) return;
     const char *cs = env->GetStringUTFChars(callsign, nullptr);
-    g_audioEngine->setTxCallsign(cs);
+    engine->setTxCallsign(cs);
     env->ReleaseStringUTFChars(callsign, cs);
 }
 
 JNIEXPORT jfloat JNICALL
-JNI_AUDIO(nativeGetTxLevel)(JNIEnv *env, jobject /* this */) {
-    if (!g_audioEngine) return -100.0f;
-    return g_audioEngine->getTxLevel();
+JNI_AUDIO(nativeGetTxLevel)(JNIEnv *env, jobject owner) {
+    AudioEngineAccess access(env, owner);
+    auto *engine = access.get();
+    if (!engine) return -100.0f;
+    return engine->getTxLevel();
 }
 
 /**
@@ -593,29 +689,35 @@ JNI_AUDIO(nativeGetTxLevel)(JNIEnv *env, jobject /* this */) {
  * Returns number of samples actually read.
  */
 JNIEXPORT jint JNICALL
-JNI_AUDIO(nativeReadTxRing)(JNIEnv *env, jobject /* this */,
+JNI_AUDIO(nativeReadTxRing)(JNIEnv *env, jobject owner,
                             jshortArray outBuf, jint maxSamples) {
-    if (!g_audioEngine) return 0;
+    AudioEngineAccess access(env, owner);
+    auto *engine = access.get();
+    if (!engine) return 0;
     jshort *buf = env->GetShortArrayElements(outBuf, nullptr);
-    int got = g_audioEngine->readTxRing(reinterpret_cast<int16_t*>(buf), maxSamples);
+    int got = engine->readTxRing(reinterpret_cast<int16_t*>(buf), maxSamples);
     env->ReleaseShortArrayElements(outBuf, buf, 0);
     return got;
 }
 
 JNIEXPORT jint JNICALL
-JNI_AUDIO(nativeReadRxRing)(JNIEnv *env, jobject /* this */,
+JNI_AUDIO(nativeReadRxRing)(JNIEnv *env, jobject owner,
                             jshortArray outBuf, jint maxSamples) {
-    if (!g_audioEngine) return 0;
+    AudioEngineAccess access(env, owner);
+    auto *engine = access.get();
+    if (!engine) return 0;
     jshort *buf = env->GetShortArrayElements(outBuf, nullptr);
-    int got = g_audioEngine->readRxRing(reinterpret_cast<int16_t*>(buf), maxSamples);
+    int got = engine->readRxRing(reinterpret_cast<int16_t*>(buf), maxSamples);
     env->ReleaseShortArrayElements(outBuf, buf, 0);
     return got;
 }
 
 JNIEXPORT jboolean JNICALL
-JNI_AUDIO(nativeIsTxUsingJavaOutput)(JNIEnv *env, jobject /* this */) {
-    if (!g_audioEngine) return JNI_FALSE;
-    return g_audioEngine->isTxUsingJavaOutput() ? JNI_TRUE : JNI_FALSE;
+JNI_AUDIO(nativeIsTxUsingJavaOutput)(JNIEnv *env, jobject owner) {
+    AudioEngineAccess access(env, owner);
+    auto *engine = access.get();
+    if (!engine) return JNI_FALSE;
+    return engine->isTxUsingJavaOutput() ? JNI_TRUE : JNI_FALSE;
 }
 
 /**
@@ -623,54 +725,68 @@ JNI_AUDIO(nativeIsTxUsingJavaOutput)(JNIEnv *env, jobject /* this */) {
  * After stopTx() this is the EOO (callsign) frame waiting to be drained.
  */
 JNIEXPORT jint JNICALL
-JNI_AUDIO(nativeTxRingAvailable)(JNIEnv *env, jobject /* this */) {
-    if (!g_audioEngine) return 0;
-    return g_audioEngine->txRingAvailable();
+JNI_AUDIO(nativeTxRingAvailable)(JNIEnv *env, jobject owner) {
+    AudioEngineAccess access(env, owner);
+    auto *engine = access.get();
+    if (!engine) return 0;
+    return engine->txRingAvailable();
 }
 
 JNIEXPORT void JNICALL
-JNI_AUDIO(nativeSetTxOutputDevice)(JNIEnv *env, jobject /* this */, jint deviceId) {
-    if (g_audioEngine) g_audioEngine->setTxOutputDevice(deviceId);
+JNI_AUDIO(nativeSetTxOutputDevice)(JNIEnv *env, jobject owner, jint deviceId) {
+    AudioEngineAccess access(env, owner);
+    auto *engine = access.get();
+    if (engine) engine->setTxOutputDevice(deviceId);
 }
 
 JNIEXPORT jboolean JNICALL
-JNI_AUDIO(nativeIsTxRunning)(JNIEnv *env, jobject /* this */) {
-    if (!g_audioEngine) return JNI_FALSE;
-    return g_audioEngine->isTxRunning() ? JNI_TRUE : JNI_FALSE;
+JNI_AUDIO(nativeIsTxRunning)(JNIEnv *env, jobject owner) {
+    AudioEngineAccess access(env, owner);
+    auto *engine = access.get();
+    if (!engine) return JNI_FALSE;
+    return engine->isTxRunning() ? JNI_TRUE : JNI_FALSE;
 }
 
 /* ── Network audio (Icom RS-BA1 / IC-705 Wi-Fi) JNI methods ──── */
 
 JNIEXPORT jboolean JNICALL
-JNI_AUDIO(nativeStartNetRx)(JNIEnv *env, jobject /* this */, jint outputDeviceId, jint netRate) {
-    if (!g_audioEngine) return JNI_FALSE;
-    return g_audioEngine->startNetRx(outputDeviceId, netRate) ? JNI_TRUE : JNI_FALSE;
+JNI_AUDIO(nativeStartNetRx)(JNIEnv *env, jobject owner, jint outputDeviceId, jint netRate) {
+    AudioEngineAccess access(env, owner);
+    auto *engine = access.get();
+    if (!engine) return JNI_FALSE;
+    return engine->startNetRx(outputDeviceId, netRate) ? JNI_TRUE : JNI_FALSE;
 }
 
 /** Push received network PCM (int16 mono at netRate) into the RX modem pipeline. */
 JNIEXPORT void JNICALL
-JNI_AUDIO(nativeFeedNetRx)(JNIEnv *env, jobject /* this */, jshortArray pcm, jint count) {
-    if (!g_audioEngine) return;
+JNI_AUDIO(nativeFeedNetRx)(JNIEnv *env, jobject owner, jshortArray pcm, jint count) {
+    AudioEngineAccess access(env, owner);
+    auto *engine = access.get();
+    if (!engine) return;
     jshort *buf = env->GetShortArrayElements(pcm, nullptr);
     if (!buf) return;
-    g_audioEngine->feedNetRx(reinterpret_cast<int16_t*>(buf), count);
+    engine->feedNetRx(reinterpret_cast<int16_t*>(buf), count);
     env->ReleaseShortArrayElements(pcm, buf, JNI_ABORT);
 }
 
 JNIEXPORT jboolean JNICALL
-JNI_AUDIO(nativeStartNetTx)(JNIEnv *env, jobject /* this */, jint inputDeviceId, jint netRate,
+JNI_AUDIO(nativeStartNetTx)(JNIEnv *env, jobject owner, jint inputDeviceId, jint netRate,
                             jboolean voiceCommunicationInput) {
-    if (!g_audioEngine) return JNI_FALSE;
-    return g_audioEngine->startNetTx(inputDeviceId, netRate,
+    AudioEngineAccess access(env, owner);
+    auto *engine = access.get();
+    if (!engine) return JNI_FALSE;
+    return engine->startNetTx(inputDeviceId, netRate,
                                      voiceCommunicationInput == JNI_TRUE) ? JNI_TRUE : JNI_FALSE;
 }
 
 /** Pull one frame of TX modem audio upsampled to netRate (zero-padded on underrun). */
 JNIEXPORT jint JNICALL
-JNI_AUDIO(nativeFillNetTxFrame)(JNIEnv *env, jobject /* this */, jshortArray outBuf, jint numSamples) {
-    if (!g_audioEngine) return 0;
+JNI_AUDIO(nativeFillNetTxFrame)(JNIEnv *env, jobject owner, jshortArray outBuf, jint numSamples) {
+    AudioEngineAccess access(env, owner);
+    auto *engine = access.get();
+    if (!engine) return 0;
     jshort *buf = env->GetShortArrayElements(outBuf, nullptr);
-    int got = g_audioEngine->fillNetTxFrame(reinterpret_cast<int16_t*>(buf), numSamples);
+    int got = engine->fillNetTxFrame(reinterpret_cast<int16_t*>(buf), numSamples);
     env->ReleaseShortArrayElements(outBuf, buf, 0);
     return got;
 }

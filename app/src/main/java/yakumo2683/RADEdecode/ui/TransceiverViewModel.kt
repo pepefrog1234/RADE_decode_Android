@@ -14,6 +14,7 @@ import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.map
 import yakumo2683.RADEdecode.AudioBridge
@@ -151,6 +152,7 @@ class TransceiverViewModel(application: Application) : AndroidViewModel(applicat
      *  transient Wi-Fi/rigctld drop can't skip the unkey and leave the rig
      *  stuck in TX. */
     @Volatile private var pttKeyedByApp = false
+    private val pttReleasePending = MutableStateFlow(false)
     /** Submit CAT immediately, even while the main thread is opening audio.
      *  Join before unkeying so a slow T 1 cannot arrive after T 0. */
     private var pttKeyJob: Deferred<PttKeyOutcome>? = null
@@ -160,8 +162,8 @@ class TransceiverViewModel(application: Application) : AndroidViewModel(applicat
      *  reason to cut a QSO the operator can see is on the air (v1.6.14 did,
      *  ~5 s into every over on rigs with slow CAT replies). */
     private enum class PttKeyOutcome { ACKED, CONFIRMED, UNKNOWN, REFUSED }
-    /** Background unkey retry, started when the quick attempts in
-     *  stopTxAndUnkeyPtt all failed. Keeps trying — riding through an Icom
+    /** Background unkey retry, started when the first bounded attempt in
+     *  stopTxAndUnkeyPtt failed. Keeps trying — riding through an Icom
      *  auto-reconnect — until rigctld acknowledges "T 0" or the operator
      *  disconnects. A lossy LTE/VPN link must never leave the rig in TX. */
     private var pttUnkeyJob: Job? = null
@@ -310,9 +312,10 @@ class TransceiverViewModel(application: Application) : AndroidViewModel(applicat
         viewModelScope.launch {
             var lastConnected = false
             var lastFreq = 0L
-            rigController.state.collect { rs ->
+            rigController.state.combine(pttReleasePending) { rs, pending -> rs to pending }
+                .collect { (rs, unkeyPending) ->
                 _uiState.value = _uiState.value.copy(
-                    pttControlError = rs.error.startsWith("PTT ") || (pttKeyedByApp && !rs.connected)
+                    pttControlError = unkeyPending || rs.error.startsWith("PTT ") || (pttKeyedByApp && !rs.connected)
                 )
                 if (rs.connected != lastConnected) {
                     lastConnected = rs.connected
@@ -794,6 +797,7 @@ class TransceiverViewModel(application: Application) : AndroidViewModel(applicat
      *  rig keyed for a short RF tail, then unkey PTT and resume RX. */
     fun switchToRx() {
         ++txRequestId
+        pttKeyJob?.cancel() // Stop ON retries immediately, including during EOO drain.
         Log.i("TransceiverVM", "switchToRx: isTx=${_uiState.value.isTx}, rigConnected=${rigController.isConnected}")
         // Service state is authoritative before the UI flow collector catches
         // up, particularly on a very short press during synchronous TX setup.
@@ -875,28 +879,24 @@ class TransceiverViewModel(application: Application) : AndroidViewModel(applicat
                 // round-trip to lose, so no retry loop is needed.
                 hermesNetwork.setPtt(false)
                 pttKeyedByApp = false
+                pttReleasePending.value = false
                 return
             }
-            var unkeyed = false
-            for (attempt in 1..3) {
-                try {
-                    if (rigController.setPtt(false)) { unkeyed = true; break }
-                    // No usable acknowledgement — the rig may well have unkeyed
-                    // (slow CAT, lost reply, "RPRT -5"): read its PTT state back
-                    // before assuming it is stuck in TX.
-                    if (rigController.readPtt(expected = false) == false) {
-                        Log.i("TransceiverVM", "PTT OFF confirmed by readback after attempt $attempt")
-                        unkeyed = true; break
-                    }
-                } catch (e: Exception) {
-                    Log.w("TransceiverVM", "PTT unkey attempt $attempt failed", e)
-                }
-                Log.w("TransceiverVM", "PTT unkey not acknowledged (attempt $attempt); retrying")
-                if (attempt < 3) delay(300L * attempt)
+            val unkeyed = try {
+                rigController.setPtt(false)
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                Log.w("TransceiverVM", "PTT unkey failed", e)
+                false
             }
             pttKeyedByApp = !unkeyed
+            pttReleasePending.value = !unkeyed
             if (!unkeyed) {
-                Log.e("TransceiverVM", "PTT unkey not acknowledged after quick retries — keep trying in the background")
+                // Keep ownership/error visible and refuse another TX, but let
+                // RX restart after this first bounded attempt. Further OFF and
+                // readback attempts must not hold the receiver silent for 5+ s.
+                Log.w("TransceiverVM", "PTT release pending — resuming RX with background OFF recovery")
                 startPersistentUnkey()
             }
         }
@@ -911,14 +911,15 @@ class TransceiverViewModel(application: Application) : AndroidViewModel(applicat
         else TX_PTT_TAIL_MS
 
     /**
-     * Keep releasing PTT until rigctld acknowledges it. The quick retry loop in
-     * stopTxAndUnkeyPtt spans only ~8 s; an LTE stall or a VPN re-key easily
-     * outlasts that, and giving up then left the IC-7300MK2 transmitting until
+     * Keep releasing PTT until rigctld acknowledges it. After the first bounded
+     * attempt RX may resume with a PTT warning; an LTE stall or a VPN re-key can
+     * last much longer, and giving up left the IC-7300MK2 transmitting until
      * its own TX time-out (reported). While the Icom transport is down this waits
      * for the automatic reconnect (handleIcomLinkLost) to bring rigctld back, then
      * unkeys. Ends when acknowledged or when the operator disconnects the rig.
      */
     private fun startPersistentUnkey() {
+        pttReleasePending.value = true
         if (pttUnkeyJob?.isActive == true) return
         pttUnkeyJob = viewModelScope.launch(Dispatchers.IO) {
             var attempt = 0
@@ -935,6 +936,7 @@ class TransceiverViewModel(application: Application) : AndroidViewModel(applicat
                     }
                     if (ok) {
                         pttKeyedByApp = false
+                        pttReleasePending.value = false
                         Log.i("TransceiverVM", "PTT unkey acknowledged on background attempt $attempt")
                         break
                     }
@@ -1086,7 +1088,8 @@ class TransceiverViewModel(application: Application) : AndroidViewModel(applicat
                 "logcat", "-d", "-v", "time",
                 "RigController:V", "RigctldProcess:V",
                 "UsbPtyBridge:V", "UsbSerialManager:V", "HermesNet:V",
-                "IcomNetwork:V", "NetTxPump:V", "TransceiverVM:V", "*:S"
+                "IcomNetwork:V", "NetTxPump:V", "TransceiverVM:V", "AudioService:V",
+                "AudioEngine:V", "RADE_JNI:V", "AndroidRuntime:V", "libc:V", "DEBUG:V", "*:S"
             )
         )
         val out = proc.inputStream.bufferedReader().use { it.readText() }
@@ -1265,6 +1268,7 @@ class TransceiverViewModel(application: Application) : AndroidViewModel(applicat
         pttUnkeyJob?.cancel()
         pttUnkeyJob = null
         pttKeyedByApp = false
+        pttReleasePending.value = false
         icomNetwork.abortConnect()   // also stops a connect() retry loop in flight
         rigController.disconnect()
         rigctldProcess.stop()
@@ -1363,6 +1367,7 @@ class TransceiverViewModel(application: Application) : AndroidViewModel(applicat
             // takes over. Clear the flag so TX isn't blocked once the operator
             // reconnects by hand.
             pttKeyedByApp = false
+            pttReleasePending.value = false
             pttUnkeyJob?.cancel()
             pttUnkeyJob = null
             icomResumeRxAfterReconnect = false
@@ -1513,7 +1518,7 @@ class TransceiverViewModel(application: Application) : AndroidViewModel(applicat
             if (ptyPath.isEmpty()) return false   // icomNetwork.state carries the error
             audioService?.networkRig = icomNetwork
             // RX may still be running from before a Disconnect: give it its audio back.
-            audioService?.reattachNetworkRx()
+            audioService?.reattachNetworkRx(_uiState.value.selectedRxOutputDeviceId)
 
             val ok = rigctldProcess.startWithPty(
                 model = 3085,          // IC-705
