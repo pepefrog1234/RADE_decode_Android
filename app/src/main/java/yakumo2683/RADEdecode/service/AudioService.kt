@@ -1017,7 +1017,9 @@ class AudioService : LifecycleService() {
             bridge.release()
             audioBridge = null
             clearBluetoothCommunicationRouteIfNeeded()
-            stopSelf()
+            // The ViewModel must unkey PTT and restore RX on this same bound
+            // service. Do not leave a stale running flag or stop the service.
+            _state.value = ServiceState(lastCallsign = _state.value.lastCallsign)
             return
         }
 
@@ -1421,12 +1423,12 @@ class AudioService : LifecycleService() {
                 "AudioService",
                 "startTx FAILED (native): input=$effectiveInputDeviceId " +
                     "output=$effectiveOutputDeviceId bleCommMic=$bleCommMicCapture " +
-                    "leComm=$leAudioCommunicationSessionActive — service stopping, UI stays in RX"
+                    "leComm=$leAudioCommunicationSessionActive — awaiting PTT cleanup and RX recovery"
             )
             bridge.release()
             audioBridge = null
             clearBluetoothCommunicationRouteIfNeeded()
-            stopSelf()
+            _state.value = ServiceState(lastCallsign = _state.value.lastCallsign)
             return
         }
 

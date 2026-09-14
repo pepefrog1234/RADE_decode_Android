@@ -267,4 +267,6 @@
     <string name="settings_tx_media_volume">Android 媒體音量：%1$d / %2$d</string>
     <string name="settings_tx_media_volume_help">USB／喇叭發射也會受到 Android 媒體音量影響。功率偏低時，請觀察電台 ALC，逐步調整此音量與發射電平。TX Mic Gain 調整的是語音大小，不是射頻驅動。網路發射請使用電台／網路的驅動設定。</string>
     <string name="ptt_control_failed">未收到 CAT 的 PTT 確認。請查看電台：若已切換可繼續操作（應用程式會持續重試並讀回狀態）；若卡在發射，請按 Stop。</string>
+    <string name="tx_start_failed">無法啟動發射。請檢查電台連線與音訊裝置。</string>
+    <string name="rx_restart_failed">無法恢復接收。請檢查音訊裝置後，再按「開始」。</string>
 </resources>

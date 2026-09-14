@@ -80,6 +80,12 @@ fun TransceiverScreen(viewModel: TransceiverViewModel = viewModel()) {
         if (state.pttControlError) {
             Text(stringResource(R.string.ptt_control_failed), color = Red400, fontSize = 12.sp)
         }
+        if (state.txStartError) {
+            Text(stringResource(R.string.tx_start_failed), color = Red400, fontSize = 12.sp)
+        }
+        if (state.rxRestartError) {
+            Text(stringResource(R.string.rx_restart_failed), color = Red400, fontSize = 12.sp)
+        }
 
         // ── Signal info cards (RX) ──
         if (!state.isTx) {

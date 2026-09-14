@@ -268,4 +268,6 @@
     <string name="settings_tx_media_volume">Android メディア音量：%1$d / %2$d</string>
     <string name="settings_tx_media_volume_help">USB／スピーカー送信には Android のメディア音量も影響します。出力が低い場合は、リグの ALC を確認しながら、この音量と送信レベルを少しずつ調整してください。TX Mic Gain は声の大きさ用で、RF 出力の調整ではありません。ネットワーク送信はリグ／ネットワーク側のドライブ設定を使用します。</string>
     <string name="ptt_control_failed">CAT の PTT 応答を確認できません。無線機の送受信表示を確認してください。切り替わっていればそのまま運用できます（アプリは再試行と状態の読み返しを続けます）。送信のまま戻らない場合は Stop を押してください。</string>
+    <string name="tx_start_failed">送信を開始できませんでした。無線機との接続と音声デバイスを確認してください。</string>
+    <string name="rx_restart_failed">受信を再開できませんでした。音声デバイスを確認してから「開始」を押してください。</string>
 </resources>

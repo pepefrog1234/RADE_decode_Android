@@ -32,7 +32,6 @@ class UsbSerialManager(private val context: Context) {
         private const val USB_CLASS_CDC_DATA = 10
         private const val CDC_SUBCLASS_ACM = 2
 
-        private const val SET_LINE_CODING = 0x20
         private const val SET_CONTROL_LINE_STATE = 0x22
 
         private const val VID_SILABS_CP210X = 0x10C4
@@ -43,7 +42,6 @@ class UsbSerialManager(private val context: Context) {
 
         private const val CP210X_SET_BAUDRATE = 0x1E
         private const val CP210X_IFC_ENABLE = 0x00
-        private const val CP210X_SET_LINE_CTL = 0x03
         private const val FTDI_SET_BAUD_RATE = 3
 
         @JvmStatic
@@ -88,6 +86,7 @@ class UsbSerialManager(private val context: Context) {
 
     private var pendingDevice: UsbSerialDevice? = null
     private var pendingBaudRate: Int = 19200
+    private var pendingFraming: UsbSerialFraming = UsbSerialFraming.EIGHT_N_ONE
     private var pendingDtr: Boolean = true
     private var pendingRts: Boolean = false
     private var pendingCallback: ((String) -> Unit)? = null
@@ -106,7 +105,7 @@ class UsbSerialManager(private val context: Context) {
 
                     if (granted && pd != null) {
                         Log.i(TAG, "USB permission granted")
-                        val path = openDeviceInternal(pd, pendingBaudRate, pendingDtr, pendingRts)
+                        val path = openDeviceInternal(pd, pendingBaudRate, pendingDtr, pendingRts, pendingFraming)
                         cb?.invoke(path)
                     } else {
                         Log.w(TAG, "USB permission denied")
@@ -208,22 +207,26 @@ class UsbSerialManager(private val context: Context) {
      * @param dtr initial state of the DTR modem line (typical: on to signal "terminal ready")
      * @param rts initial state of the RTS modem line (typical: off — some USB-serial cables wire
      *            RTS to PTT, and asserting it would key the radio on connect)
+     * @param rigModel Hamlib model ID used to select physical UART framing
      */
     fun openDevice(
         device: UsbSerialDevice,
         baudRate: Int,
         dtr: Boolean = true,
         rts: Boolean = false,
+        rigModel: Int = 0,
         onOpened: (String) -> Unit
     ) {
         _state.value = _state.value.copy(error = "")
+        val framing = UsbSerialFraming.forRigModel(rigModel)
 
         if (usbManager.hasPermission(device.usbDevice)) {
-            val path = openDeviceInternal(device, baudRate, dtr, rts)
+            val path = openDeviceInternal(device, baudRate, dtr, rts, framing)
             onOpened(path)
         } else {
             pendingDevice = device
             pendingBaudRate = baudRate
+            pendingFraming = framing
             pendingDtr = dtr
             pendingRts = rts
             pendingCallback = onOpened
@@ -270,10 +273,11 @@ class UsbSerialManager(private val context: Context) {
         device: UsbSerialDevice,
         baudRate: Int,
         dtr: Boolean,
-        rts: Boolean
+        rts: Boolean,
+        framing: UsbSerialFraming
     ): String {
         Log.i(TAG, "openDeviceInternal: ${describeDevice(device.usbDevice)}")
-        Log.i(TAG, "  target: interfaceIndex=${device.interfaceIndex} chip=${device.chipType} baud=$baudRate dtr=$dtr rts=$rts")
+        Log.i(TAG, "  target: interfaceIndex=${device.interfaceIndex} chip=${device.chipType} baud=$baudRate framing=${framing.description} dtr=$dtr rts=$rts")
 
         try {
             val conn = usbManager.openDevice(device.usbDevice)
@@ -305,8 +309,8 @@ class UsbSerialManager(private val context: Context) {
 
             // Configure serial parameters. Chip init runs BEFORE the baud rate —
             // the FTDI RESET would otherwise wipe the baud setting.
-            enableDevice(conn, device.chipType, device.interfaceIndex)
-            configureBaudRate(conn, device, baudRate)
+            enableDevice(conn, device.chipType, device.interfaceIndex, framing)
+            configureBaudRate(conn, device, baudRate, framing)
             applyModemLinesForDevice(conn, device, dtr, rts)
 
             // Start native pty bridge. FTDI prepends 2 status bytes to every IN
@@ -324,7 +328,7 @@ class UsbSerialManager(private val context: Context) {
             _state.value = _state.value.copy(
                 connectedDevice = device, ptyPath = slavePath, error = ""
             )
-            Log.i(TAG, "Bridge active: ${device.displayName} ↔ $slavePath @ $baudRate baud")
+            Log.i(TAG, "Bridge active: ${device.displayName} ↔ $slavePath @ $baudRate baud ${framing.description}")
             return slavePath
 
         } catch (e: Exception) {
@@ -447,14 +451,19 @@ class UsbSerialManager(private val context: Context) {
         return if (epIn != null && epOut != null) Pair(epIn, epOut) else null
     }
 
-    private fun configureBaudRate(conn: UsbDeviceConnection, device: UsbSerialDevice, baudRate: Int) {
+    private fun configureBaudRate(
+        conn: UsbDeviceConnection,
+        device: UsbSerialDevice,
+        baudRate: Int,
+        framing: UsbSerialFraming
+    ) {
         val result = when (device.chipType) {
-            ChipType.CDC_ACM -> setCdcBaudRate(conn, baudRate, device)
+            ChipType.CDC_ACM -> setCdcBaudRate(conn, baudRate, device, framing)
             ChipType.CP210X -> setCp210xBaudRate(conn, baudRate, device.interfaceIndex)
             ChipType.FTDI -> setFtdiBaudRate(conn, baudRate)
-            ChipType.CH340 -> setCh340BaudRate(conn, baudRate)
-            ChipType.PROLIFIC -> setCdcBaudRate(conn, baudRate, device)
-            ChipType.UNKNOWN -> setCdcBaudRate(conn, baudRate, device)
+            ChipType.CH340 -> setCh340BaudRate(conn, baudRate, framing)
+            ChipType.PROLIFIC -> setCdcBaudRate(conn, baudRate, device, framing)
+            ChipType.UNKNOWN -> setCdcBaudRate(conn, baudRate, device, framing)
         }
         Log.i(TAG, "configureBaudRate(${device.chipType}, $baudRate): $result")
     }
@@ -463,13 +472,18 @@ class UsbSerialManager(private val context: Context) {
      * Chip-specific initialization that doesn't touch DTR/RTS — those are set
      * separately by [applyModemLinesForDevice] so the user can control them.
      */
-    private fun enableDevice(conn: UsbDeviceConnection, chipType: ChipType, ifaceIdx: Int = 0) {
+    private fun enableDevice(
+        conn: UsbDeviceConnection,
+        chipType: ChipType,
+        ifaceIdx: Int,
+        framing: UsbSerialFraming
+    ) {
         when (chipType) {
             ChipType.CP210X -> {
                 // CP210x: wIndex must be the interface number for all control transfers
                 val idx = ifaceIdx
                 conn.controlTransfer(0x41, CP210X_IFC_ENABLE, 1, idx, null, 0, 5000)
-                conn.controlTransfer(0x41, CP210X_SET_LINE_CTL, 0x0800, idx, null, 0, 5000)
+                applyLineControl(conn, framing.cp210xLineControl(idx), "CP210x ${framing.description}")
                 val noFlow = byteArrayOf(0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0)
                 conn.controlTransfer(0x41, 0x13, 0, idx, noFlow, noFlow.size, 5000)
                 conn.controlTransfer(0x41, 0x12, 0x000F, idx, null, 0, 5000)
@@ -482,7 +496,7 @@ class UsbSerialManager(private val context: Context) {
                 // usb-serial-for-android (what FT8CN uses).
                 val idx = ifaceIdx + 1
                 conn.controlTransfer(0x40, 0x00, 0x0000, idx, null, 0, 5000)  // RESET (reset all)
-                conn.controlTransfer(0x40, 0x04, 0x0008, idx, null, 0, 5000)  // SET_DATA: 8 data, no parity, 1 stop
+                applyLineControl(conn, framing.ftdiLineControl(ifaceIdx), "FTDI ${framing.description}")
                 conn.controlTransfer(0x40, 0x02, 0x0000, idx, null, 0, 5000)  // SET_FLOW_CTRL: none
             }
             ChipType.CDC_ACM, ChipType.CH340, ChipType.PROLIFIC, ChipType.UNKNOWN -> {
@@ -544,12 +558,31 @@ class UsbSerialManager(private val context: Context) {
 
     // ── Baud rate ─────────────────────────────────────────────
 
-    private fun setCdcBaudRate(conn: UsbDeviceConnection, baudRate: Int, device: UsbSerialDevice): String {
-        val data = ByteBuffer.allocate(7).order(ByteOrder.LITTLE_ENDIAN)
-            .putInt(baudRate).put(0).put(0).put(8).array()
+    /** Do not start a bridge with an unconfirmed physical UART format. */
+    private fun applyLineControl(
+        conn: UsbDeviceConnection,
+        command: UsbSerialLineControl,
+        description: String
+    ): Int {
+        val length = command.data?.size ?: 0
+        val result = conn.controlTransfer(command.requestType, command.request, command.value,
+            command.index, command.data, length, 5000)
+        Log.d(TAG, "$description line control → $result (expected $length)")
+        check(result == length) {
+            "$description line control failed (USB returned $result, expected $length)"
+        }
+        return result
+    }
+
+    private fun setCdcBaudRate(
+        conn: UsbDeviceConnection,
+        baudRate: Int,
+        device: UsbSerialDevice,
+        framing: UsbSerialFraming
+    ): String {
         val ctrlIface = findControlInterfaceNum(device.usbDevice, device.interfaceIndex)
-        val r = conn.controlTransfer(0x21, SET_LINE_CODING, 0, ctrlIface, data, 7, 5000)
-        Log.d(TAG, "CDC SET_LINE_CODING baud=$baudRate ctrlIface=$ctrlIface dataIdx=${device.interfaceIndex} → $r")
+        val r = applyLineControl(conn, framing.cdcLineControl(baudRate, ctrlIface),
+            "CDC ${framing.description} baud=$baudRate ctrlIface=$ctrlIface dataIdx=${device.interfaceIndex}")
         return "CDC SET_LINE_CODING→$r"
     }
 
@@ -574,7 +607,11 @@ class UsbSerialManager(private val context: Context) {
      * CH340/CH341 full initialization sequence.
      * Based on Linux ch341.c driver + usb-serial-for-android Ch34xSerialDriver.
      */
-    private fun setCh340BaudRate(conn: UsbDeviceConnection, baudRate: Int): String {
+    private fun setCh340BaudRate(
+        conn: UsbDeviceConnection,
+        baudRate: Int,
+        framing: UsbSerialFraming
+    ): String {
         val buf = ByteArray(8)
 
         // Step 1: Read version (0x5F)
@@ -603,8 +640,8 @@ class UsbSerialManager(private val context: Context) {
         // Step 8: Set baud rate again
         conn.controlTransfer(0x40, 0x9A, 0x1312, factor or divisor, null, 0, 5000)
 
-        // Step 9: Set line control 8N1 (register 0x2518, value 0xC3)
-        val r3 = conn.controlTransfer(0x40, 0x9A, 0x2518, 0x00C3, null, 0, 5000)
+        // Step 9: Set line control after init, which may reset the UART format.
+        val r3 = applyLineControl(conn, framing.ch340LineControl(), "CH340 ${framing.description}")
 
         // DTR / RTS are applied by applyModemLines() after enableDevice().
         // Step 10: Final status check
