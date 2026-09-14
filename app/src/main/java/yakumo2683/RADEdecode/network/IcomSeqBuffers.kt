@@ -207,6 +207,7 @@ internal class IcomRxSeqTracker(
  */
 internal class IcomAudioJitter(
     private val maxPackets: Int,
+    private val sampleRate: Int = 48000,
     private val onPacket: (ByteArray) -> Unit
 ) {
     companion object {
@@ -222,6 +223,15 @@ internal class IcomAudioJitter(
     var delivered = 0L; private set
     var concealed = 0L; private set
     var lateDropped = 0L; private set
+    var resyncs = 0L; private set
+
+    /** Local queue discarded stale audio: do not recreate it as silence. */
+    fun reset() {
+        buf.clear()
+        expected = -1
+        lastPayload = 0
+        resyncs++
+    }
 
     fun add(seq: Int, pkt: ByteArray) {
         val s = seq and 0xFFFF
@@ -229,6 +239,11 @@ internal class IcomAudioJitter(
         if (seqLess(s, expected)) {
             lateDropped++          // already played (or concealed) — too late
             return
+        }
+        if (((s - expected) and 0xffff) > maxPackets * 4) {
+            // A long outage must not synthesize seconds/minutes of old silence.
+            reset()
+            expected = s
         }
         buf[s] = pkt
         drain()
@@ -249,7 +264,8 @@ internal class IcomAudioJitter(
     }
 
     private fun conceal() {
-        val payload = if (lastPayload == PART1_PAYLOAD) PART2_PAYLOAD else PART1_PAYLOAD
+        val payload = if (sampleRate == 16000) 640
+            else if (lastPayload == PART1_PAYLOAD) PART2_PAYLOAD else PART1_PAYLOAD
         lastPayload = payload
         concealed++
         onPacket(ByteArray(HEADER + payload))   // zeros = silence

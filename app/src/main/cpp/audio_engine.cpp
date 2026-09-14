@@ -502,11 +502,30 @@ bool AudioEngine::openOutputStream() {
 
 /* ── Output: 16kHz from ring buffer ──────────────────────────── */
 
+int AudioEngine::readRxRing(int16_t *buf, int maxSamples) {
+    int dropped = 0;
+    if (rxPlaybackFlush_.exchange(false)) {
+        dropped = playbackRing_.trimToLatest(0);
+    } else if (analogMonitor_.load()) {
+        // Loss concealment/bursty UDP delivery and clock drift must not turn
+        // live monitoring into a two-second recording. Only the consumer moves
+        // the read index; never reset a live SPSC ring from the producer/UI.
+        if (playbackRing_.availableToRead() > SPEECH_SAMPLE_RATE * 300 / 1000)
+            dropped = playbackRing_.trimToLatest(SPEECH_SAMPLE_RATE * 100 / 1000);
+    } else if (netRxRunning_.load() && playbackRing_.availableToRead() > SPEECH_SAMPLE_RATE * 800 / 1000) {
+        // RADE produces speech in blocks: retain two 240 ms frames when a
+        // prolonged network stall leaves more than 800 ms queued.
+        dropped = playbackRing_.trimToLatest(SPEECH_SAMPLE_RATE * 480 / 1000);
+    }
+    rxPlaybackDropped_.fetch_add(dropped, std::memory_order_relaxed);
+    return playbackRing_.read(buf, maxSamples);
+}
+
 void AudioEngine::renderOutput(float *output, int32_t numFrames) {
     float volume = outputVolume_.load();
     int16_t tempBuf[4096];
     int toRead = std::min(numFrames, 4096);
-    int got = playbackRing_.read(tempBuf, toRead);
+    int got = readRxRing(tempBuf, toRead);
 
     float rmsSum = 0.0f;
     for (int i = 0; i < numFrames; i++) {
@@ -584,12 +603,14 @@ void AudioEngine::processInputFrames(const float *data, int32_t numFrames, int32
 void AudioEngine::setAnalogMonitor(bool on) {
     bool was = analogMonitor_.exchange(on);
     if (was != on) {
-        analogPrevSample_ = 0;
+        analogReset_.store(true);
+        rxPlaybackFlush_.store(true);
         LOGI("Analog SSB monitor %s", on ? "ON" : "OFF");
     }
 }
 
 void AudioEngine::feedModem(const int16_t *samples8k, int count) {
+    if (analogReset_.exchange(false)) analogPrevSample_ = 0;
     if (analogMonitor_.load()) {
         // Analog SSB monitor: the decimated 8 kHz channel audio goes straight
         // to the 16 kHz playback ring (×2 linear interpolation — plenty for a
@@ -1642,6 +1663,15 @@ void AudioEngine::feedNetRx(const int16_t *pcm, int count) {
 
     if (count > 0)
         inputLevelDb_.store(10.0f * log10f(rmsSum / (float)count + 1e-10f));
+
+    const int64_t now = nowNs();
+    if (now - rxPlaybackLogTime_ >= 5000000000LL) {
+        rxPlaybackLogTime_ = now;
+        LOGI("Net RX playback: queued=%dms dropped=%llums monitor=%d",
+             playbackRing_.availableToRead() * 1000 / SPEECH_SAMPLE_RATE,
+             (unsigned long long)(rxPlaybackDropped_.load() * 1000 / SPEECH_SAMPLE_RATE),
+             analogMonitor_.load());
+    }
 }
 
 bool AudioEngine::startNetTx(int inputDeviceId, int netRate, bool voiceCommunicationInput) {

@@ -17,7 +17,10 @@ import java.net.Socket
  *
  * Protocol reference: https://hamlib.sourceforge.net/manuals/hamlib.html#rigctld-protocol
  */
-class RigController internal constructor(private val pollingEnabled: Boolean) {
+class RigController internal constructor(
+    private val pollingEnabled: Boolean,
+    private val catHealth: RigCatHealth = RigCatHealth()
+) {
 
     constructor() : this(pollingEnabled = true)
 
@@ -57,6 +60,8 @@ class RigController internal constructor(private val pollingEnabled: Boolean) {
     private val lock = Any()
     private var connectionGeneration = 0L
     private val pttOperation = java.util.concurrent.atomic.AtomicLong()
+    /** Installed only for the Icom network tunnel. */
+    var onCatUnresponsive: (() -> Unit)? = null
 
     /** Last CAT command written to the socket — reported in the "connection lost"
      *  error so we can see which command was in flight when rigctld/the link died. */
@@ -115,8 +120,9 @@ class RigController internal constructor(private val pollingEnabled: Boolean) {
                         socket.close()
                         return@withContext
                     }
-                    val transport = RigctldTransport(socket, ::transportFailed)
+                    val transport = RigctldTransport(socket, ::transportFailed, onResponse = ::recordCatResponse)
                     connection = transport
+                    catHealth.reset()
                     consecutiveTimeouts = 0
                     _state.update { it.copy(connected = true, host = host, port = port, error = "") }
                     lastConnectMs = System.currentTimeMillis()
@@ -151,10 +157,24 @@ class RigController internal constructor(private val pollingEnabled: Boolean) {
     }
 
     private fun transportFailed(transport: RigctldTransport, cause: Exception) {
+        var recover: (() -> Unit)? = null
         synchronized(lock) {
             if (connection !== transport || userDisconnected) return
+            if (cause is java.net.SocketTimeoutException) recover = onCatUnresponsive
             connection = null
             handleDisconnect(cause)
+        }
+        recover?.invoke()
+    }
+
+    private fun recordCatResponse(transport: RigctldTransport, name: String, args: String, response: RigctldResponse) {
+        val recover = synchronized(lock) {
+            if (connection !== transport || userDisconnected) return
+            if (catHealth.record(name, args, response, System.nanoTime() / 1_000_000)) onCatUnresponsive else null
+        }
+        if (recover != null) {
+            Log.w(TAG, "Radio CAT has repeatedly failed for 15 s — recovering Icom session")
+            recover.invoke()
         }
     }
 

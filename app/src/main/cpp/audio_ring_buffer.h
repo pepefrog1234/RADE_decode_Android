@@ -23,6 +23,10 @@ public:
     /** Read samples from the buffer. Returns number of samples actually read. */
     int32_t read(int16_t *data, int32_t count);
 
+    /** Consumer only: discard old audio, retaining the newest keep samples.
+     * Unlike reset(), safe while the single producer is writing. */
+    int32_t trimToLatest(int32_t keep);
+
     /** Number of samples available to read. */
     int32_t availableToRead() const;
 

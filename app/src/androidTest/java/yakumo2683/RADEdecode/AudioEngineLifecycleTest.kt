@@ -12,6 +12,28 @@ import kotlin.concurrent.thread
 /** Headless network RX: no mic, speaker, USB radio or RF transmission needed. */
 @RunWith(AndroidJUnit4::class)
 class AudioEngineLifecycleTest {
+    @Test fun analogMonitorDiscardsBacklogAtBothNetworkRates() {
+        val context = InstrumentationRegistry.getInstrumentation().targetContext
+        for (rate in listOf(48000, 16000)) {
+            val bridge = AudioBridge(context)
+            try {
+                bridge.setRxJavaOutputEnabled(true)
+                assertTrue(bridge.startNetRx(netRate = rate))
+                bridge.setAnalogMonitor(true)
+                val output = ShortArray(32000)
+                bridge.nativeReadRxRing(output, output.size) // consume the mode-switch flush
+                val packet = ShortArray(rate / 50) { 2000 }
+                repeat(100) { bridge.feedNetRx(packet, packet.size) } // two seconds with no playback
+                val got = bridge.nativeReadRxRing(output, output.size)
+                assertTrue("Old monitor audio was retained at $rate Hz: $got samples", got in 1..1600)
+                assertEquals(0, bridge.nativeReadRxRing(output, output.size))
+                repeat(5) { bridge.feedNetRx(packet, packet.size) }
+                bridge.setAnalogMonitor(false)
+                assertEquals("Mode switch retained old analog audio", 0, bridge.nativeReadRxRing(output, output.size))
+            } finally { bridge.release() }
+        }
+    }
+
     @Test fun concurrentFeedAndReleaseCannotReachTheNextEngine() {
         val context = InstrumentationRegistry.getInstrumentation().targetContext
         val pcm = ShortArray(960) { if (it % 48 < 24) 2000 else -2000 }

@@ -110,7 +110,7 @@ public:
     /** Samples still queued for TX playback (used to drain the EOO after stopTx). */
     int txRingAvailable() { return txPlaybackRing_.availableToRead(); }
     bool isTxUsingJavaOutput() const { return txUseJavaOutput_; }
-    int readRxRing(int16_t *buf, int maxSamples) { return playbackRing_.read(buf, maxSamples); }
+    int readRxRing(int16_t *buf, int maxSamples);
     void setRxJavaOutputEnabled(bool enabled);
     bool isRxUsingJavaOutput() const { return rxUseJavaOutput_; }
     void setRxVoiceCommunicationOutputEnabled(bool enabled);
@@ -204,6 +204,9 @@ private:
     float farganWarmupFeat_[FARGAN_WARMUP_FRAMES * 36] = {};
 
     AudioRingBuffer playbackRing_{RING_BUFFER_SIZE};
+    std::atomic<bool> rxPlaybackFlush_{false};
+    std::atomic<uint64_t> rxPlaybackDropped_{0};
+    int64_t rxPlaybackLogTime_ = 0;
 
     /* Decimation FIR filter state */
     std::vector<float> decimCoeffs_;   // FIR coefficients
@@ -236,6 +239,7 @@ private:
      * skips its ring write so decoded speech and raw audio never interleave. */
     std::atomic<bool> analogMonitor_{false};
     int16_t analogPrevSample_ = 0;
+    std::atomic<bool> analogReset_{false};
     int inputSessionId_ = -1;
 
     std::string lastCallsign_;

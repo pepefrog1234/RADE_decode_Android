@@ -178,6 +178,8 @@
     <string name="rig_icom_buffer_label">音訊緩衝（網路延遲）</string>
     <string name="rig_icom_buffer_help">150 ms 是電台預設值。LTE/VPN 抖動可嘗試 200–300 ms。請勿再大：IC-7300MK2 在 500 ms 出現長時間發射中斷，800 ms 時 PTT 已按下卻完全沒有調變。發射結束後 PTT 會保持相同的時間，避免呼號被切斷。下次連線時生效。</string>
     <string name="rig_icom_tx_rate_label">發射音訊 16 kHz（實驗性）</string>
+    <string name="rig_icom_rx_rate_label">接收音訊 16 kHz（實驗性）</string>
+    <string name="rig_icom_rx_rate_help">以 16 kHz 取代 48 kHz 接收，PCM 資料量降為三分之一。下次連線時生效，同時適用於 RADE 與 Monitor。若電台沒有傳回音訊，請關閉此選項並重新連線。</string>
     <string name="rig_icom_tx_rate_help">以 16 kHz 而非 48 kHz 向電台傳送發射音訊，上行資料量約為三分之一（約 860 kbps → 約 290 kbps）。LTE 上行卡頓時可嘗試；轉換為 48 kHz 由電台完成，接收不受影響。下次連線時生效。</string>
     <string name="rig_hl2_network_mode">HL2 (區域網路)</string>
     <string name="rig_hl2_network_hint">透過 openHPSDR（協議 1）直接控制區域網路上的 Hermes-Lite 2：探索、頻率、PTT 與 I/Q 串流全部走 UDP 連接埠 1024，無需電腦。主機留空則以廣播自動探索。SSB 調變/解調在應用程式內完成。</string>

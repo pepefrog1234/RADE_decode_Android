@@ -15,6 +15,45 @@ import java.util.concurrent.atomic.AtomicReference
 import kotlin.concurrent.thread
 
 class RigctldTransportTest {
+    @Test fun repeatedProtocolErrorsReachTheNetworkRecoveryHook() = runBlocking {
+        val recovery = CompletableDeferred<Unit>()
+        FakeRig { input, output ->
+            repeat(3) {
+                assertEquals("+\\set_ptt 0", input.readLine())
+                output.print("set_ptt: 0\nRPRT -8\n"); output.flush()
+            }
+        }.use { rig ->
+            val controller = RigController(pollingEnabled = false, catHealth = RigCatHealth(failureWindowMs = 0))
+            controller.onCatUnresponsive = { recovery.complete(Unit) }
+            try {
+                controller.connect("127.0.0.1", rig.port)
+                repeat(3) { assertFalse(controller.setPtt(false)) }
+                withTimeout(1000) { recovery.await() }
+                assertTrue("Local TCP should still be alive when radio-level recovery fires", controller.isConnected)
+                rig.checkFinished()
+            } finally { controller.destroy() }
+        }
+    }
+
+    @Test fun lateCompletedRepliesStillReachHealthTracking() = runBlocking {
+        val observed = CompletableDeferred<RigctldResponse>()
+        FakeRig { input, output ->
+            assertEquals("+\\get_freq", input.readLine())
+            Thread.sleep(100)
+            output.print("get_freq:\nFrequency: 7100000\nRPRT 0\n"); output.flush()
+        }.use { rig ->
+            rig.transport(onResponse = { _, name, _, response ->
+                assertEquals("get_freq", name)
+                observed.complete(response)
+            }).use { transport ->
+                assertNull(transport.command("get_freq", timeoutMs = 20))
+                assertEquals("7100000", withTimeout(1000) { observed.await() }.value("Frequency"))
+                assertFalse(transport.hasPending)
+                rig.checkFinished()
+            }
+        }
+    }
+
     @Test fun lateMeterZeroCannotConfirmPttOff() = runBlocking {
         FakeRig { input, output ->
             assertEquals("+\\get_level STRENGTH", input.readLine())
@@ -202,8 +241,12 @@ class RigctldTransportTest {
             finally { done.countDown() }
         }
 
-        fun transport(stalledReplyMs: Int = 15_000, onFailure: (RigctldTransport, Exception) -> Unit = { _, _ -> }): RigctldTransport =
-            RigctldTransport(Socket("127.0.0.1", port), onFailure, stalledReplyMs).also { it.start() }
+        fun transport(
+            stalledReplyMs: Int = 15_000,
+            onResponse: (RigctldTransport, String, String, RigctldResponse) -> Unit = { _, _, _, _ -> },
+            onFailure: (RigctldTransport, Exception) -> Unit = { _, _ -> }
+        ): RigctldTransport =
+            RigctldTransport(Socket("127.0.0.1", port), onFailure, stalledReplyMs, onResponse).also { it.start() }
 
         fun checkFinished() {
             assertTrue("Fake daemon did not complete", done.await(4, TimeUnit.SECONDS))

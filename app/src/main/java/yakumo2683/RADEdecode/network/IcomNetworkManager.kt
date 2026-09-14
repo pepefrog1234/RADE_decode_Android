@@ -3,6 +3,7 @@ package yakumo2683.RADEdecode.network
 import android.util.Log
 import kotlinx.coroutines.*
 import kotlinx.coroutines.channels.Channel
+import kotlinx.coroutines.channels.BufferOverflow
 import kotlinx.coroutines.channels.consumeEach
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -14,6 +15,7 @@ import java.net.DatagramSocket
 import java.net.InetAddress
 import java.net.InetSocketAddress
 import java.net.SocketTimeoutException
+import java.util.concurrent.atomic.AtomicLong
 
 /**
  * Icom RS-BA1 (LAN/WLAN) network rig control for radios with a built-in server
@@ -44,8 +46,8 @@ class IcomNetworkManager internal constructor(private val pty: IcomPty) : Networ
         private const val SERIAL_PORT = 50002
         private const val AUDIO_PORT = 50003
 
-        /** Network audio sample rate (s16le mono). 48 kHz is the IC-705's native
-         *  rate and what kappanhang/RS-BA1 use; the engine resamples 48↔8 kHz. */
+        /** Default network audio sample rate (s16le mono). RX may independently
+         * request 16 kHz; the engine decimates the selected rate to 8 kHz. */
         const val NET_AUDIO_RATE = 48000
         /** 20 ms TX frame: 48000 × 0.02 = 960 samples = 1920 bytes. */
         const val NET_AUDIO_FRAME_SAMPLES = 960
@@ -175,7 +177,7 @@ class IcomNetworkManager internal constructor(private val pty: IcomPty) : Networ
         val error: String = ""
     )
 
-    /** Callback for received, in-order audio PCM (int16 mono at [NET_AUDIO_RATE]).
+    /** Callback for received, in-order audio PCM (int16 mono at [audioRate]).
      *  Set by AudioService; invoked on the audio stream's consume coroutine. */
     @Volatile override var onAudioPcm: ((ShortArray) -> Unit)? = null
 
@@ -183,7 +185,10 @@ class IcomNetworkManager internal constructor(private val pty: IcomPty) : Networ
     val state: StateFlow<State> = _state.asStateFlow()
     override val isConnected: Boolean get() = _state.value.connected
     override val audioLinkUp: Boolean get() = _state.value.audioConnected
-    override val audioRate: Int get() = NET_AUDIO_RATE
+    override val audioRate: Int get() = rxAudioRate
+    /** Negotiated independently of TX; change only before connecting. */
+    @Volatile var rxAudioRate: Int = NET_AUDIO_RATE
+        set(value) { field = if (value == 16000) 16000 else NET_AUDIO_RATE }
     /** 20 ms of TX audio at [txAudioRate] (960 @ 48 kHz, 320 @ 16 kHz). */
     override val txFrameSamples: Int get() = txAudioRate / 50
 
@@ -484,6 +489,16 @@ class IcomNetworkManager internal constructor(private val pty: IcomPty) : Networ
 
     private fun isCurrentSession(scope: CoroutineScope) = connScope === scope && !disconnecting && scope.isActive
 
+    /** CAT can fail while UDP pings/audio continue. Recover the whole radio
+     * session, not just the localhost socket to the same broken CI-V tunnel. */
+    fun recoverCatSession() {
+        val session = connScope ?: return
+        if (!isConnected || !isCurrentSession(session)) return
+        Thread {
+            disconnectIfCurrent(session, "Radio CAT stopped responding — reconnecting…")
+        }.start()
+    }
+
     @Synchronized
     private fun disconnectIfCurrent(scope: CoroutineScope, reason: String? = null) {
         // A watchdog thread can be queued before a manual disconnect/reconnect.
@@ -723,8 +738,8 @@ class IcomNetworkManager internal constructor(private val pty: IcomPty) : Networ
     }
 
     private suspend fun openAudio(host: String, scope: CoroutineScope) {
-        // RX audio: a lost packet is requested again and has audioBufferMs to
-        // arrive before the jitter buffer conceals it (same horizon).
+        // Sequence statistics are observe-only; the jitter buffer gives
+        // reordered audio audioBufferMs to arrive before concealing a gap.
         val aud = synchronized(this) {
             if (!isCurrentSession(scope)) return
             IcomStream(
@@ -747,7 +762,7 @@ class IcomNetworkManager internal constructor(private val pty: IcomPty) : Networ
             scope.launch { audioRxLoop(aud) }
             aud.startStatsLog()
             _state.value = _state.value.copy(audioConnected = true)
-            Log.i(TAG, "audio stream up (UDP $AUDIO_PORT, rx ${NET_AUDIO_RATE}Hz tx ${txAudioRate}Hz, " +
+            Log.i(TAG, "audio stream up (UDP $AUDIO_PORT, rx ${audioRate}Hz tx ${txAudioRate}Hz, " +
             "radio TX buffer ${audioBufferMs}ms) — full wireless")
         }
     }
@@ -761,43 +776,43 @@ class IcomNetworkManager internal constructor(private val pty: IcomPty) : Networ
      * Audio data packet: byte0..1 = length LE (0x056c=1388 → 1364B payload, or
      * 0x0244=580 → 556B payload), seq (LE) at [6:8] (set as a tracked pkt0 seq),
      * 0x80 marker at [16], s16le PCM payload at [24:]. The 1364/556 split is just
-     * MTU fragmentation of one continuous 48 kHz mono stream, so feeding payloads
-     * strictly in sequence order reconstructs the stream for the decimator.
+     * MTU fragmentation of one continuous 48 kHz mono stream. At 16 kHz, a
+     * 20 ms frame fits in one 640-byte payload. Feed both formats in order.
      */
     private suspend fun audioRxLoop(aud: IcomStream) {
         var pcmPackets = 0L
         var fedSamples = 0L
         var sawConsumer = false
-        // Jitter depth follows the configured buffer: at the radio's 100 pkt/s,
-        // audioBufferMs/10 packets. A lost packet gets that long for the
-        // requested retransmit to arrive before it is concealed with silence.
-        val jitter = IcomAudioJitter(maxPackets = (audioBufferMs / 10).coerceIn(24, 120)) { pkt ->
-            val payloadLen = pkt.size - 24
-            if (payloadLen <= 0) return@IcomAudioJitter
-            val n = payloadLen / 2
-            val shorts = ShortArray(n)
-            var bi = 24
-            for (i in 0 until n) {
-                shorts[i] = ((pkt[bi].toInt() and 0xFF) or (pkt[bi + 1].toInt() shl 8)).toShort()
-                bi += 2
-            }
+        // 48 kHz uses two fragments per 20 ms frame; 16 kHz uses one.
+        // Reordering waits scale with that cadence, not a fixed packet count.
+        val packetMs = if (audioRate == 16000) 20 else 10
+        val jitter = IcomAudioJitter(
+            maxPackets = (audioBufferMs / packetMs).coerceAtLeast(2), sampleRate = audioRate
+        ) { pkt ->
+            val shorts = IcomAudioPacket.pcm(pkt)
             val cb = onAudioPcm
             if (cb != null) {
                 if (!sawConsumer) { sawConsumer = true; Log.i(TAG, "audio RX: first PCM delivered to decoder") }
                 cb(shorts)
-                fedSamples += n
+                fedSamples += shorts.size
             }
         }
+        var queueDrops = aud.incomingDrops.get()
         try {
             aud.incoming.consumeEach { r ->
                 if (!isCurrentSession(aud.scope)) return@consumeEach
-                if (r.size >= 580 &&
-                    ((r.u(0) == 0x6c && r.u(1) == 0x05) || (r.u(0) == 0x44 && r.u(1) == 0x02))) {
+                val dropped = aud.incomingDrops.get()
+                if (dropped != queueDrops) {
+                    jitter.reset()
+                    queueDrops = dropped
+                }
+                if (IcomAudioPacket.isAudio(r)) {
                     if (pcmPackets == 0L) Log.i(TAG, "audio RX: first audio packet from radio (size=${r.size})")
                     pcmPackets++
                     if (pcmPackets % 500L == 0L)
                         Log.i(TAG, "audio RX: $pcmPackets pkts, fed=$fedSamples samples, " +
-                            "concealed=${jitter.concealed} late=${jitter.lateDropped} consumer=${onAudioPcm != null}")
+                            "concealed=${jitter.concealed} late=${jitter.lateDropped} " +
+                            "queueDropped=$queueDrops resync=${jitter.resyncs} rate=$audioRate consumer=${onAudioPcm != null}")
                     jitter.add(u16le(r, 6), r)
                 }
             }
@@ -1027,7 +1042,7 @@ class IcomNetworkManager internal constructor(private val pty: IcomPty) : Networ
         System.arraycopy(name, 0, p, 64, name.size)
         System.arraycopy(passcode(username), 0, p, 96, 16)
         p[112] = 0x01; p[113] = 0x01; p[114] = 0x04; p[115] = 0x04
-        p[118] = (NET_AUDIO_RATE ushr 8).toByte(); p[119] = NET_AUDIO_RATE.toByte()  // rx sample rate (u32 BE @116)
+        p[118] = (audioRate ushr 8).toByte(); p[119] = audioRate.toByte()  // rx sample rate (u32 BE @116)
         val txRate = txAudioRate                                                      // tx sample rate (u32 BE @120)
         p[122] = (txRate ushr 8).toByte(); p[123] = txRate.toByte()
         p[126] = (SERIAL_PORT ushr 8).toByte(); p[127] = SERIAL_PORT.toByte()
@@ -1132,7 +1147,14 @@ class IcomNetworkManager internal constructor(private val pty: IcomPty) : Networ
          *  has dropped. The session-level liveness signal; 0 = none seen yet. */
         @Volatile var lastDataRxMs = 0L
 
-        val incoming = Channel<ByteArray>(Channel.UNLIMITED)
+        val incomingDrops = AtomicLong()
+        // Never queue an unbounded recording behind a slow decoder. Audio only:
+        // control and CI-V messages must retain their original ordered delivery.
+        val incoming = if (isAudio) Channel<ByteArray>(
+            capacity = (300 / if (audioRate == 16000) 20 else 10),
+            onBufferOverflow = BufferOverflow.DROP_OLDEST,
+            onUndeliveredElement = { incomingDrops.incrementAndGet() }
+        ) else Channel<ByteArray>(Channel.UNLIMITED)
 
         suspend fun open(): Boolean {
             return try {

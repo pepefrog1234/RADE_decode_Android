@@ -812,6 +812,7 @@ class AudioService : LifecycleService() {
     /* ── Network audio (IC-705 Wi-Fi, full wireless) ─────────── */
 
     private var networkAudioMode = false
+    private var networkRxRate = 0
 
     /**
      * Re-install the RX delivery hook on [networkRig] after a (re)connect while
@@ -823,11 +824,11 @@ class AudioService : LifecycleService() {
     fun reattachNetworkRx(outputDeviceId: Int = RX_OUTPUT_AUTO) {
         val net = networkRig ?: return
         if (!_state.value.isRunning || _state.value.isTx || !net.audioLinkUp) return
-        if (!networkAudioMode) {
+        if (!networkAudioMode || networkRxRate != net.audioRate) {
             // RX may have started on the phone mic before Icom connected (e.g.
             // after an app restart). Reattaching alone cannot turn that local
-            // modem into a network receiver.
-            Log.i("AudioService", "Icom connected during local RX; switching to network RX")
+            // modem into a network receiver, or change its decimation rate.
+            Log.i("AudioService", "Rebuilding network RX: previousRate=$networkRxRate newRate=${net.audioRate}")
             stopDecoding()
             startNetworkDecoding(outputDeviceId)
             return
@@ -901,6 +902,7 @@ class AudioService : LifecycleService() {
         net.onAudioPcm = { pcm -> bridge.feedNetRx(pcm, pcm.size) }
 
         networkAudioMode = true
+        networkRxRate = net.audioRate
         currentInputDeviceId = -1
         _state.value = _state.value.copy(isRunning = true)
         startPolling()

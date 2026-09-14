@@ -34,7 +34,8 @@ internal data class RigctldResponse(val lines: List<String>, val result: Int) {
 internal class RigctldTransport(
     private val socket: Socket,
     private val onFailure: (RigctldTransport, Exception) -> Unit,
-    private val stalledReplyMs: Int = 15_000
+    private val stalledReplyMs: Int = 15_000,
+    private val onResponse: (RigctldTransport, String, String, RigctldResponse) -> Unit = { _, _, _, _ -> }
 ) : Closeable {
     private class Pending(val name: String, val args: String) {
         val sentNs = System.nanoTime()
@@ -75,12 +76,16 @@ internal class RigctldTransport(
                         if (lines.size >= 64 || size > 16_384) throw IOException("Oversized rigctld reply")
                         lines.add(line)
                     }
+                    val response = RigctldResponse(lines, result)
                     synchronized(lock) {
                         if (!closed) {
                             check(pending.removeFirst() === request)
-                            request.reply.complete(RigctldResponse(lines, result))
+                            request.reply.complete(response)
                         }
                     }
+                    // Outside the transport lock: connection teardown takes
+                    // the controller lock before closing its transport.
+                    if (!closed) onResponse(this@RigctldTransport, request.name, request.args, response)
                 }
             } catch (e: Exception) {
                 if (!closed) {

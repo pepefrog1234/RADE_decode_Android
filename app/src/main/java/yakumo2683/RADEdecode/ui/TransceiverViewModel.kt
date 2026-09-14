@@ -255,6 +255,10 @@ class TransceiverViewModel(application: Application) : AndroidViewModel(applicat
         // On a rig "connection lost", let RigController report the local rigctld's
         // liveness/exit cause (crash vs. USB-bridge failure) in the on-screen error.
         rigController.diagnosticsProvider = { rigctldProcess.exitDiagnostics() }
+        rigController.onCatUnresponsive = {
+            if (!icomUserDisconnect && !_rigConnecting.value && icomNetwork.isConnected)
+                icomNetwork.recoverCatSession()
+        }
 
         // Persist the Icom login token across app runs, so a token left on the
         // radio by an unclean exit (app killed while connected) is removed at
@@ -1429,13 +1433,9 @@ class TransceiverViewModel(application: Application) : AndroidViewModel(applicat
                 delay(5000)
             }
             Log.e("TransceiverVM", "Icom auto-reconnect gave up — press Connect to retry")
-            // Nothing more we can do for a pending unkey: the radio's TX time-out
-            // takes over. Clear the flag so TX isn't blocked once the operator
-            // reconnects by hand.
-            pttKeyedByApp = false
-            pttReleasePending.value = false
-            pttUnkeyJob?.cancel()
-            pttUnkeyJob = null
+            // Exhausting reconnect attempts is not proof that RF stopped.
+            // Keep the warning/ownership and background OFF recovery so a later
+            // successful connection can still unkey before accepting another TX.
             icomResumeRxAfterReconnect = false
         }
     }
@@ -1547,7 +1547,8 @@ class TransceiverViewModel(application: Application) : AndroidViewModel(applicat
         username: String,
         password: String,
         audioBufferMs: Int = IcomNetworkManager.DEFAULT_AUDIO_BUFFER_MS,
-        txAudioRate: Int = IcomNetworkManager.TX_RATE_FULL
+        txAudioRate: Int = IcomNetworkManager.TX_RATE_FULL,
+        rxAudioRate: Int = IcomNetworkManager.NET_AUDIO_RATE
     ) {
         if (_rigConnecting.value || rigController.isConnected) return
         icomAutoReconnectJob?.cancel()
@@ -1557,10 +1558,14 @@ class TransceiverViewModel(application: Application) : AndroidViewModel(applicat
         icomLastPort = controlPort
         icomLastUser = username
         icomLastPass = password
-        // Radio-side TX audio buffer and TX sample rate (Rig tab): both ride the
+        // Radio-side TX buffer and RX/TX rates (Rig tab): these ride the
         // conninfo packet, so they must be set before the handshake.
         icomNetwork.audioBufferMs = audioBufferMs
         icomNetwork.txAudioRate = txAudioRate
+        // The previous receiver may still be running after Disconnect. Do not
+        // feed the new rate into its old decimator during the next handshake.
+        if (icomNetwork.rxAudioRate != rxAudioRate) icomNetwork.onAudioPcm = null
+        icomNetwork.rxAudioRate = rxAudioRate
         viewModelScope.launch(Dispatchers.IO) {
             connectIcomNetwork(host, controlPort, username, password)
         }
@@ -1585,6 +1590,7 @@ class TransceiverViewModel(application: Application) : AndroidViewModel(applicat
             audioService?.networkRig = icomNetwork
             // RX may still be running from before a Disconnect: give it its audio back.
             audioService?.reattachNetworkRx(_uiState.value.selectedRxOutputDeviceId)
+            audioService?.setAnalogMonitor(_uiState.value.analogMonitor)
 
             val ok = rigctldProcess.startWithPty(
                 model = 3085,          // IC-705

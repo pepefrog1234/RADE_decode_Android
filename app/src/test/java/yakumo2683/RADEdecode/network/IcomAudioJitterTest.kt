@@ -6,6 +6,31 @@ import org.junit.Test
 class IcomAudioJitterTest {
     private fun pkt(seq: Int, payload: Int) = ByteArray(24 + payload).also { it[0] = seq.toByte() }
 
+    @Test fun lowRateLossConcealsExactlyOne20msFrame() {
+        val out = mutableListOf<ByteArray>()
+        val jitter = IcomAudioJitter(maxPackets = 2, sampleRate = 16000) { out.add(it) }
+        jitter.add(0, pkt(0, 640))
+        for (s in 2..4) jitter.add(s, pkt(s, 640))
+        assertEquals(1L, jitter.concealed)
+        assertEquals(5, out.size)
+        assertTrue(out.all { it.size == 664 })
+        assertTrue(out[1].all { it == 0.toByte() })
+    }
+
+    @Test fun longOutageAndLocalQueueDropDoNotRecreateSecondsOfStaleAudio() {
+        val out = mutableListOf<ByteArray>()
+        val jitter = IcomAudioJitter(maxPackets = 24) { out.add(it) }
+        jitter.add(0, pkt(0, 1364))
+        jitter.add(501, pkt(1, 556))
+        assertEquals(2, out.size)
+        assertEquals(0L, jitter.concealed)
+        assertEquals(1L, jitter.resyncs)
+        jitter.reset()
+        jitter.add(530, pkt(2, 1364))
+        assertEquals(3, out.size)
+        assertEquals(0L, jitter.concealed)
+    }
+
     @Test fun reordersContiguousPackets() {
         val out = mutableListOf<ByteArray>()
         val j = IcomAudioJitter(maxPackets = 24) { out.add(it) }

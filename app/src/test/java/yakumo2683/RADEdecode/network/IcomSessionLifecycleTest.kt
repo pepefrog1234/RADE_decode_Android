@@ -1,5 +1,6 @@
 package yakumo2683.RADEdecode.network
 
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
 import kotlinx.coroutines.cancelAndJoin
@@ -26,6 +27,82 @@ import kotlin.concurrent.thread
 
 /** Exercises the actual UDP reader, retransmit buffer and teardown against a local radio. */
 class IcomSessionLifecycleTest {
+    @Test fun lowRateRxIsNegotiatedIndependentlyAndDeliveredAsPcm() = runBlocking {
+        FakeRadio().use { radio ->
+            val manager = IcomNetworkManager(FakePty())
+            val received = CompletableDeferred<ShortArray>()
+            manager.rxAudioRate = 16000
+            manager.onAudioPcm = { received.complete(it) }
+            try {
+                assertEquals(FakePty.PATH, withTimeout(8000) {
+                    manager.connect("127.0.0.1", radio.controlPort, "test", "test")
+                })
+                val info = radio.snapshot().first { it.stream == "control" && it.bytes.size == 144 }.bytes
+                assertEquals(16000, ((info[118].toInt() and 255) shl 8) or (info[119].toInt() and 255))
+                assertEquals(48000, ((info[122].toInt() and 255) shl 8) or (info[123].toInt() and 255))
+                assertEquals(16000, manager.audioRate)
+                radio.sendRxAudio(100, 320, -1234)
+                assertArrayEquals(ShortArray(320) { -1234 }, withTimeout(2000) { received.await() })
+            } finally { manager.disconnect() }
+        }
+    }
+
+    @Test fun slowAudioConsumerCatchesUpWithoutReplayingDroppedPacketsAsSilence() = runBlocking {
+        FakeRadio().use { radio ->
+            val manager = IcomNetworkManager(FakePty())
+            manager.rxAudioRate = 16000
+            val blocked = CountDownLatch(1)
+            val resume = CountDownLatch(1)
+            val played = Collections.synchronizedList(mutableListOf<Short>())
+            val latest = CompletableDeferred<Unit>()
+            manager.onAudioPcm = { pcm ->
+                played.add(pcm[0])
+                if (pcm[0] == 1.toShort()) { blocked.countDown(); check(resume.await(3, TimeUnit.SECONDS)) }
+                if (pcm[0] == 61.toShort()) latest.complete(Unit)
+            }
+            try {
+                assertEquals(FakePty.PATH, withTimeout(8000) {
+                    manager.connect("127.0.0.1", radio.controlPort, "test", "test")
+                })
+                radio.sendRxAudio(100, 320, 1)
+                await(blocked, "RX consumer never blocked")
+                for (i in 2..61) {
+                    radio.sendRxAudio(99 + i, 320, i)
+                    delay(2)
+                }
+                delay(100) // Allow UDP reader to fill/drop while the consumer stays blocked.
+                resume.countDown()
+                withTimeout(2000) { latest.await() }
+                val samples = synchronized(played) { played.toList() }
+                assertTrue("Unbounded backlog: ${samples.size} packets", samples.size <= 16)
+                assertEquals(1.toShort(), samples.first())
+                assertEquals(61.toShort(), samples.last())
+                assertTrue("Discarded backlog was restored as silence: $samples", samples.none { it == 0.toShort() })
+                assertTrue("Played stale RX packets: $samples", samples.drop(1).all { it >= 47 })
+            } finally { resume.countDown(); manager.disconnect() }
+        }
+    }
+
+    @Test fun catRecoveryClosesTheRadioSessionEvenWhenPingsAreHealthy() = runBlocking {
+        FakeRadio().use { radio ->
+            val manager = IcomNetworkManager(FakePty())
+            try {
+                assertEquals(FakePty.PATH, withTimeout(8000) {
+                    manager.connect("127.0.0.1", radio.controlPort, "test", "test")
+                })
+                assertTrue(manager.isConnected)
+                manager.recoverCatSession()
+                withTimeout(3000) { while (manager.isConnected) delay(10) }
+                assertTrue(manager.state.value.error.contains("CAT stopped responding"))
+                assertFalse(manager.audioLinkUp)
+                assertEquals(FakePty.PATH, withTimeout(8000) {
+                    manager.connect("127.0.0.1", radio.controlPort, "test", "test")
+                })
+                assertTrue(manager.audioLinkUp)
+            } finally { manager.disconnect() }
+        }
+    }
+
     @Test
     fun lostLogoutCanBeRequestedBeforeGoodbyeAndStopsTransmitTraffic() = runBlocking {
         FakeRadio().use { radio ->
@@ -256,6 +333,7 @@ class IcomSessionLifecycleTest {
         @Volatile private var token = byteArrayOf()
         @Volatile private var running = true
         @Volatile private var latestControlPeer: Peer? = null
+        @Volatile private var latestAudioPeer: Peer? = null
         @Volatile private var disconnectRequested = false
         val firstLogout = CountDownLatch(1)
         val requestedLogout = CountDownLatch(1)
@@ -296,6 +374,7 @@ class IcomSessionLifecycleTest {
                             val peer = peers.getOrPut(address to hex(bytes.copyOfRange(8, 12))) {
                                 Peer(address, bytes.copyOfRange(8, 12), nextSid.incrementAndGet())
                             }
+                            if (name == "audio") latestAudioPeer = peer
                             if (name == "control" && bytes.size == 128 && bytes[4] == 0.toByte()) {
                                 peer.loginNumber = ++loginCount
                                 latestControlPeer = peer
@@ -450,6 +529,17 @@ class IcomSessionLifecycleTest {
         }
 
         fun snapshot(): List<Received> = synchronized(received) { received.toList() }
+        fun sendRxAudio(seq: Int, samples: Int, value: Int) {
+            val peer = checkNotNull(latestAudioPeer)
+            val packet = reply(peer, 24 + samples * 2, seq = seq)
+            packet[16] = 0x80.toByte()
+            packet[22] = (samples * 2 ushr 8).toByte(); packet[23] = (samples * 2).toByte()
+            repeat(samples) {
+                packet[24 + it * 2] = value.toByte()
+                packet[25 + it * 2] = (value shr 8).toByte()
+            }
+            send(audioSocket, peer, packet)
+        }
         fun currentToken(): ByteArray = token.copyOf()
         fun checkFailure() { failure.get()?.let { throw AssertionError("Fake radio failed", it) } }
         override fun close() {

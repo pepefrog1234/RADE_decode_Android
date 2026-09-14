@@ -58,7 +58,19 @@ int32_t AudioRingBuffer::availableToRead() const {
 }
 
 int32_t AudioRingBuffer::availableToWrite() const {
-    return capacity_ - 1 - availableToRead();
+    const int32_t ri = readIndex_.load(std::memory_order_acquire);
+    const int32_t wi = writeIndex_.load(std::memory_order_relaxed);
+    const int32_t used = (wi - ri + capacity_) % capacity_;
+    return capacity_ - 1 - used;
+}
+
+int32_t AudioRingBuffer::trimToLatest(int32_t keep) {
+    if (keep < 0) keep = 0;
+    const int32_t available = availableToRead();
+    const int32_t discarded = available > keep ? available - keep : 0;
+    const int32_t ri = readIndex_.load(std::memory_order_relaxed);
+    readIndex_.store((ri + discarded) % capacity_, std::memory_order_release);
+    return discarded;
 }
 
 void AudioRingBuffer::reset() {
