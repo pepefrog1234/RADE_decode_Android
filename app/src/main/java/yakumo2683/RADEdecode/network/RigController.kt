@@ -31,6 +31,7 @@ class RigController internal constructor(
         // A late response is still drained, while polls stand down and OFF can
         // be sent behind an in-flight command without blocking cancellation.
         private const val READ_TIMEOUT_MS = 1000L
+        private const val FREQUENCY_TIMEOUT_MS = 2500L
         // PTT set and its readback get a longer deadline: rigctld may spend its
         // own backend timeout+retry on a slow or lossy CAT link (Xiegu, USB
         // glitches, Wi-Fi/LTE CI-V) before answering, and a late
@@ -45,6 +46,7 @@ class RigController internal constructor(
         val host: String = "",
         val port: Int = DEFAULT_PORT,
         val freqHz: Long = 0,
+        val frequencyError: String = "",
         val mode: String = "",
         val bandwidth: Int = 0,
         val ptt: Boolean = false,
@@ -59,6 +61,9 @@ class RigController internal constructor(
     @Volatile private var connection: RigctldTransport? = null
     private val lock = Any()
     private var connectionGeneration = 0L
+    private var frequencyOperation = 0L
+    private var unconfirmedFrequencyHz: Long? = null
+    private val frequencyMutex = kotlinx.coroutines.sync.Mutex()
     private val pttOperation = java.util.concurrent.atomic.AtomicLong()
     /** Installed only for the Icom network tunnel. */
     var onCatUnresponsive: (() -> Unit)? = null
@@ -151,7 +156,8 @@ class RigController internal constructor(
             pollingJob = null
             connection?.close()
             connection = null
-            _state.update { it.copy(connected = false) }
+            unconfirmedFrequencyHz = null
+            _state.update { it.copy(connected = false, frequencyError = "") }
         }
         Log.i(TAG, "Disconnected")
     }
@@ -170,6 +176,9 @@ class RigController internal constructor(
     private fun recordCatResponse(transport: RigctldTransport, name: String, args: String, response: RigctldResponse) {
         val recover = synchronized(lock) {
             if (connection !== transport || userDisconnected) return
+            if (name == "get_freq" || name == "set_freq") {
+                Log.i(TAG, "Frequency reply: '$name $args' RPRT=${response.result} values=${response.lines}")
+            }
             if (catHealth.record(name, args, response, System.nanoTime() / 1_000_000)) onCatUnresponsive else null
         }
         if (recover != null) {
@@ -189,9 +198,11 @@ class RigController internal constructor(
         name: String,
         args: String = "",
         timeoutMs: Long = READ_TIMEOUT_MS,
-        allowQueue: Boolean = false
+        allowQueue: Boolean = false,
+        expectedConnection: RigctldTransport? = null
     ): RigctldResponse? {
         val transport = connection ?: return null
+        if (expectedConnection != null && transport !== expectedConnection) return null
         // Polling must not add work behind a timed-out transaction. Its reader
         // continues draining independently, and PTT can still queue an OFF.
         if (!allowQueue && (transport.hasPending || userCmdPending.get() > 0)) return null
@@ -252,17 +263,68 @@ class RigController internal constructor(
 
     /* ── Frequency ──────────────────────────────────────────── */
 
-    suspend fun setFreq(hz: Long) = withContext(Dispatchers.IO) {
-        val resp = priority { sendCommand("set_freq", "$hz", allowQueue = true) }
-        if (resp?.result == 0) _state.update { it.copy(freqHz = hz) }
+    suspend fun setFreq(hz: Long): Boolean {
+        if (hz !in 10_000L..1_300_000_000L) return false
+        val (operation, session) = synchronized(lock) {
+            val active = connection ?: return false
+            unconfirmedFrequencyHz = hz
+            _state.update { it.copy(frequencyError = "") }
+            ++frequencyOperation to active
+        }
+        return withContext(Dispatchers.IO) {
+            priority {
+                frequencyMutex.lock()
+                try {
+                    if (!isCurrentFrequencyOperation(operation, session)) return@priority false
+                    Log.i(TAG, "setFreq request=$operation requestedHz=$hz")
+                    val response = sendCommand("set_freq", "$hz", FREQUENCY_TIMEOUT_MS,
+                        allowQueue = true, expectedConnection = session)
+                    ensureActive()
+                    if (!isCurrentFrequencyOperation(operation, session)) return@priority false
+                    // A set acknowledgement alone does not tell us what the rig
+                    // reports. Keep this readback on the same ordered session,
+                    // even when a slow set reply has outlived its caller wait.
+                    val observed = sendCommand("get_freq", timeoutMs = FREQUENCY_TIMEOUT_MS,
+                        allowQueue = true, expectedConnection = session)
+                        ?.value("Frequency")?.toLongOrNull()?.takeIf { it in 10_000L..1_300_000_000L }
+                    ensureActive()
+                    synchronized(lock) {
+                        if (!isCurrentFrequencyOperation(operation, session)) return@synchronized false
+                        val confirmed = observed == hz
+                        unconfirmedFrequencyHz = if (confirmed) null else hz
+                        _state.update { it.copy(
+                            freqHz = observed ?: it.freqHz,
+                            frequencyError = if (confirmed) "" else
+                                "Frequency change not confirmed. Requested $hz Hz; reported ${observed?.let { "$it Hz" } ?: "unknown"}."
+                        ) }
+                        Log.i(TAG, "setFreq request=$operation requestedHz=$hz setResult=${response?.result} reportedHz=$observed confirmed=$confirmed")
+                        confirmed
+                    }
+                } finally { frequencyMutex.unlock() }
+            }
+        }
     }
 
-    suspend fun getFreq(): Long = withContext(Dispatchers.IO) {
-        val freq = sendCommand("get_freq")?.value("Frequency")?.toLongOrNull()
-        if (freq != null && freq in 10_000L..1_300_000_000L) {
-            _state.update { it.copy(freqHz = freq) }
+    private fun isCurrentFrequencyOperation(operation: Long, session: RigctldTransport): Boolean =
+        synchronized(lock) { operation == frequencyOperation && connection === session }
+
+    suspend fun getFreq(): Long {
+        val (operation, session) = synchronized(lock) { frequencyOperation to connection }
+        if (session == null) return _state.value.freqHz
+        return withContext(Dispatchers.IO) {
+            val freq = sendCommand("get_freq", expectedConnection = session)?.value("Frequency")?.toLongOrNull()
+            synchronized(lock) {
+                if (isCurrentFrequencyOperation(operation, session) && freq != null && freq in 10_000L..1_300_000_000L) {
+                    val confirmed = freq == unconfirmedFrequencyHz
+                    if (confirmed) {
+                        unconfirmedFrequencyHz = null
+                        Log.i(TAG, "setFreq request=$operation confirmed by later poll reportedHz=$freq")
+                    }
+                    _state.update { it.copy(freqHz = freq, frequencyError = if (confirmed) "" else it.frequencyError) }
+                }
+                _state.value.freqHz
+            }
         }
-        _state.value.freqHz
     }
 
     /* ── Mode ───────────────────────────────────────────────── */

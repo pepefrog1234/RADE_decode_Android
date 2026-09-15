@@ -267,7 +267,7 @@ fun RigScreen(viewModel: TransceiverViewModel = viewModel()) {
     var connMode by remember { mutableIntStateOf(rigPrefs.getInt("conn_mode", 0)) }
     var hostInput by remember { mutableStateOf(rigPrefs.getString("host", "192.168.1.100") ?: "192.168.1.100") }
     var portInput by remember { mutableStateOf(rigPrefs.getString("port", "4532") ?: "4532") }
-    var freqInput by remember { mutableStateOf("") }
+    var frequencyEntry by remember { mutableStateOf(FrequencyEntry()) }
     var tcpProfile by remember {
         mutableStateOf(rigPrefs.getString("tcp_profile", TCP_PROFILE_GENERIC) ?: TCP_PROFILE_GENERIC)
     }
@@ -328,13 +328,15 @@ fun RigScreen(viewModel: TransceiverViewModel = viewModel()) {
     }
 
     // Sync freq display when rig updates (show as kHz)
-    LaunchedEffect(displayFreqHz) {
-        val hz = displayFreqHz
-        if (hz > 0) {
-            val khz = hz / 1000.0
-            freqInput = if (khz == khz.toLong().toDouble()) khz.toLong().toString()
-                        else String.format("%.1f", khz)
-        }
+    LaunchedEffect(displayFreqHz, frequencyEntry.submittedHz) {
+        frequencyEntry = frequencyEntry.observe(displayFreqHz)
+    }
+
+    fun submitFrequency() {
+        val hz = frequencyEntry.frequencyHz ?: return
+        frequencyEntry = frequencyEntry.submitted()
+        viewModel.rigSetFreq(hz)
+        focusManager.clearFocus()
     }
 
     Column(
@@ -1350,19 +1352,19 @@ fun RigScreen(viewModel: TransceiverViewModel = viewModel()) {
                     verticalAlignment = Alignment.CenterVertically
                 ) {
                     OutlinedTextField(
-                        value = freqInput,
-                        onValueChange = { freqInput = it.filter { c -> c.isDigit() || c == '.' } },
+                        value = frequencyEntry.text,
+                        onValueChange = { frequencyEntry = frequencyEntry.edit(it) },
+                        isError = frequencyEntry.text.isNotBlank() && frequencyEntry.frequencyHz == null,
                         label = { Text(stringResource(R.string.rig_freq_khz)) },
                         singleLine = true,
                         modifier = Modifier.weight(1f),
                         keyboardOptions = KeyboardOptions(
-                            keyboardType = KeyboardType.Number,
+                            keyboardType = KeyboardType.Decimal,
                             imeAction = ImeAction.Send
                         ),
                         keyboardActions = KeyboardActions(
                             onSend = {
-                                freqInput.toDoubleOrNull()?.let { viewModel.rigSetFreq((it * 1000).toLong()) }
-                                focusManager.clearFocus()
+                                submitFrequency()
                             }
                         ),
                         textStyle = androidx.compose.ui.text.TextStyle(
@@ -1376,14 +1378,18 @@ fun RigScreen(viewModel: TransceiverViewModel = viewModel()) {
                     )
                     Button(
                         onClick = {
-                            freqInput.toDoubleOrNull()?.let { viewModel.rigSetFreq((it * 1000).toLong()) }
-                            focusManager.clearFocus()
+                            submitFrequency()
                         },
+                        enabled = frequencyEntry.frequencyHz != null,
                         shape = RoundedCornerShape(10.dp),
                         colors = ButtonDefaults.buttonColors(containerColor = Cyan600)
                     ) {
                         Text(stringResource(R.string.btn_set), fontWeight = FontWeight.Bold)
                     }
+                }
+
+                if (rigState.frequencyError.isNotEmpty()) {
+                    Text(rigState.frequencyError, color = Red400, fontSize = 12.sp)
                 }
 
                 // Without a rig, Set keeps the value as the manual dial

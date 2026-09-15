@@ -1321,10 +1321,12 @@ class TransceiverViewModel(application: Application) : AndroidViewModel(applicat
     var rigMfg: String = ""
 
     fun rigConnect(host: String, port: Int) {
+        frequencySetJob?.cancel()
         viewModelScope.launch { rigController.connect(host, port) }
     }
 
     fun rigDisconnect() {
+        frequencySetJob?.cancel()
         ++txRequestId
         rxRecovery.invalidate()
         pttKeyJob?.cancel()
@@ -1358,6 +1360,7 @@ class TransceiverViewModel(application: Application) : AndroidViewModel(applicat
      */
     private fun handleIcomLinkLost() {
         if (icomLinkLostHandling) return
+        frequencySetJob?.cancel()
         rxRecovery.invalidate()
         icomLinkLostHandling = true
         viewModelScope.launch(Dispatchers.IO) {
@@ -1724,7 +1727,11 @@ class TransceiverViewModel(application: Application) : AndroidViewModel(applicat
     /** Manufacturers whose rigs do NOT support PKTUSB/PKTLSB data modes */
     private val noDataModeMfgs = setOf("Xiegu", "Alinco", "Drake", "AOR", "JRC")
 
+    private var frequencySetJob: Job? = null
+
     fun rigSetFreq(hz: Long) {
+        if (hz !in 10_000L..1_300_000_000L) return
+        frequencySetJob?.cancel()
         if (hermesNetwork.isConnected) {
             // HL2 direct: NCO frequency rides the C&C stream; SSB "mode" is
             // implicit in the app's own demodulator (USB passband).
@@ -1740,8 +1747,8 @@ class TransceiverViewModel(application: Application) : AndroidViewModel(applicat
             if (reporter.connected.value) reporter.reportFreqChange(hz)
             return
         }
-        viewModelScope.launch {
-            rigController.setFreq(hz)
+        frequencySetJob = viewModelScope.launch {
+            if (!rigController.setFreq(hz)) return@launch
             // Auto-pick data mode for the band. RigController.setMode preserves the
             // rig's current filter (queries filter byte via CI-V before switching),
             // so the user's FIL1/FIL2/FIL3 selection stays intact.
