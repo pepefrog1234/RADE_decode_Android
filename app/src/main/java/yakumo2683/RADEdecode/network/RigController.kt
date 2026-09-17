@@ -61,6 +61,7 @@ class RigController internal constructor(
     @Volatile private var connection: RigctldTransport? = null
     private val lock = Any()
     private var connectionGeneration = 0L
+    private var requirePttOffReadback = false
     private var frequencyOperation = 0L
     private var unconfirmedFrequencyHz: Long? = null
     private val frequencyMutex = kotlinx.coroutines.sync.Mutex()
@@ -109,7 +110,7 @@ class RigController internal constructor(
 
     /* ── Connection ─────────────────────────────────────────── */
 
-    suspend fun connect(host: String, port: Int = DEFAULT_PORT) {
+    suspend fun connect(host: String, port: Int = DEFAULT_PORT, verifyPttOff: Boolean = false) {
         disconnect()
         val generation = synchronized(lock) {
             userDisconnected = false
@@ -127,6 +128,7 @@ class RigController internal constructor(
                     }
                     val transport = RigctldTransport(socket, ::transportFailed, onResponse = ::recordCatResponse)
                     connection = transport
+                    requirePttOffReadback = verifyPttOff
                     catHealth.reset()
                     consecutiveTimeouts = 0
                     _state.update { it.copy(connected = true, host = host, port = port, error = "") }
@@ -179,7 +181,8 @@ class RigController internal constructor(
             if (name == "get_freq" || name == "set_freq") {
                 Log.i(TAG, "Frequency reply: '$name $args' RPRT=${response.result} values=${response.lines}")
             }
-            if (catHealth.record(name, args, response, System.nanoTime() / 1_000_000)) onCatUnresponsive else null
+            if (catHealth.record(name, args, response, System.nanoTime() / 1_000_000,
+                    confirmOffByReadback = requirePttOffReadback)) onCatUnresponsive else null
         }
         if (recover != null) {
             Log.w(TAG, "Radio CAT has repeatedly failed for 15 s — recovering Icom session")
@@ -248,13 +251,14 @@ class RigController internal constructor(
             autoReconnects++
             val host = _state.value.host
             val port = _state.value.port
+            val verifyOff = requirePttOffReadback
             _state.value = _state.value.copy(
                 connected = false,
                 error = "$detail — reconnecting ${autoReconnects}/$maxRapidReconnects…"
             )
             scope.launch {
                 delay(700)
-                if (!userDisconnected && !_state.value.connected) connect(host, port)
+                if (!userDisconnected && !_state.value.connected) connect(host, port, verifyOff)
             }
         } else {
             _state.value = _state.value.copy(connected = false, error = detail)
@@ -400,19 +404,39 @@ class RigController internal constructor(
     /* ── PTT ────────────────────────────────────────────────── */
 
     suspend fun setPtt(on: Boolean): Boolean = withContext(Dispatchers.IO) {
-        val operation = pttOperation.incrementAndGet()
+        val (operation, session, verifyOff) = synchronized(lock) {
+            val active = connection ?: return@withContext false
+            Triple(pttOperation.incrementAndGet(), active, requirePttOffReadback)
+        }
         val startedNs = System.nanoTime()
         Log.i(TAG, "setPtt($on) sending...")
-        val resp = priority {
-            sendCommand("set_ptt", if (on) "1" else "0", PTT_TIMEOUT_MS, allowQueue = true)
+        var result: Int? = null
+        var readback: Boolean? = null
+        val acknowledged = priority {
+            val resp = sendCommand("set_ptt", if (on) "1" else "0", PTT_TIMEOUT_MS,
+                allowQueue = true, expectedConnection = session)
+            result = resp?.result
+            ensureActive()
+            if (operation != pttOperation.get() || connection !== session) return@priority false
+            if (!on && verifyOff && result == 0) {
+                // The bundled network daemon disables its cache. A generic
+                // ACK alone is not evidence of OFF after duplicated CI-V replies.
+                readback = rigctldPtt(sendCommand("get_ptt", timeoutMs = PTT_TIMEOUT_MS,
+                    allowQueue = true, expectedConnection = session)?.value("PTT"))
+                readback == false
+            } else result == 0
         }
-        val acknowledged = resp?.result == 0
-        Log.i(TAG, "setPtt($on) result=${resp?.result} acknowledged=$acknowledged " +
+        ensureActive()
+        Log.i(TAG, "setPtt($on) result=$result readback=$readback acknowledged=$acknowledged " +
             "elapsedMs=${(System.nanoTime() - startedNs) / 1_000_000}")
-        if (acknowledged && operation == pttOperation.get()) {
-            _state.update { it.copy(ptt = on, error = if (it.error.startsWith("PTT ")) "" else it.error) }
-        } else if (!acknowledged && isConnected && operation == pttOperation.get()) {
-            _state.update { it.copy(error = "PTT ${if (on) "ON" else "OFF"} not acknowledged: ${resp?.result ?: "pending"}") }
+        synchronized(lock) {
+            if (connection !== session || operation != pttOperation.get()) return@withContext false
+            if (acknowledged) {
+                _state.update { it.copy(ptt = on, error = if (it.error.startsWith("PTT ")) "" else it.error) }
+            } else if (isConnected) {
+                _state.update { it.copy(error = "PTT ${if (on) "ON" else "OFF"} not confirmed: ${result ?: "pending"}" +
+                    if (!on && verifyOff && result == 0) " (reported=${readback ?: "unknown"})" else "") }
+            }
         }
         acknowledged
     }

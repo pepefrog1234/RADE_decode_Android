@@ -913,13 +913,29 @@ class IcomNetworkManager internal constructor(private val pty: IcomPty) : Networ
     /* ───────────────────── serial (CI-V) bridge ──────────────────── */
 
     private suspend fun serialRxLoop(ser: IcomStream) {
+        val recent = LinkedHashMap<Int, Pair<Long, ByteArray>>()
         try {
             ser.incoming.consumeEach { r ->
                 if (!isCurrentSession(ser.scope)) return@consumeEach
+                // A delayed UDP packet from the previous login must not enter
+                // this rigctld byte stream. Its socket address can be identical.
+                if (r.size < 16 || u32be(r, 8) != ser.remoteSID || u32be(r, 12) != ser.localSID)
+                    return@consumeEach
                 // CI-V data packet: r[0]=0x15+len, r[16]=0xc1, r[17]=len, payload at 21.
                 if (r.size >= 22 && r.u(16) == 0xc1 && (r.u(0) - 0x15) == r.u(17)) {
                     val len = r.u(17)
                     if (21 + len <= r.size && len > 0) {
+                        val now = System.nanoTime()
+                        val seq = u16le(r, 6)
+                        val previous = recent[seq]
+                        if (previous != null && now - previous.first < 15_000_000_000L &&
+                            previous.second.contentEquals(r)) {
+                            Log.w(TAG, "serial RX: duplicate CI-V packet ignored seq=$seq")
+                            return@consumeEach
+                        }
+                        recent.remove(seq)
+                        recent[seq] = now to r
+                        if (recent.size > 256) recent.remove(recent.keys.first())
                         val civ = r.copyOfRange(21, 21 + len)
                         pty.write(civ, civ.size)
                     }
@@ -948,20 +964,11 @@ class IcomNetworkManager internal constructor(private val pty: IcomPty) : Networ
                         val pkt = buildSerialData(ser, civ)
                         ser.sendTracked(pkt)   // fills the tracking seq into pkt
                         serialInnerSeq = (serialInnerSeq + 1) and 0xFFFF
-                        if (isCivPtt(civ)) {
-                            // PTT gets wire-level redundancy for lossy LTE/VPN
-                            // uplinks: re-send the SAME tracked packet (identical
-                            // bytes and seq — the transport's own resend idiom,
-                            // deduplicated by the radio) on a small stagger, so a
-                            // burst of loss cannot swallow the key/unkey. Without
-                            // this a lost PTT waits on gap-detection or a full
-                            // rigctld timeout+retry round — the reported
-                            // "TX/RX switch sometimes does nothing" on weak LTE.
-                            ser.scope.launch {
-                                delay(25); ser.sendRaw(pkt)
-                                delay(35); ser.sendRaw(pkt)
-                            }
-                        }
+                        // Let Hamlib and explicit radio retransmit requests
+                        // retry loss. Unsolicited copies of a PTT query/set can
+                        // produce extra replies that acknowledge a later command.
+                        if (isCivControlWrite(civ)) Log.i(TAG,
+                            "CI-V TX seq=${u16le(pkt, 6)} bytes=${civ.joinToString("") { "%02X".format(it) }}")
                         frame.clear()
                     }
                 }
@@ -1078,13 +1085,13 @@ class IcomNetworkManager internal constructor(private val pty: IcomPty) : Networ
         return p
     }
 
-    /** CI-V PTT frame (set or query)? `FE FE <to> <from> 1C 00 …` — command
-     *  0x1C subcommand 0x00. Both directions are idempotent, so duplicating
-     *  them on the wire is safe. */
-    private fun isCivPtt(civ: ByteArray): Boolean =
-        civ.size >= 6 &&
+    /** Log writes that could change the dial/VFO/PTT, without logging every poll. */
+    private fun isCivControlWrite(civ: ByteArray): Boolean =
+        civ.size >= 7 &&
         civ[0] == 0xFE.toByte() && civ[1] == 0xFE.toByte() &&
-        civ[4] == 0x1C.toByte() && civ[5] == 0x00.toByte()
+        (civ.u(4) in setOf(0x05, 0x07) ||
+            (civ.u(4) == 0x25 && civ.size > 7) ||
+            (civ.u(4) == 0x1C && civ.u(5) == 0 && civ.size > 7))
 
     private fun parseCString(r: ByteArray, off: Int): String {
         var end = off
@@ -1108,7 +1115,7 @@ class IcomNetworkManager internal constructor(private val pty: IcomPty) : Networ
         private val rxTracker: IcomRxSeqTracker? = null
     ) {
         var localSID = 0
-        var remoteSID = 0
+        @Volatile var remoteSID = 0
 
         private var socket: DatagramSocket? = null
         @Volatile private var running = false
@@ -1394,9 +1401,14 @@ class IcomNetworkManager internal constructor(private val pty: IcomPty) : Networ
                 try {
                     val dp = DatagramPacket(buf, buf.size)
                     sock.receive(dp)
+                    val r = buf.copyOf(dp.length)
+                    // Socket addresses are reused on reconnect. Reject the old
+                    // session before processing even pings/retransmit requests:
+                    // an old request must not replay a current control packet.
+                    if (r.size < 16 || u32be(r, 12) != localSID ||
+                        (remoteSID != 0 && u32be(r, 8) != remoteSID)) continue
                     lastRxMs = System.currentTimeMillis()   // any traffic = radio alive
                     rxPackets++
-                    val r = buf.copyOf(dp.length)
                     // Read the logout acknowledgement here, not in controlLoop:
                     // its state mutations are deliberately blocked by teardown.
                     val deauth = deauthRequest

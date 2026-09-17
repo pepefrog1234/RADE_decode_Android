@@ -27,6 +27,60 @@ import kotlin.concurrent.thread
 
 /** Exercises the actual UDP reader, retransmit buffer and teardown against a local radio. */
 class IcomSessionLifecycleTest {
+    @Test fun pttIsNotProactivelyDuplicatedOnTheSerialWire() = runBlocking {
+        FakeRadio().use { radio ->
+            val pty = FakePty()
+            val manager = IcomNetworkManager(pty)
+            try {
+                assertEquals(FakePty.PATH, withTimeout(8000) {
+                    manager.connect("127.0.0.1", radio.controlPort, "test", "test")
+                })
+                pty.outbound.offer(PTT_ON.copyOf())
+                await(radio.sawSerialData, "PTT never reached the radio")
+                delay(150) // Include the previous 25/60 ms unsolicited copies.
+                assertEquals(1, radio.snapshot().count { it.isSerialData })
+                val original = radio.snapshot().first { it.isSerialData }
+                radio.requestSerialPacket(original.seq, wrongSession = true)
+                delay(100)
+                assertEquals("Old session retransmit request replayed PTT", 1,
+                    radio.snapshot().count { it.isSerialData })
+                radio.requestSerialPacket(original.seq)
+                withTimeout(2000) {
+                    while (radio.snapshot().count { it.isSerialData } < 3) delay(10)
+                }
+                radio.snapshot().filter { it.isSerialData }.forEach {
+                    assertArrayEquals(original.bytes, it.bytes)
+                }
+            } finally { manager.disconnect() }
+        }
+    }
+
+    @Test fun duplicateAndWrongSessionCivRepliesDoNotReachThePty() = runBlocking {
+        FakeRadio().use { radio ->
+            val pty = FakePty()
+            val manager = IcomNetworkManager(pty)
+            val ack = byteArrayOf(-2, -2, -32, -92, -5, -3)
+            val status = byteArrayOf(-2, -2, -32, -92, 0x1c, 0, 0, -3)
+            try {
+                assertEquals(FakePty.PATH, withTimeout(8000) {
+                    manager.connect("127.0.0.1", radio.controlPort, "test", "test")
+                })
+                radio.sendRxSerial(100, ack)
+                radio.sendRxSerial(100, ack)
+                radio.sendRxSerial(101, ack, wrongSession = true)
+                radio.sendRxSerial(102, status)
+                assertArrayEquals(ack, withTimeout(2000) {
+                    kotlinx.coroutines.withContext(Dispatchers.IO) { pty.inbound.poll(1, TimeUnit.SECONDS) }
+                })
+                assertArrayEquals(status, kotlinx.coroutines.withContext(Dispatchers.IO) {
+                    pty.inbound.poll(1, TimeUnit.SECONDS)
+                })
+                delay(100)
+                assertTrue(pty.inbound.isEmpty())
+            } finally { manager.disconnect() }
+        }
+    }
+
     @Test fun lowRateRxIsNegotiatedIndependentlyAndDeliveredAsPcm() = runBlocking {
         FakeRadio().use { radio ->
             val manager = IcomNetworkManager(FakePty())
@@ -123,8 +177,8 @@ class IcomSessionLifecycleTest {
                 val token = persisted.get()
                 assertNotNull(token)
 
-                // Keep both transmit producers active through teardown. CI-V PTT also
-                // schedules redundant raw sends, which must not resurrect TX after logout.
+                // Keep both transmit producers active through teardown; neither
+                // producer may resurrect TX after logout.
                 val producer = launch(Dispatchers.Default) {
                     while (isActive) {
                         pty.outbound.offer(PTT_ON.copyOf())
@@ -293,10 +347,11 @@ class IcomSessionLifecycleTest {
     private class FakePty : IcomPty {
         companion object { const val PATH = "/fake/icom-pty" }
         val outbound = LinkedBlockingQueue<ByteArray>()
+        val inbound = LinkedBlockingQueue<ByteArray>()
         @Volatile private var opened = false
         val isOpen get() = opened
         override fun open(): String { opened = true; return PATH }
-        override fun write(data: ByteArray, len: Int): Int = len
+        override fun write(data: ByteArray, len: Int): Int { inbound.offer(data.copyOf(len)); return len }
         override fun read(timeoutMs: Int): ByteArray? =
             if (opened) outbound.poll(timeoutMs.toLong(), TimeUnit.MILLISECONDS) ?: byteArrayOf() else null
         override fun close() { opened = false; outbound.clear() }
@@ -334,6 +389,7 @@ class IcomSessionLifecycleTest {
         @Volatile private var running = true
         @Volatile private var latestControlPeer: Peer? = null
         @Volatile private var latestAudioPeer: Peer? = null
+        @Volatile private var latestSerialPeer: Peer? = null
         @Volatile private var disconnectRequested = false
         val firstLogout = CountDownLatch(1)
         val requestedLogout = CountDownLatch(1)
@@ -375,6 +431,7 @@ class IcomSessionLifecycleTest {
                                 Peer(address, bytes.copyOfRange(8, 12), nextSid.incrementAndGet())
                             }
                             if (name == "audio") latestAudioPeer = peer
+                            if (name == "serial") latestSerialPeer = peer
                             if (name == "control" && bytes.size == 128 && bytes[4] == 0.toByte()) {
                                 peer.loginNumber = ++loginCount
                                 latestControlPeer = peer
@@ -529,6 +586,20 @@ class IcomSessionLifecycleTest {
         }
 
         fun snapshot(): List<Received> = synchronized(received) { received.toList() }
+        fun sendRxSerial(seq: Int, civ: ByteArray, wrongSession: Boolean = false) {
+            val peer = checkNotNull(latestSerialPeer)
+            val packet = reply(peer, 21 + civ.size, seq = seq)
+            packet[16] = 0xc1.toByte(); packet[17] = civ.size.toByte()
+            civ.copyInto(packet, 21)
+            if (wrongSession) packet[12] = (packet[12].toInt() xor 1).toByte()
+            send(serialSocket, peer, packet)
+        }
+        fun requestSerialPacket(seq: Int, wrongSession: Boolean = false) {
+            val peer = checkNotNull(latestSerialPeer)
+            val packet = reply(peer, 16, type = 1, seq = seq)
+            if (wrongSession) packet[8] = (packet[8].toInt() xor 1).toByte()
+            send(serialSocket, peer, packet)
+        }
         fun sendRxAudio(seq: Int, samples: Int, value: Int) {
             val peer = checkNotNull(latestAudioPeer)
             val packet = reply(peer, 24 + samples * 2, seq = seq)

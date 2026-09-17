@@ -1599,7 +1599,8 @@ class TransceiverViewModel(application: Application) : AndroidViewModel(applicat
                 model = 3085,          // IC-705
                 ptyPath = ptyPath,
                 speed = 115200,        // baud is irrelevant for a pty
-                civAddr = ""
+                civAddr = "",
+                uncachedReadback = true
             )
             if (!ok) {
                 icomNetwork.disconnect()
@@ -1609,7 +1610,7 @@ class TransceiverViewModel(application: Application) : AndroidViewModel(applicat
             var connected = false
             for (attempt in 1..10) {
                 delay(1000)
-                rigController.connect("127.0.0.1", 4532)
+                rigController.connect("127.0.0.1", 4532, verifyPttOff = true)
                 if (rigController.isConnected) { connected = true; break }
             }
             if (!connected) {

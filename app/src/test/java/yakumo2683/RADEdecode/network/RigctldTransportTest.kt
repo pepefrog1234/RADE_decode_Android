@@ -15,6 +15,51 @@ import java.util.concurrent.atomic.AtomicReference
 import kotlin.concurrent.thread
 
 class RigctldTransportTest {
+    @Test fun networkOffAckDoesNotConfirmRxWhileRadioStillReportsTx() = runBlocking {
+        FakeRig { input, output ->
+            assertEquals("+\\set_ptt 1", input.readLine())
+            output.print("set_ptt: 1\nRPRT 0\n"); output.flush()
+            assertEquals("+\\set_ptt 0", input.readLine())
+            output.print("set_ptt: 0\nRPRT 0\n"); output.flush()
+            assertEquals("+\\get_ptt", input.readLine())
+            output.print("get_ptt:\nPTT: 1\nRPRT 0\n"); output.flush()
+            assertEquals("+\\set_ptt 0", input.readLine())
+            output.print("set_ptt: 0\nRPRT 0\n"); output.flush()
+            assertEquals("+\\get_ptt", input.readLine())
+            output.print("get_ptt:\nPTT: 0\nRPRT 0\n"); output.flush()
+        }.use { rig ->
+            val controller = RigController(pollingEnabled = false)
+            try {
+                controller.connect("127.0.0.1", rig.port, verifyPttOff = true)
+                assertTrue(controller.setPtt(true))
+                assertFalse(controller.setPtt(false))
+                assertTrue(controller.state.value.ptt)
+                assertTrue(controller.state.value.error.contains("not confirmed"))
+                assertTrue(controller.setPtt(false))
+                assertFalse(controller.state.value.ptt)
+                assertEquals("", controller.state.value.error)
+                rig.checkFinished()
+            } finally { controller.destroy() }
+        }
+    }
+
+    @Test fun emptyPttReadbackCannotConfirmNetworkOff() = runBlocking {
+        FakeRig { input, output ->
+            assertEquals("+\\set_ptt 0", input.readLine())
+            output.print("set_ptt: 0\nRPRT 0\n"); output.flush()
+            assertEquals("+\\get_ptt", input.readLine())
+            output.print("get_ptt:\nRPRT 0\n"); output.flush()
+        }.use { rig ->
+            val controller = RigController(pollingEnabled = false)
+            try {
+                controller.connect("127.0.0.1", rig.port, verifyPttOff = true)
+                assertFalse(controller.setPtt(false))
+                assertTrue(controller.state.value.error.contains("unknown"))
+                rig.checkFinished()
+            } finally { controller.destroy() }
+        }
+    }
+
     @Test fun laterMatchingPollClearsAnUnconfirmedFrequencyWarning() = runBlocking {
         FakeRig { input, output ->
             assertEquals("+\\set_freq 14236000", input.readLine())

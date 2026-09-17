@@ -129,7 +129,8 @@ class RigctldProcess(private val context: Context) {
         ptyPath: String,
         speed: Int = 9600,
         port: Int = DEFAULT_PORT,
-        civAddr: String = ""
+        civAddr: String = "",
+        uncachedReadback: Boolean = false
     ): Boolean {
         if (isRunning) {
             Log.w(TAG, "rigctld already running")
@@ -154,6 +155,15 @@ class RigctldProcess(private val context: Context) {
 
         if (civAddr.isNotEmpty()) {
             cmd.addAll(listOf("-c", civAddrArg(civAddr)))
+        }
+
+        if (uncachedReadback) {
+            // The owned Icom network daemon must query the radio after Set/OFF,
+            // not immediately echo the value that Hamlib cached on an ACK.
+            // Hamlib's background publisher overwrites the cache timeout with
+            // poll_interval on startup, even without a subscriber. We use
+            // RigController polling, so disable this unused publisher too.
+            cmd.add("--set-conf=poll_interval=0,cache_timeout=0")
         }
 
         if (model in FAST_PTY_CAT_MODELS) {
