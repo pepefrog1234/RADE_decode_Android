@@ -11,6 +11,8 @@
 
     <!-- トランシーバー画面 -->
     <string name="sync_search">サーチ中</string>
+    <string name="callsign_last_decoded">最後に復号したコールサイン</string>
+    <string name="callsign_decoded_at_end">コールサインは送信終了時に復号されます。</string>
     <string name="sync_candidate">候補</string>
     <string name="sync_sync">同期済み</string>
     <string name="sync_unknown">不明</string>

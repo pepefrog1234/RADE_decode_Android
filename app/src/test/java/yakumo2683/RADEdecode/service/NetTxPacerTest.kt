@@ -12,13 +12,36 @@ class NetTxPacerTest {
         val p = NetTxPacer(period, maxCatchupPerTick = 1, maxCatchupFrames = radioBufferFrames)
         p.start(0)
         val plan = p.afterSend(1 * ms, spareFrames = 10)          // 1 ms of work
-        assertEquals(NetTxPacer.Plan(0, 0, 2 * period - 1 * ms), plan)
+        assertEquals(NetTxPacer.Plan(0, 0, period - 1 * ms), plan)
         assertEquals(0L, p.lateTicks)
+    }
+
+    @Test fun immediateFirstSendKeepsEveryTwentyMillisecondDeadline() {
+        val p = NetTxPacer(period, maxCatchupFrames = radioBufferFrames)
+        p.start(0)
+        var now = 0L
+        repeat(50) { frame ->
+            assertEquals("frame $frame must not skip a radio playout slot", frame * period, now)
+            val plan = p.afterSend(now + ms, spareFrames = 10)
+            assertEquals(0, plan.extraFrames)
+            assertEquals(0, plan.dropFrames)
+            now += ms + plan.sleepNs
+        }
+        assertEquals(1000 * ms, now)
+    }
+
+    @Test fun stalledEncoderDoesNotImmediatelyConsumeAnotherFrameAfterReanchor() {
+        val p = NetTxPacer(period, maxCatchupFrames = radioBufferFrames)
+        p.start(0)
+        val plan = p.afterSend(200 * ms, spareFrames = 0)
+        assertEquals("give the encoder one frame period to refill", period, plan.sleepNs)
+        assertEquals(220 * ms, p.nextDeadlineNs)
     }
 
     @Test fun subFrameLatenessJustSkipsTheSleep() {
         val p = NetTxPacer(period, maxCatchupFrames = radioBufferFrames)
         p.start(0)
+        p.afterSend(0, spareFrames = 10) // First frame is sent immediately.
         val plan = p.afterSend(2 * period + 5 * ms, spareFrames = 10)  // 5 ms late
         assertEquals(NetTxPacer.Plan(0, 0, 0), plan)
         assertEquals(1L, p.lateTicks)
@@ -29,9 +52,10 @@ class NetTxPacerTest {
     @Test fun aShortStallIsCaughtUpAtTwiceRealTimeAndFullyAccounted() {
         val p = NetTxPacer(period, maxCatchupPerTick = 1, maxCatchupFrames = radioBufferFrames)
         p.start(0)
+        p.afterSend(0, spareFrames = 10)
         // 100 ms stall (< radio buffer): the frame due at 20 ms goes out at 120 ms.
         var t = 120 * ms
-        var sent = 1
+        var sent = 2 // Includes the initial frame at 0 ms.
         var plan = p.afterSend(t, spareFrames = 10)
         sent += plan.extraFrames
         assertEquals(1, plan.extraFrames)
@@ -53,23 +77,24 @@ class NetTxPacerTest {
         assertEquals(4L, p.catchupFrames)                           // 5 owed frames: 4 extra + zero-sleep ticks
         assertEquals(0L, p.droppedFrames)
         assertTrue("schedule caught up with wall clock", p.nextDeadlineNs > t)
-        // Every deadline from 20 ms up to now has exactly one frame.
-        assertEquals((p.nextDeadlineNs / period).toInt() - 1, sent)
+        // Every deadline from 0 ms up to now has exactly one frame.
+        assertEquals((p.nextDeadlineNs / period).toInt(), sent)
     }
 
     @Test fun catchUpNeverReadsBeyondTheRingReserve() {
         val p = NetTxPacer(period, maxCatchupPerTick = 3, maxCatchupFrames = radioBufferFrames)
         p.start(0)
         val plan = p.afterSend(200 * ms, spareFrames = 0)          // ring has nothing spare
-        assertEquals(NetTxPacer.Plan(0, 0, 0), plan)
+        assertEquals(NetTxPacer.Plan(0, 0, period), plan)
         assertEquals(0L, p.catchupFrames)
         assertEquals(1L, p.reanchors)
-        assertEquals(200 * ms, p.nextDeadlineNs)                    // re-anchored to now
+        assertEquals(220 * ms, p.nextDeadlineNs)                    // next frame, not another send now
     }
 
     @Test fun aLongStallDropsAllButOneRadioBufferOfBacklog() {
         val p = NetTxPacer(period, maxCatchupPerTick = 1, maxCatchupFrames = radioBufferFrames)
         p.start(0)
+        p.afterSend(0, spareFrames = 200)
         // 900 ms stall: the frame due at 20 ms goes out at 920 ms → 44 frames owed.
         val plan = p.afterSend(920 * ms, spareFrames = 200)
         assertEquals(44 - radioBufferFrames, plan.dropFrames)        // 37 stale frames discarded
@@ -85,12 +110,13 @@ class NetTxPacerTest {
     @Test fun backlogDropIsBoundedByTheRing() {
         val p = NetTxPacer(period, maxCatchupPerTick = 1, maxCatchupFrames = radioBufferFrames)
         p.start(0)
+        p.afterSend(0, spareFrames = 30)
         val plan = p.afterSend(920 * ms, spareFrames = 30)
         assertEquals(30, plan.dropFrames)                           // ring can give up 30
         assertEquals(0, plan.extraFrames)                           // nothing spare left to send extra
         // Still behind by the rest; the next tick with an empty ring re-anchors.
         val next = p.afterSend(921 * ms, spareFrames = 0)
-        assertEquals(NetTxPacer.Plan(0, 0, 0), next)
+        assertEquals(NetTxPacer.Plan(0, 0, period), next)
         assertEquals(1L, p.reanchors)
     }
 }

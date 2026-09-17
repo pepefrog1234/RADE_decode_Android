@@ -11,6 +11,8 @@
 
     <!-- 收發器畫面 -->
     <string name="sync_search">搜尋中</string>
+    <string name="callsign_last_decoded">最近解碼的呼號</string>
+    <string name="callsign_decoded_at_end">呼號在每次發話結束時才會解碼。</string>
     <string name="sync_candidate">候選</string>
     <string name="sync_sync">已同步</string>
     <string name="sync_unknown">未知</string>

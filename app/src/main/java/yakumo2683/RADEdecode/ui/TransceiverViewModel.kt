@@ -669,6 +669,14 @@ class TransceiverViewModel(application: Application) : AndroidViewModel(applicat
             Log.w("TransceiverVM", "TX refused: the previous PTT release is still unconfirmed")
         }
         if (!_uiState.value.isRunning || _uiState.value.isTx || pttKeyedByApp) return
+        // UDP audio is ready before the local CAT daemon during an Icom reconnect.
+        // Sending now skips the key-on branch below and falsely looks like TX.
+        if (_rigConnecting.value || icomLinkLostHandling || icomAutoReconnectJob?.isActive == true ||
+            (icomNetwork.isConnected && !rigController.isConnected)) {
+            Log.w("TransceiverVM", "TX refused: radio connection/PTT is not ready")
+            _uiState.value = _uiState.value.copy(txStartError = true)
+            return
+        }
         val requestedAt = System.nanoTime()
         val requestId = txRequestId
         val session = rxRecovery.snapshot()

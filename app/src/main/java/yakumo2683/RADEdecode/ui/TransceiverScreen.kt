@@ -291,6 +291,15 @@ private fun SyncHeader(state: TransceiverViewModel.UiState) {
 
         if (state.lastCallsign.isNotEmpty()) {
             Spacer(Modifier.height(6.dp))
+            // V1 carries the callsign in EOO, after this station stops speaking.
+            // Keeping the result is useful, but it must not identify the next speaker.
+            Text(
+                text = stringResource(R.string.callsign_last_decoded),
+                color = OnSurfaceDim,
+                fontSize = 13.sp,
+                textAlign = TextAlign.Center,
+                modifier = Modifier.padding(horizontal = 12.dp)
+            )
             Text(
                 text = state.lastCallsign,
                 color = Color.White,
@@ -299,6 +308,13 @@ private fun SyncHeader(state: TransceiverViewModel.UiState) {
                 fontFamily = FontFamily.Monospace,
                 letterSpacing = 2.sp,
                 textAlign = TextAlign.Center
+            )
+            Text(
+                text = stringResource(R.string.callsign_decoded_at_end),
+                color = OnSurfaceDim,
+                fontSize = 12.sp,
+                textAlign = TextAlign.Center,
+                modifier = Modifier.padding(horizontal = 12.dp)
             )
         }
     }

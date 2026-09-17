@@ -72,8 +72,8 @@ android {
         applicationId = "yakumo2683.RADEdecode"
         minSdk = 26
         targetSdk = 35
-        versionCode = 10625
-        versionName = "1.6.25-icom-cat-recovery"
+        versionCode = 10626
+        versionName = "1.6.26-tx-cadence-callsigns"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 

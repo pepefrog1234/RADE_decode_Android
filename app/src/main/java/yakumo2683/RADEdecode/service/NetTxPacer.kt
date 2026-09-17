@@ -56,7 +56,9 @@ internal class NetTxPacer(
     )
 
     fun start(nowNs: Long) {
-        nextDeadlineNs = nowNs + periodNs
+        // The pump sends the first frame immediately, before calling afterSend.
+        // Advancing here as well skipped its next 20 ms playout slot.
+        nextDeadlineNs = nowNs
     }
 
     /**
@@ -78,10 +80,11 @@ internal class NetTxPacer(
         val spare = spareFrames.coerceAtLeast(0)
         if (spare <= 0) {
             // Late, but the ring holds no backlog: the encoder stalled with us.
-            // Nothing real to catch up with — re-anchor rather than pad silence.
+            // Nothing real to catch up with. Let the encoder refill for a full
+            // period instead of immediately reading another underfilled frame.
             reanchors++
-            nextDeadlineNs = nowNs
-            return Plan(0, 0, 0)
+            nextDeadlineNs = nowNs + periodNs
+            return Plan(0, 0, periodNs)
         }
 
         // Anything beyond one radio buffer of backlog is already a hole on the

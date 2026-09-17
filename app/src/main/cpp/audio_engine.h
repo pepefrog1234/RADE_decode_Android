@@ -337,6 +337,10 @@ private:
     int netTxInterpHistPos_ = 0;
     int netTxInterpL_ = 6;
     int netTxTapsPerPhase_ = 0;
+    // Written by the single network TX consumer; reset before its pump starts.
+    uint64_t netTxUnderrunFrames_ = 0;
+    uint64_t netTxMissingSamples_ = 0;
+    int64_t netTxUnderrunLogNs_ = 0;
     void designNetTxInterpFilter(int interpFactor);
 
     /* TX callsign for EOO */

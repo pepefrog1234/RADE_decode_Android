@@ -1076,8 +1076,12 @@ class AudioService : LifecycleService() {
                 var sent = 0L
                 var sendMaxNs = 0L
                 var sendSlow = 0L        // sends that took > 50 ms (socket blocked: uplink back-pressure)
+                var previousSendNs = 0L
+                var maxGapNs = 0L
                 fun sendTimed() {
                     val t0 = System.nanoTime()
+                    if (previousSendNs != 0L) maxGapNs = maxOf(maxGapNs, t0 - previousSendNs)
+                    previousSendNs = t0
                     net.sendAudioFrame(frame)
                     val dt = System.nanoTime() - t0
                     if (dt > sendMaxNs) sendMaxNs = dt
@@ -1104,10 +1108,10 @@ class AudioService : LifecycleService() {
                         Log.i("NetTxPump", "sent=$sent late=${pacer.lateTicks} " +
                             "maxLate=${pacer.maxBehindNs / 1_000_000}ms catchup=${pacer.catchupFrames} " +
                             "dropped=${pacer.droppedFrames} reanchor=${pacer.reanchors} " +
-                            "sendMax=${sendMaxNs / 1_000_000}ms sendSlow=$sendSlow " +
+                            "sendMax=${sendMaxNs / 1_000_000}ms sendSlow=$sendSlow gapMax=${maxGapNs / 1_000_000}ms " +
                             "ring=${bridge.nativeTxRingAvailable() / 8}ms rate=${net.txAudioRate}")
                         pacer.resetStats()
-                        sendMaxNs = 0; sendSlow = 0
+                        sendMaxNs = 0; sendSlow = 0; maxGapNs = 0
                         lastReportNs = now
                     }
                     if (plan.sleepNs > 0) delay(plan.sleepNs / 1_000_000L)

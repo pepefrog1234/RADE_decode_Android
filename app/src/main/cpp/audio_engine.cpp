@@ -15,6 +15,7 @@
 
 #define LOG_TAG "AudioEngine"
 #define LOGI(...) __android_log_print(ANDROID_LOG_INFO, LOG_TAG, __VA_ARGS__)
+#define LOGW(...) __android_log_print(ANDROID_LOG_WARN, LOG_TAG, __VA_ARGS__)
 #define LOGE(...) __android_log_print(ANDROID_LOG_ERROR, LOG_TAG, __VA_ARGS__)
 
 // Raised-cosine onset ramp for the TX modem waveform (20 ms @ 8 kHz). The RADE
@@ -1703,6 +1704,9 @@ bool AudioEngine::startNetTx(int inputDeviceId, int netRate, bool voiceCommunica
     // Build the anti-imaging interpolation filter now that txOutputRate_ (netRate)
     // is known. Must precede the first fillNetTxFrame() call.
     designNetTxInterpFilter(txOutputRate_ / MODEM_SAMPLE_RATE);
+    netTxUnderrunFrames_ = 0;
+    netTxMissingSamples_ = 0;
+    netTxUnderrunLogNs_ = 0;
 
     // Build the mic-rate → 16 kHz decimation filter while the mic callback is
     // still idle (the input stream has not been started yet).
@@ -1803,6 +1807,23 @@ int AudioEngine::fillNetTxFrame(int16_t *out, int numSamples) {
     int16_t in[1024];
     if (inNeeded > 1024) inNeeded = 1024;
     int got = txPlaybackRing_.read(in, inNeeded);
+    // Sending 50 UDP frames/s does not prove those frames contained a modem
+    // waveform: this function pads an empty encoder ring with zeros. Expose
+    // real underruns separately from socket/pacer timing. Final EOO padding
+    // after TX stops is normal and is not counted.
+    if (got < inNeeded && txRunning_.load()) {
+        ++netTxUnderrunFrames_;
+        netTxMissingSamples_ += inNeeded - got;
+        const int64_t now = nowNs();
+        if (netTxUnderrunFrames_ == 1 || now - netTxUnderrunLogNs_ >= 1000000000LL) {
+            netTxUnderrunLogNs_ = now;
+            LOGW("Net TX underrun: frames=%llu missingSamples=%llu missingMs=%llu frameMissing=%d",
+                 (unsigned long long)netTxUnderrunFrames_,
+                 (unsigned long long)netTxMissingSamples_,
+                 (unsigned long long)(netTxMissingSamples_ * 1000 / MODEM_SAMPLE_RATE),
+                 inNeeded - got);
+        }
+    }
 
     int outPos = 0;
     for (int n = 0; n < inNeeded; n++) {

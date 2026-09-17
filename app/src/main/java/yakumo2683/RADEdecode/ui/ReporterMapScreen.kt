@@ -6,6 +6,7 @@ import android.graphics.Paint
 import android.graphics.Path
 import android.graphics.Shader
 import android.graphics.Typeface
+import android.util.TypedValue
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -305,6 +306,7 @@ private class StationOverlay : Overlay() {
     private val arrowPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         style = Paint.Style.FILL
     }
+    private val callsignTypeface = Typeface.create(Typeface.MONOSPACE, Typeface.BOLD)
     private val labelPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         textSize = 26f
         typeface = Typeface.MONOSPACE
@@ -323,6 +325,11 @@ private class StationOverlay : Overlay() {
 
     override fun draw(canvas: Canvas, mapView: MapView, shadow: Boolean) {
         if (shadow) return
+        val metrics = mapView.resources.displayMetrics
+        val labelSize = TypedValue.applyDimension(TypedValue.COMPLEX_UNIT_SP, 16f, metrics)
+        val txLabelSize = TypedValue.applyDimension(TypedValue.COMPLEX_UNIT_SP, 18f, metrics)
+        val infoSize = TypedValue.applyDimension(TypedValue.COMPLEX_UNIT_SP, 12f, metrics)
+        val labelGap = 4f * metrics.density
         val proj = mapView.projection
         val byCallsign = stations.associateBy { it.callsign.uppercase() }
 
@@ -482,17 +489,25 @@ private class StationOverlay : Overlay() {
 
             // Label (callsign always uppercase + info line)
             labelPaint.color = color
-            labelPaint.textSize = if (isTx) 28f else 24f
-            canvas.drawText(st.callsign.uppercase(), x + r + 6f, y - 8f, labelPaint)
+            // Canvas uses physical pixels; the old 24 px label was only 8 sp
+            // on a 3x-density phone. Honor density and the user's font setting.
+            labelPaint.textSize = if (isTx) txLabelSize else labelSize
+            labelPaint.typeface = callsignTypeface
+            val labelX = x + r + labelGap
+            val labelBaseline = y - labelGap
+            val labelBottom = labelBaseline + labelPaint.fontMetrics.descent
+            canvas.drawText(st.callsign.uppercase(), labelX, labelBaseline, labelPaint)
 
             // Info line: frequency + SNR
             val infoParts = mutableListOf<String>()
             if (st.frequency > 0) infoParts.add("%.3f".format(st.frequency / 1_000_000.0))
             if (isRx && st.snr != 0) infoParts.add("${st.snr}dB")
             if (infoParts.isNotEmpty()) {
-                labelPaint.textSize = 18f
+                labelPaint.textSize = infoSize
+                labelPaint.typeface = Typeface.MONOSPACE
                 labelPaint.color = (color and 0x00FFFFFF) or 0x99000000.toInt()
-                canvas.drawText(infoParts.joinToString(" "), x + r + 6f, y + 12f, labelPaint)
+                val infoBaseline = labelBottom + labelGap - labelPaint.fontMetrics.ascent
+                canvas.drawText(infoParts.joinToString(" "), labelX, infoBaseline, labelPaint)
             }
         }
     }
