@@ -184,6 +184,12 @@ class IcomNetworkManager internal constructor(private val pty: IcomPty) : Networ
     private val _state = MutableStateFlow(State())
     val state: StateFlow<State> = _state.asStateFlow()
     override val isConnected: Boolean get() = _state.value.connected
+    /** A short, session-scoped permit for an explicit Set command, never restored from prefs. */
+    fun authorizeFrequencyChange(hz: Long): AutoCloseable? =
+        serial?.takeIf { isConnected && isCurrentSession(it.scope) }?.authorizeFrequencyChange(hz)
+
+    private val ptyWriteLock = Any()
+    private fun writePty(data: ByteArray) = synchronized(ptyWriteLock) { pty.write(data, data.size) }
     override val audioLinkUp: Boolean get() = _state.value.audioConnected
     override val audioRate: Int get() = rxAudioRate
     /** Negotiated independently of TX; change only before connecting. */
@@ -937,7 +943,8 @@ class IcomNetworkManager internal constructor(private val pty: IcomPty) : Networ
                         recent[seq] = now to r
                         if (recent.size > 256) recent.remove(recent.keys.first())
                         val civ = r.copyOfRange(21, 21 + len)
-                        pty.write(civ, civ.size)
+                        if (IcomTuningGuard.isControllerEcho(civ)) ser.civEchoSeen = true
+                        writePty(civ)
                     }
                 }
             }
@@ -961,14 +968,10 @@ class IcomNetworkManager internal constructor(private val pty: IcomPty) : Networ
                     // CI-V frames end in 0xFD (0xFC for some); also cap at 80 bytes.
                     if (v == 0xFD || v == 0xFC || frame.size >= 80) {
                         val civ = frame.toByteArray()
-                        val pkt = buildSerialData(ser, civ)
-                        ser.sendTracked(pkt)   // fills the tracking seq into pkt
-                        serialInnerSeq = (serialInnerSeq + 1) and 0xFFFF
+                        ser.sendCiv(civ)
                         // Let Hamlib and explicit radio retransmit requests
                         // retry loss. Unsolicited copies of a PTT query/set can
                         // produce extra replies that acknowledge a later command.
-                        if (isCivControlWrite(civ)) Log.i(TAG,
-                            "CI-V TX seq=${u16le(pkt, 6)} bytes=${civ.joinToString("") { "%02X".format(it) }}")
                         frame.clear()
                     }
                 }
@@ -1128,6 +1131,37 @@ class IcomNetworkManager internal constructor(private val pty: IcomPty) : Networ
         private var trackSeq = 1                       // pkt0 tracking seq (bytes 6-7)
         private val txBuf = LinkedHashMap<Int, ByteArray>()
         private val isAudio = name == "audio"
+        private val tuningGuard = IcomTuningGuard()
+        @Volatile var civEchoSeen = false
+
+        fun authorizeFrequencyChange(hz: Long): AutoCloseable = synchronized(sendLock) {
+            val token = tuningGuard.begin(hz)
+            Log.i(TAG, "CI-V explicit frequency request=$token Hz=$hz")
+            AutoCloseable { synchronized(sendLock) { tuningGuard.end(token) } }
+        }
+
+        fun sendCiv(civ: ByteArray) = synchronized(sendLock) {
+            if (!running || shuttingDown || !isCurrentSession(scope)) return@synchronized
+            if (!tuningGuard.allows(civ)) {
+                Log.w(TAG, "CI-V blocked automatic tuning bytes=${civ.joinToString("") { "%02X".format(it) }}")
+                // Fail the Hamlib command explicitly; silently dropping it would
+                // add a timeout for every startup probe. Never acknowledge success.
+                writePty(IcomTuningGuard.rejection(civ, civEchoSeen))
+                return@synchronized
+            }
+            val pkt = buildSerialData(this, civ)
+            sendTracked(pkt)
+            serialInnerSeq = (serialInnerSeq + 1) and 0xFFFF
+            if (isCivControlWrite(civ)) Log.i(TAG,
+                "CI-V TX seq=${u16le(pkt, 6)} bytes=${civ.joinToString("") { "%02X".format(it) }}")
+        }
+
+        private fun mayReplay(p: ByteArray): Boolean {
+            if (name != "serial" || p.size < 22 || p.u(16) != 0xc1) return true
+            val len = p.u(17)
+            if (21 + len > p.size) return false
+            return tuningGuard.allows(p.copyOfRange(21, 21 + len))
+        }
 
         init { synchronized(allStreams) { allStreams.add(this) } }
 
@@ -1550,11 +1584,12 @@ class IcomNetworkManager internal constructor(private val pty: IcomPty) : Networ
         private fun resend(seq: Int, burst: Boolean) {
             synchronized(sendLock) {
                 val d = txBuf[seq and 0xFFFF]
-                if (d != null) {
+                if (d != null && mayReplay(d)) {
                     resentPackets++
                     sendRaw(d, duringShutdown = true)
                     if (!(burst && isAudio)) sendRaw(d, duringShutdown = true)
                 } else {
+                    if (d != null) Log.w(TAG, "CI-V stale tuning retransmit suppressed seq=$seq")
                     resentAsIdle++
                     val idle = idlePacketWithSeq(seq)
                     sendRaw(idle, duringShutdown = true); sendRaw(idle, duringShutdown = true)

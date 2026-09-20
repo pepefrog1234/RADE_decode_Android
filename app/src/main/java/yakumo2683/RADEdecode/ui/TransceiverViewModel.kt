@@ -255,6 +255,7 @@ class TransceiverViewModel(application: Application) : AndroidViewModel(applicat
         // On a rig "connection lost", let RigController report the local rigctld's
         // liveness/exit cause (crash vs. USB-bridge failure) in the on-screen error.
         rigController.diagnosticsProvider = { rigctldProcess.exitDiagnostics() }
+        rigController.authorizeFrequencyChange = { hz -> icomNetwork.authorizeFrequencyChange(hz) }
         rigController.onCatUnresponsive = {
             if (!icomUserDisconnect && !_rigConnecting.value && icomNetwork.isConnected)
                 icomNetwork.recoverCatSession()

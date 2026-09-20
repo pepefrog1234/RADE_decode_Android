@@ -326,9 +326,9 @@ private class StationOverlay : Overlay() {
     override fun draw(canvas: Canvas, mapView: MapView, shadow: Boolean) {
         if (shadow) return
         val metrics = mapView.resources.displayMetrics
-        val labelSize = TypedValue.applyDimension(TypedValue.COMPLEX_UNIT_SP, 16f, metrics)
-        val txLabelSize = TypedValue.applyDimension(TypedValue.COMPLEX_UNIT_SP, 18f, metrics)
-        val infoSize = TypedValue.applyDimension(TypedValue.COMPLEX_UNIT_SP, 12f, metrics)
+        val labelSize = TypedValue.applyDimension(TypedValue.COMPLEX_UNIT_SP, 12f, metrics)
+        val txLabelSize = TypedValue.applyDimension(TypedValue.COMPLEX_UNIT_SP, 14f, metrics)
+        val infoSize = TypedValue.applyDimension(TypedValue.COMPLEX_UNIT_SP, 10f, metrics)
         val labelGap = 4f * metrics.density
         val proj = mapView.projection
         val byCallsign = stations.associateBy { it.callsign.uppercase() }

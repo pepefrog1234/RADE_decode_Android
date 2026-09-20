@@ -132,17 +132,25 @@ class RigctldTransportTest {
     }
 
     @Test fun slowFrequencySetIsReadBackAfterItsReply() = runBlocking {
+        val permitted = AtomicReference<Long?>()
         FakeRig { input, output ->
             assertEquals("+\\set_freq 5357500", input.readLine())
+            assertEquals(5_357_500L, permitted.get())
             Thread.sleep(1200) // Exceeded the previous 1 s set deadline.
             output.print("set_freq: 5357500\nRPRT 0\n"); output.flush()
             assertEquals("+\\get_freq", input.readLine())
+            assertEquals(5_357_500L, permitted.get())
             output.print("get_freq:\nFrequency: 5357500\nRPRT 0\n"); output.flush()
         }.use { rig ->
             val controller = RigController(pollingEnabled = false)
+            controller.authorizeFrequencyChange = { hz ->
+                permitted.set(hz)
+                AutoCloseable { permitted.set(null) }
+            }
             try {
                 controller.connect("127.0.0.1", rig.port)
                 assertTrue(controller.setFreq(5_357_500))
+                assertNull(permitted.get())
                 assertEquals(5_357_500L, controller.state.value.freqHz)
                 assertEquals("", controller.state.value.frequencyError)
                 rig.checkFinished()
@@ -181,21 +189,30 @@ class RigctldTransportTest {
 
     @Test fun cancelledFrequencyRequestCannotConsumeOrOverwriteItsReplacement() = runBlocking {
         val oldSeen = CompletableDeferred<Unit>()
+        val permitted = AtomicReference<Long?>()
         FakeRig { input, output ->
             assertEquals("+\\set_freq 7100000", input.readLine())
+            assertEquals(7_100_000L, permitted.get())
             oldSeen.complete(Unit)
             assertEquals("+\\set_freq 14236000", input.readLine())
+            assertEquals(14_236_000L, permitted.get())
             output.print("set_freq: 7100000\nRPRT 0\nset_freq: 14236000\nRPRT 0\n"); output.flush()
             assertEquals("+\\get_freq", input.readLine())
             output.print("get_freq:\nFrequency: 14236000\nRPRT 0\n"); output.flush()
         }.use { rig ->
             val controller = RigController(pollingEnabled = false)
+            controller.authorizeFrequencyChange = { hz ->
+                permitted.set(hz)
+                AutoCloseable { permitted.set(null) }
+            }
             try {
                 controller.connect("127.0.0.1", rig.port)
                 val old = async { controller.setFreq(7_100_000) }
                 withTimeout(1000) { oldSeen.await() }
                 old.cancelAndJoin()
+                assertNull(permitted.get())
                 assertTrue(controller.setFreq(14_236_000))
+                assertNull(permitted.get())
                 assertEquals(14_236_000L, controller.state.value.freqHz)
                 rig.checkFinished()
             } finally { controller.destroy() }

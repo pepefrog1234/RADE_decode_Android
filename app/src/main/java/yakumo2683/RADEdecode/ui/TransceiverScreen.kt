@@ -14,6 +14,8 @@ import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.interaction.collectIsPressedAsState
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.FiberManualRecord
 import androidx.compose.material.icons.filled.GraphicEq
@@ -33,6 +35,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontFamily
 import yakumo2683.RADEdecode.R
@@ -60,111 +63,160 @@ fun TransceiverScreen(viewModel: TransceiverViewModel = viewModel()) {
         if (hasAudioPermission) viewModel.startReceiving()
     }
 
+    TransceiverContent(
+        state = state,
+        onToggleAnalogMonitor = viewModel::toggleAnalogMonitor,
+        onToggleTx = { if (state.isTx) viewModel.switchToRx() else viewModel.switchToTx() },
+        onHoldPress = viewModel::switchToTx,
+        onHoldRelease = viewModel::pttHoldRelease,
+        onStartStop = {
+            if (state.isRunning || state.isTx || state.txSwitching) {
+                viewModel.stopAll()
+            } else {
+                hasAudioPermission = hasRecordAudioPermission(context)
+                val missingPermissions = missingAudioRoutePermissions(context)
+                if (missingPermissions.isNotEmpty()) permissionLauncher.launch(missingPermissions)
+                else viewModel.startReceiving()
+            }
+        }
+    )
+}
+
+@Composable
+internal fun TransceiverContent(
+    state: TransceiverViewModel.UiState,
+    onToggleAnalogMonitor: () -> Unit,
+    onToggleTx: () -> Unit,
+    onHoldPress: () -> Unit,
+    onHoldRelease: () -> Unit,
+    onStartStop: () -> Unit,
+    modifier: Modifier = Modifier
+) {
     // Engine is doing something — including the TX→RX hand-over (EOO drain +
     // RF tail + PTT release), during which neither flag is set for ~0.3–0.5 s.
     val isActive = state.isRunning || state.isTx || state.txSwitching
 
     Column(
-        modifier = Modifier
+        modifier = modifier
             .fillMaxSize()
             .background(MaterialTheme.colorScheme.background)
             .padding(horizontal = 16.dp, vertical = 8.dp),
         verticalArrangement = Arrangement.spacedBy(10.dp)
     ) {
-        // ── Status header — shows TX state when transmitting, RX state otherwise ──
-        if (state.isTx) {
-            TxHeader()
-        } else {
-            SyncHeader(state)
-        }
-        if (state.pttControlError) {
-            Text(stringResource(R.string.ptt_control_failed), color = Red400, fontSize = 12.sp)
-        }
-        if (state.txStartError) {
-            Text(stringResource(R.string.tx_start_failed), color = Red400, fontSize = 12.sp)
-        }
-        if (state.rxRestartError) {
-            Text(stringResource(R.string.rx_restart_failed), color = Red400, fontSize = 12.sp)
-        }
-
-        // ── Signal info cards (RX) ──
-        if (!state.isTx) {
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(10.dp)
-            ) {
-                InfoCard(stringResource(R.string.label_snr), "${state.snrDb}", stringResource(R.string.unit_db), Modifier.weight(1f))
-                InfoCard(stringResource(R.string.label_freq), String.format("%.1f", state.freqOffsetHz), stringResource(R.string.unit_hz), Modifier.weight(1f))
+        // Reserve space for TX/Stop before measuring the information area.
+        // A decoded callsign, warnings or larger system fonts must never move
+        // the transmit controls outside the screen.
+        Column(
+            modifier = Modifier.weight(1f).fillMaxWidth().testTag("receiver_information").verticalScroll(rememberScrollState()),
+            verticalArrangement = Arrangement.spacedBy(10.dp)
+        ) {
+            // ── Status header — shows TX state when transmitting, RX state otherwise ──
+            if (state.isTx) {
+                TxHeader()
+            } else {
+                SyncHeader(state)
             }
-        }
+            if (state.pttControlError) {
+                Text(stringResource(R.string.ptt_control_failed), color = Red400, fontSize = 12.sp)
+            }
+            if (state.txStartError) {
+                Text(stringResource(R.string.tx_start_failed), color = Red400, fontSize = 12.sp)
+            }
+            if (state.rxRestartError) {
+                Text(stringResource(R.string.rx_restart_failed), color = Red400, fontSize = 12.sp)
+            }
 
-        // ── Spectrum (RX) — hidden in power-save mode (效能節約模式) ──
-        if (!state.isTx && !state.powerSaveMode) {
-            SpectrumChart(
-                spectrum = state.spectrum,
-                isSynced = state.isSynced,
-                modifier = Modifier.fillMaxWidth().height(130.dp)
-            )
+            // ── Signal info cards (RX) ──
+            if (!state.isTx) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(10.dp)
+                ) {
+                    InfoCard(stringResource(R.string.label_snr), "${state.snrDb}", stringResource(R.string.unit_db), Modifier.weight(1f))
+                    InfoCard(stringResource(R.string.label_freq), String.format("%.1f", state.freqOffsetHz), stringResource(R.string.unit_hz), Modifier.weight(1f))
+                }
+            }
 
-            WaterfallView(
-                spectrum = state.spectrum,
-                modifier = Modifier.fillMaxWidth().height(90.dp)
-            )
-        }
+            // ── Spectrum (RX) — hidden in power-save mode (效能節約模式) ──
+            if (!state.isTx && !state.powerSaveMode) {
+                SpectrumChart(
+                    spectrum = state.spectrum,
+                    isSynced = state.isSynced,
+                    modifier = Modifier.fillMaxWidth().height(130.dp)
+                )
 
-        // ── Unprocessed preset warning ──
-        if (state.isRunning && state.unprocessedRejected) {
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .clip(RoundedCornerShape(8.dp))
-                    .background(Color(0xFF4E2700))
-                    .border(1.dp, Amber400.copy(alpha = 0.5f), RoundedCornerShape(8.dp))
-                    .padding(horizontal = 12.dp, vertical = 8.dp),
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(8.dp)
-            ) {
-                Text(
-                    text = stringResource(R.string.warning_unprocessed_rejected),
-                    color = Amber400,
-                    fontSize = 12.sp,
-                    lineHeight = 16.sp
+                WaterfallView(
+                    spectrum = state.spectrum,
+                    modifier = Modifier.fillMaxWidth().height(90.dp)
                 )
             }
-        }
 
-        // ── Level meters ──
-        if (state.isTx) {
-            LevelMeter(stringResource(R.string.label_mic_input), state.txLevelDb, Modifier.fillMaxWidth())
-        } else {
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(10.dp)
-            ) {
-                LevelMeter(stringResource(R.string.label_input), state.inputLevelDb, Modifier.weight(1f))
-                LevelMeter(stringResource(R.string.label_output), state.outputLevelDb, Modifier.weight(1f))
+            // ── Unprocessed preset warning ──
+            if (state.isRunning && state.unprocessedRejected) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clip(RoundedCornerShape(8.dp))
+                        .background(Color(0xFF4E2700))
+                        .border(1.dp, Amber400.copy(alpha = 0.5f), RoundedCornerShape(8.dp))
+                        .padding(horizontal = 12.dp, vertical = 8.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    Text(
+                        text = stringResource(R.string.warning_unprocessed_rejected),
+                        color = Amber400,
+                        fontSize = 12.sp,
+                        lineHeight = 16.sp
+                    )
+                }
             }
-        }
 
-        Spacer(Modifier.weight(1f))
+            // ── Level meters ──
+            if (state.isTx) {
+                LevelMeter(stringResource(R.string.label_mic_input), state.txLevelDb, Modifier.fillMaxWidth())
+            } else {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(10.dp)
+                ) {
+                    LevelMeter(stringResource(R.string.label_input), state.inputLevelDb, Modifier.weight(1f))
+                    LevelMeter(stringResource(R.string.label_output), state.outputLevelDb, Modifier.weight(1f))
+                }
+            }
 
-        // ── Analog SSB monitor (RX only): hear the raw channel audio to check
-        //    whether the frequency is occupied before keying up ──
-        if (state.isRunning && !state.isTx) {
-            AnalogMonitorButton(
-                active = state.analogMonitor,
-                onClick = { viewModel.toggleAnalogMonitor() }
-            )
-            if (state.analogMonitor) {
+            // ── Analog SSB monitor (RX only): hear the raw channel audio to check
+            //    whether the frequency is occupied before keying up ──
+            if (state.isRunning && !state.isTx) {
+                AnalogMonitorButton(
+                    active = state.analogMonitor,
+                    onClick = onToggleAnalogMonitor
+                )
+                if (state.analogMonitor) {
+                    Text(
+                        stringResource(R.string.analog_monitor_hint),
+                        fontSize = 11.sp,
+                        color = Amber400,
+                        textAlign = TextAlign.Center,
+                        modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp)
+                    )
+                }
+            }
+
+            if (isActive) {
                 Text(
-                    stringResource(R.string.analog_monitor_hint),
+                    stringResource(when {
+                        state.isTx && state.pttHoldMode -> R.string.tx_hint_hold_active
+                        state.isTx -> R.string.tx_hint_active
+                        state.pttHoldMode -> R.string.tx_hint_hold_ready
+                        else -> R.string.tx_hint_ready
+                    }),
                     fontSize = 11.sp,
-                    color = Amber400,
+                    color = OnSurfaceDim,
                     textAlign = TextAlign.Center,
                     modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp)
                 )
             }
-            Spacer(Modifier.height(2.dp))
         }
 
         // ── TX button — only visible when engine is active ──
@@ -172,52 +224,16 @@ fun TransceiverScreen(viewModel: TransceiverViewModel = viewModel()) {
             TxButton(
                 isTx = state.isTx,
                 holdMode = state.pttHoldMode,
-                onClick = {
-                    if (state.isTx) {
-                        viewModel.switchToRx()
-                    } else {
-                        viewModel.switchToTx()
-                    }
-                },
-                onHoldPress = { viewModel.switchToTx() },
-                onHoldRelease = { viewModel.pttHoldRelease() }
+                onClick = onToggleTx,
+                onHoldPress = onHoldPress,
+                onHoldRelease = onHoldRelease
             )
-            if (state.isTx) {
-                Text(
-                    stringResource(if (state.pttHoldMode) R.string.tx_hint_hold_active else R.string.tx_hint_active),
-                    fontSize = 11.sp,
-                    color = OnSurfaceDim,
-                    textAlign = TextAlign.Center,
-                    modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp)
-                )
-            } else {
-                Text(
-                    stringResource(if (state.pttHoldMode) R.string.tx_hint_hold_ready else R.string.tx_hint_ready),
-                    fontSize = 11.sp,
-                    color = OnSurfaceDim,
-                    textAlign = TextAlign.Center,
-                    modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp)
-                )
-            }
-            Spacer(Modifier.height(6.dp))
         }
 
         // ── Start / Stop button ──
         StartStopButton(
             isRunning = isActive,
-            onClick = {
-                if (isActive) {
-                    viewModel.stopAll()
-                } else {
-                    hasAudioPermission = hasRecordAudioPermission(context)
-                    val missingPermissions = missingAudioRoutePermissions(context)
-                    if (missingPermissions.isNotEmpty()) {
-                        permissionLauncher.launch(missingPermissions)
-                    } else {
-                        viewModel.startReceiving()
-                    }
-                }
-            }
+            onClick = onStartStop
         )
     }
 }
@@ -657,6 +673,7 @@ private fun TxButton(
     Button(
         onClick = { if (!holdMode) onClick() },
         modifier = Modifier
+            .testTag("tx_control")
             .fillMaxWidth()
             .height(54.dp),
         shape = RoundedCornerShape(14.dp),
@@ -690,6 +707,7 @@ private fun StartStopButton(isRunning: Boolean, onClick: () -> Unit) {
     Button(
         onClick = onClick,
         modifier = Modifier
+            .testTag("start_stop_control")
             .fillMaxWidth()
             .height(54.dp),
         shape = RoundedCornerShape(14.dp),

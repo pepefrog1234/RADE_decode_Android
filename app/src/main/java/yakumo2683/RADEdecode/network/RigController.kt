@@ -68,6 +68,8 @@ class RigController internal constructor(
     private val pttOperation = java.util.concurrent.atomic.AtomicLong()
     /** Installed only for the Icom network tunnel. */
     var onCatUnresponsive: (() -> Unit)? = null
+    /** Network CI-V permits exist only while this explicit Set is in flight. */
+    var authorizeFrequencyChange: ((Long) -> AutoCloseable?)? = null
 
     /** Last CAT command written to the socket — reported in the "connection lost"
      *  error so we can see which command was in flight when rigctld/the link died. */
@@ -278,8 +280,10 @@ class RigController internal constructor(
         return withContext(Dispatchers.IO) {
             priority {
                 frequencyMutex.lock()
+                var tuningPermit: AutoCloseable? = null
                 try {
                     if (!isCurrentFrequencyOperation(operation, session)) return@priority false
+                    tuningPermit = authorizeFrequencyChange?.invoke(hz)
                     Log.i(TAG, "setFreq request=$operation requestedHz=$hz")
                     val response = sendCommand("set_freq", "$hz", FREQUENCY_TIMEOUT_MS,
                         allowQueue = true, expectedConnection = session)
@@ -304,7 +308,9 @@ class RigController internal constructor(
                         Log.i(TAG, "setFreq request=$operation requestedHz=$hz setResult=${response?.result} reportedHz=$observed confirmed=$confirmed")
                         confirmed
                     }
-                } finally { frequencyMutex.unlock() }
+                } finally {
+                    try { tuningPermit?.close() } finally { frequencyMutex.unlock() }
+                }
             }
         }
     }
