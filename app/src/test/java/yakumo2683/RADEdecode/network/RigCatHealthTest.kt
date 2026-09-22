@@ -18,40 +18,52 @@ class RigCatHealthTest {
         }
     }
 
-    @Test fun rejectedPttReadsRecoverEvenWhenFrequencyPollingStillWorks() {
+    @Test fun timedOutPttReadsRecoverEvenWhenFrequencyPollingStillWorks() {
         val health = RigCatHealth()
         for (now in listOf(0L, 7_000L, 15_000L)) {
             assertFalse(health.record("get_freq", "", ok, now))
-            assertEquals(now == 15_000L,
-                health.record("get_ptt", "", RigctldResponse(emptyList(), -9), now))
+            assertEquals(now == 15_000L, health.record("get_ptt", "", timeout, now))
         }
     }
 
-    @Test fun busErrorsAndEmptySuccessfulFrequencyRepliesAreNotHealthy() {
+    @Test fun rejectedOrProtocolRepliesAreAnswersFromALiveRadioNotLinkFailures() {
+        // v1.6.27 field log: Hamlib's set_vfo-before-read fallback made every
+        // poll "RPRT -9" while PTT and audio worked; that must not recover.
         val health = RigCatHealth()
-        assertFalse(health.record("get_freq", "", RigctldResponse(emptyList(), -13), 0))
+        for (i in 0 until 12) {
+            val now = i * 5_000L
+            assertFalse(health.record("get_ptt", "", RigctldResponse(emptyList(), -9), now))
+            assertFalse(health.record("get_freq", "", RigctldResponse(emptyList(), -9), now))
+            assertFalse(health.record("get_freq", "", protocolError, now))
+            assertFalse(health.record("get_freq", "", RigctldResponse(emptyList(), -13), now))
+        }
+    }
+
+    @Test fun emptySuccessfulFrequencyRepliesAreNotHealthy() {
+        val health = RigCatHealth()
+        assertFalse(health.record("get_freq", "", RigctldResponse(emptyList(), 0), 0))
         assertFalse(health.record("get_freq", "", RigctldResponse(emptyList(), 0), 7_000))
         assertTrue(health.record("get_freq", "", RigctldResponse(emptyList(), 0), 15_000))
     }
 
-    @Test fun rejectedFrequencyReadsRecoverWithoutTreatingUnsupportedMetersAsFailures() {
+    @Test fun timedOutFrequencyReadsRecoverWithoutTreatingUnsupportedMetersAsFailures() {
         val health = RigCatHealth()
         repeat(3) { i ->
             val now = i * 8_000L
             assertFalse(health.record("get_level", "STRENGTH", RigctldResponse(emptyList(), -9), now))
             assertFalse(health.record("get_ptt", "", RigctldResponse(listOf("PTT: 0"), 0), now))
-            assertEquals(i == 2, health.record("get_freq", "", RigctldResponse(emptyList(), -9), now))
+            assertEquals(i == 2, health.record("get_freq", "", timeout, now))
         }
     }
 
-    @Test fun repeatedRadioProtocolErrorsTriggerOnceAfterTheWindow() {
+    @Test fun repeatedTimeoutsTriggerOnceAfterTheWindow() {
         val health = RigCatHealth()
-        assertFalse(health.record("get_freq", "", protocolError, 0))
-        assertFalse(health.record("get_ptt", "", protocolError, 7_000))
-        assertTrue(health.record("get_freq", "", protocolError, 15_000))
-        assertFalse(health.record("get_ptt", "", protocolError, 20_000))
+        assertFalse(health.record("get_freq", "", timeout, 0))
+        assertFalse(health.record("get_ptt", "", timeout, 7_000))
+        assertTrue(health.record("get_freq", "", timeout, 15_000))
+        assertFalse(health.record("get_ptt", "", timeout, 20_000))
         health.reset()
-        assertFalse(health.record("get_freq", "", protocolError, 30_000))
+        assertFalse(health.record("get_freq", "", timeout, 30_000))
     }
 
     @Test fun unsupportedCommandsAndShortLossDoNotRestartTheRadio() {

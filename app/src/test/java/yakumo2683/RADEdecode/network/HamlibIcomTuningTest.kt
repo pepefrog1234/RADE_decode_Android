@@ -116,7 +116,7 @@ class HamlibIcomTuningTest {
                         val response = synchronized(guard) {
                             if (!guard.allows(frame)) {
                                 blocked.add(frame.joinToString("") { "%02X".format(it) })
-                                IcomTuningGuard.rejection(frame, echo)
+                                IcomTuningGuard.acknowledgement(frame, echo)
                             } else {
                                 val body = frame.copyOfRange(4, frame.size - 1)
                                 val reply = byteArrayOf(-2, -2, frame[3], frame[2]) + answer(body) + byteArrayOf(-3)

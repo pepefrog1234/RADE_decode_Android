@@ -72,8 +72,8 @@ android {
         applicationId = "yakumo2683.RADEdecode"
         minSdk = 26
         targetSdk = 35
-        versionCode = 10627
-        versionName = "1.6.27-controls-tuning-guard"
+        versionCode = 10628
+        versionName = "1.6.28-probe-ack-rx-queue"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 

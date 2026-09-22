@@ -66,6 +66,11 @@ class IcomNetworkManager internal constructor(private val pty: IcomPty) : Networ
          *  radio's TX buffer cannot hold that much. 300 ms is the usable ceiling. */
         const val MAX_AUDIO_BUFFER_MS = 300
 
+        /** RX delivery queue bound for RADE decoding (see IcomStream.incoming). */
+        const val RX_QUEUE_MS = 2000
+        /** Consumer-side bound while the analog monitor is on. */
+        const val RX_MONITOR_QUEUE_MS = 300
+
         /** TX audio sample rate offered to the radio (conninfo txsample). 48 kHz
          *  LPCM is ~860 kbps on the uplink; RS-BA1 also supports 16 kHz, which
          *  cuts that to ~290 kbps for a weak LTE uplink (experimental — the radio
@@ -195,6 +200,15 @@ class IcomNetworkManager internal constructor(private val pty: IcomPty) : Networ
     /** Negotiated independently of TX; change only before connecting. */
     @Volatile var rxAudioRate: Int = NET_AUDIO_RATE
         set(value) { field = if (value == 16000) 16000 else NET_AUDIO_RATE }
+
+    /** Analog monitor on: keep RX delivery latency bounded to
+     *  [RX_MONITOR_QUEUE_MS] by discarding the oldest queued audio; off (RADE
+     *  decoding): deliver everything within [RX_QUEUE_MS]. */
+    @Volatile private var rxLowLatency = false
+    override fun setRxLowLatency(enabled: Boolean) {
+        if (rxLowLatency != enabled) Log.i(TAG, "audio RX low-latency (monitor) mode: $enabled")
+        rxLowLatency = enabled
+    }
     /** 20 ms of TX audio at [txAudioRate] (960 @ 48 kHz, 320 @ 16 kHz). */
     override val txFrameSamples: Int get() = txAudioRate / 50
 
@@ -804,23 +818,42 @@ class IcomNetworkManager internal constructor(private val pty: IcomPty) : Networ
             }
         }
         var queueDrops = aud.incomingDrops.get()
+        var monitorTrimmed = 0L
+        val monitorKeep = (RX_MONITOR_QUEUE_MS / packetMs).coerceAtLeast(2)
+        fun handle(r: ByteArray) {
+            val dropped = aud.incomingDrops.get()
+            if (dropped != queueDrops) {
+                jitter.reset()
+                queueDrops = dropped
+            }
+            if (IcomAudioPacket.isAudio(r)) {
+                if (pcmPackets == 0L) Log.i(TAG, "audio RX: first audio packet from radio (size=${r.size})")
+                pcmPackets++
+                if (pcmPackets % 500L == 0L)
+                    Log.i(TAG, "audio RX: $pcmPackets pkts, fed=$fedSamples samples, " +
+                        "concealed=${jitter.concealed} late=${jitter.lateDropped} " +
+                        "queueDropped=$queueDrops monitorTrim=$monitorTrimmed resync=${jitter.resyncs} " +
+                        "rate=$audioRate consumer=${onAudioPcm != null}")
+                jitter.add(u16le(r, 6), r)
+            }
+        }
         try {
-            aud.incoming.consumeEach { r ->
+            aud.incoming.consumeEach { first ->
                 if (!isCurrentSession(aud.scope)) return@consumeEach
-                val dropped = aud.incomingDrops.get()
-                if (dropped != queueDrops) {
-                    jitter.reset()
-                    queueDrops = dropped
+                // Take everything already queued as one batch: a burst after a
+                // stall is decoded as fast as the CPU allows (RADE), or trimmed to
+                // the newest RX_MONITOR_QUEUE_MS while the analog monitor is on.
+                var batch: List<ByteArray> = listOf(first)
+                if (rxLowLatency) {
+                    val drained = ArrayList<ByteArray>().apply { add(first) }
+                    while (true) { drained.add(aud.incoming.tryReceive().getOrNull() ?: break) }
+                    if (drained.size > monitorKeep) {
+                        monitorTrimmed += drained.size - monitorKeep
+                        jitter.reset()
+                        batch = drained.takeLast(monitorKeep)
+                    } else batch = drained
                 }
-                if (IcomAudioPacket.isAudio(r)) {
-                    if (pcmPackets == 0L) Log.i(TAG, "audio RX: first audio packet from radio (size=${r.size})")
-                    pcmPackets++
-                    if (pcmPackets % 500L == 0L)
-                        Log.i(TAG, "audio RX: $pcmPackets pkts, fed=$fedSamples samples, " +
-                            "concealed=${jitter.concealed} late=${jitter.lateDropped} " +
-                            "queueDropped=$queueDrops resync=${jitter.resyncs} rate=$audioRate consumer=${onAudioPcm != null}")
-                    jitter.add(u16le(r, 6), r)
-                }
+                for (r in batch) handle(r)
             }
         } catch (e: CancellationException) {
             throw e
@@ -1144,9 +1177,12 @@ class IcomNetworkManager internal constructor(private val pty: IcomPty) : Networ
             if (!running || shuttingDown || !isCurrentSession(scope)) return@synchronized
             if (!tuningGuard.allows(civ)) {
                 Log.w(TAG, "CI-V blocked automatic tuning bytes=${civ.joinToString("") { "%02X".format(it) }}")
-                // Fail the Hamlib command explicitly; silently dropping it would
-                // add a timeout for every startup probe. Never acknowledge success.
-                writePty(IcomTuningGuard.rejection(civ, civEchoSeen))
+                // Answer OK without touching the radio. A NAK (v1.6.27) made
+                // Hamlib's every read fail with ERJCTED once it had fallen back to
+                // set_vfo-before-read after a lost reply, which the CAT-health
+                // tracker read as a dead link and tore the session down mid-TX.
+                // See IcomTuningGuard.
+                writePty(IcomTuningGuard.acknowledgement(civ, civEchoSeen))
                 return@synchronized
             }
             val pkt = buildSerialData(this, civ)
@@ -1191,8 +1227,15 @@ class IcomNetworkManager internal constructor(private val pty: IcomPty) : Networ
         val incomingDrops = AtomicLong()
         // Never queue an unbounded recording behind a slow decoder. Audio only:
         // control and CI-V messages must retain their original ordered delivery.
+        // The bound is RX_QUEUE_MS (2 s): a downlink stall of up to that long
+        // then delivers its burst to the RADE decoder late but intact. v1.6.23's
+        // 300 ms bound discarded most of every such burst (field log: ~400
+        // packets over 7 min) — a hole the decoder cannot recover from, where
+        // a late decode would merely add latency. The analog monitor, where
+        // latency matters more than completeness, trims to 300 ms on the
+        // consumer side instead (see audioRxLoop / rxLowLatency).
         val incoming = if (isAudio) Channel<ByteArray>(
-            capacity = (300 / if (audioRate == 16000) 20 else 10),
+            capacity = (RX_QUEUE_MS / if (audioRate == 16000) 20 else 10),
             onBufferOverflow = BufferOverflow.DROP_OLDEST,
             onUndeliveredElement = { incomingDrops.incrementAndGet() }
         ) else Channel<ByteArray>(Channel.UNLIMITED)

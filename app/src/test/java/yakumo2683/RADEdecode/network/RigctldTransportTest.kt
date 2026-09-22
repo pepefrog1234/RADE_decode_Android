@@ -219,12 +219,14 @@ class RigctldTransportTest {
         }
     }
 
-    @Test fun repeatedProtocolErrorsReachTheNetworkRecoveryHook() = runBlocking {
+    @Test fun repeatedTimeoutsReachTheNetworkRecoveryHook() = runBlocking {
+        // Only "the radio did not answer" (RPRT -5/-6) is a link failure. A
+        // protocol error or NAK is an answer from a live radio (v1.6.28).
         val recovery = CompletableDeferred<Unit>()
         FakeRig { input, output ->
             repeat(3) {
                 assertEquals("+\\set_ptt 0", input.readLine())
-                output.print("set_ptt: 0\nRPRT -8\n"); output.flush()
+                output.print("set_ptt: 0\nRPRT -5\n"); output.flush()
             }
         }.use { rig ->
             val controller = RigController(pollingEnabled = false, catHealth = RigCatHealth(failureWindowMs = 0))

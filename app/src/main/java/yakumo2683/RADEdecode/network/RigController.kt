@@ -68,6 +68,12 @@ class RigController internal constructor(
     private val pttOperation = java.util.concurrent.atomic.AtomicLong()
     /** Installed only for the Icom network tunnel. */
     var onCatUnresponsive: (() -> Unit)? = null
+    /** True while an over is in progress (keyed, transmitting, or switching
+     *  back). CAT-health recovery is deferred until it ends: tearing the
+     *  session down mid-over cuts the transmission (field log v1.6.27), and
+     *  the poll results that trigger it are unreliable during TX anyway. */
+    var txInProgress: () -> Boolean = { false }
+    private var deferredRecovery: (() -> Unit)? = null
     /** Network CI-V permits exist only while this explicit Set is in flight. */
     var authorizeFrequencyChange: ((Long) -> AutoCloseable?)? = null
 
@@ -132,6 +138,7 @@ class RigController internal constructor(
                     connection = transport
                     requirePttOffReadback = verifyPttOff
                     catHealth.reset()
+                    deferredRecovery = null
                     consecutiveTimeouts = 0
                     _state.update { it.copy(connected = true, host = host, port = port, error = "") }
                     lastConnectMs = System.currentTimeMillis()
@@ -161,6 +168,7 @@ class RigController internal constructor(
             connection?.close()
             connection = null
             unconfirmedFrequencyHz = null
+            deferredRecovery = null
             _state.update { it.copy(connected = false, frequencyError = "") }
         }
         Log.i(TAG, "Disconnected")
@@ -174,7 +182,26 @@ class RigController internal constructor(
             connection = null
             handleDisconnect(cause)
         }
-        recover?.invoke()
+        recover?.let { requestRecovery(it, "rigctld transport timed out") }
+    }
+
+    /** Run [recover] now, or after the current over if one is in progress. */
+    private fun requestRecovery(recover: () -> Unit, why: String) {
+        if (txInProgress()) {
+            Log.w(TAG, "$why — Icom session recovery deferred until the over ends")
+            synchronized(lock) { deferredRecovery = recover }
+        } else {
+            Log.w(TAG, "$why — recovering Icom session")
+            recover.invoke()
+        }
+    }
+
+    /** Called from the poller: fire a recovery that was deferred during TX. */
+    private fun runDeferredRecovery() {
+        if (txInProgress()) return
+        val r = synchronized(lock) { deferredRecovery?.also { deferredRecovery = null } } ?: return
+        Log.w(TAG, "Over ended — running the deferred Icom session recovery")
+        r.invoke()
     }
 
     private fun recordCatResponse(transport: RigctldTransport, name: String, args: String, response: RigctldResponse) {
@@ -186,10 +213,7 @@ class RigController internal constructor(
             if (catHealth.record(name, args, response, System.nanoTime() / 1_000_000,
                     confirmOffByReadback = requirePttOffReadback)) onCatUnresponsive else null
         }
-        if (recover != null) {
-            Log.w(TAG, "Radio CAT has repeatedly failed for 15 s — recovering Icom session")
-            recover.invoke()
-        }
+        if (recover != null) requestRecovery(recover, "Radio CAT has repeatedly failed for 15 s")
     }
 
     fun destroy() {
@@ -509,8 +533,12 @@ class RigController internal constructor(
             try { gate(); getMode() } catch (_: Exception) {}
             while (isActive && _state.value.connected) {
                 try {
-                    // Gate each read, not just the start of a polling cycle.
-                    gate(); getFreq()
+                    runDeferredRecovery()
+                    // Gate each read, not just the start of a polling cycle. No
+                    // frequency read while transmitting: Hamlib answers it with
+                    // an empty reply during PTT, which only feeds the health
+                    // tracker false failures (the dial cannot change mid-over).
+                    gate(); if (!_state.value.ptt && !txInProgress()) getFreq()
                     delay(100)
                     gate(); getPtt()
                     delay(100)

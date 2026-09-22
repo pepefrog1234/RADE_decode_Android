@@ -5,6 +5,15 @@ package yakumo2683.RADEdecode.network
  * probes its identity by switching VFOs and sometimes tuning +100 Hz and back.
  * Those writes must not reach a radio that the operator has already tuned.
  * Access is serialized by IcomStream.sendLock, including retransmissions.
+ *
+ * Blocked probes are answered with a CI-V OK ([acknowledgement]), not a NAK.
+ * v1.6.27 answered NAK; field log (IC-7300MK2, LTE): after one lost 0x25
+ * reply Hamlib sets `x25cmdfails` and from then on issues `set_vfo` (07 00)
+ * before EVERY read, so the NAK turned every get_freq/get_ptt/get_level into
+ * "RPRT -9" — the CAT-health tracker then tore the session down mid-over.
+ * The probe's outcome is irrelevant here: only selected-VFO commands (25 00,
+ * 03, 05, 1C 00, 26 00) are ever used, so letting Hamlib believe the probe
+ * succeeded keeps it on its normal read path while the radio stays untouched.
  */
 internal class IcomTuningGuard(private val nowMs: () -> Long = { System.nanoTime() / 1_000_000 }) {
     private var generation = 0L
@@ -62,6 +71,14 @@ internal class IcomTuningGuard(private val nowMs: () -> Long = { System.nanoTime
             val address = requireNotNull(addressOffset(frame))
             val nak = byteArrayOf(-2, -2, frame[address + 1], frame[address], 0xfa.toByte(), -3)
             return if (echo) frame + nak else nak
+        }
+
+        /** CI-V OK (0xFB) for a blocked write, addressed like the radio's own
+         *  reply, with the command echoed first when the radio echoes. */
+        fun acknowledgement(frame: ByteArray, echo: Boolean): ByteArray {
+            val address = requireNotNull(addressOffset(frame))
+            val ack = byteArrayOf(-2, -2, frame[address + 1], frame[address], 0xfb.toByte(), -3)
+            return if (echo) frame + ack else ack
         }
 
         fun isControllerEcho(frame: ByteArray): Boolean {

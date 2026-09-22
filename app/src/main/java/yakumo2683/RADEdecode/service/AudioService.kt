@@ -333,6 +333,8 @@ class AudioService : LifecycleService() {
      *  is occupied by an analog QSO before keying up. */
     fun setAnalogMonitor(enabled: Boolean) {
         audioBridge?.setAnalogMonitor(enabled)
+        // Live listening wants bounded latency; RADE decoding wants every packet.
+        networkRig?.setRxLowLatency(enabled)
     }
 
     fun setRxOutputDevice(deviceId: Int) {

@@ -60,6 +60,14 @@ class IcomTuningGuardTest {
         assertFalse(IcomTuningGuard().allows(bytes("FEFE") + request))
     }
 
+    @Test fun blockedProbeIsAcknowledgedLikeTheRadioWould() {
+        val request = frame("0700")
+        val ok = bytes("FEFEE0A4FBFD")
+        assertArrayEquals(ok, IcomTuningGuard.acknowledgement(request, false))
+        assertArrayEquals(request + ok, IcomTuningGuard.acknowledgement(request, true))
+        assertFalse(IcomTuningGuard.isControllerEcho(ok))
+    }
+
     companion object {
         fun bytes(hex: String) = hex.chunked(2).map { it.toInt(16).toByte() }.toByteArray()
         fun frame(body: String) = bytes("FEFEA4E0${body}FD")

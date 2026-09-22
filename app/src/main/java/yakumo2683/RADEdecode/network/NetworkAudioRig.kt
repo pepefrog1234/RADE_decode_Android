@@ -42,4 +42,9 @@ interface NetworkAudioRig {
 
     /** Queue one TX frame ([txFrameSamples] samples) toward the radio. */
     fun sendAudioFrame(pcm: ShortArray)
+
+    /** Analog monitor on/off: a transport with an RX delivery queue may bound
+     *  its latency while the operator listens live, and deliver everything
+     *  (late but intact) while the digital decoder is the consumer. */
+    fun setRxLowLatency(enabled: Boolean) {}
 }

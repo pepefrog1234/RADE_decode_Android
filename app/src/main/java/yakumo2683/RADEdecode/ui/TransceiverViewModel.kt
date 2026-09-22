@@ -260,6 +260,10 @@ class TransceiverViewModel(application: Application) : AndroidViewModel(applicat
             if (!icomUserDisconnect && !_rigConnecting.value && icomNetwork.isConnected)
                 icomNetwork.recoverCatSession()
         }
+        // Never tear the Icom session down in the middle of an over.
+        rigController.txInProgress = {
+            _uiState.value.isTx || _uiState.value.txSwitching || pttKeyedByApp
+        }
 
         // Persist the Icom login token across app runs, so a token left on the
         // radio by an unclean exit (app killed while connected) is removed at

@@ -39,14 +39,16 @@ class IcomSessionLifecycleTest {
                 // A split PTY read must not bypass the frame-level guard.
                 pty.outbound.offer(probe.copyOfRange(0, 5))
                 pty.outbound.offer(probe.copyOfRange(5, probe.size))
-                val nak = kotlinx.coroutines.withContext(Dispatchers.IO) { pty.inbound.poll(2, TimeUnit.SECONDS) }
-                assertArrayEquals(IcomTuningGuardTest.bytes("FEFEE0A4FAFD"), nak)
+                // Blocked probes are answered OK (never forwarded): a NAK made
+                // Hamlib's set_vfo-before-read fallback fail every poll (v1.6.27).
+                val ack = kotlinx.coroutines.withContext(Dispatchers.IO) { pty.inbound.poll(2, TimeUnit.SECONDS) }
+                assertArrayEquals(IcomTuningGuardTest.bytes("FEFEE0A4FBFD"), ack)
                 val echo = IcomTuningGuardTest.frame("03")
                 radio.sendRxSerial(100, echo)
                 assertArrayEquals(echo, kotlinx.coroutines.withContext(Dispatchers.IO) { pty.inbound.poll(2, TimeUnit.SECONDS) })
                 val vfo = IcomTuningGuardTest.frame("0700")
                 pty.outbound.offer(vfo)
-                assertArrayEquals(vfo + IcomTuningGuardTest.bytes("FEFEE0A4FAFD"),
+                assertArrayEquals(vfo + IcomTuningGuardTest.bytes("FEFEE0A4FBFD"),
                     kotlinx.coroutines.withContext(Dispatchers.IO) { pty.inbound.poll(2, TimeUnit.SECONDS) })
                 pty.outbound.offer(IcomTuningGuardTest.frame("2500"))
                 pty.outbound.offer(PTT_ON)
@@ -87,7 +89,8 @@ class IcomSessionLifecycleTest {
                     manager.connect("127.0.0.1", radio.controlPort, "test", "test")
                 })
                 pty.outbound.offer(change)
-                assertArrayEquals(IcomTuningGuardTest.bytes("FEFEE0A4FAFD"),
+                // Unpermitted writes are acknowledged locally and never forwarded.
+                assertArrayEquals(IcomTuningGuardTest.bytes("FEFEE0A4FBFD"),
                     kotlinx.coroutines.withContext(Dispatchers.IO) { pty.inbound.poll(2, TimeUnit.SECONDS) })
                 assertEquals(3, radio.snapshot().count { it.isSerialData })
                 old?.close()
@@ -173,6 +176,7 @@ class IcomSessionLifecycleTest {
         FakeRadio().use { radio ->
             val manager = IcomNetworkManager(FakePty())
             manager.rxAudioRate = 16000
+            manager.setRxLowLatency(true)   // analog monitor: bounded latency
             val blocked = CountDownLatch(1)
             val resume = CountDownLatch(1)
             val played = Collections.synchronizedList(mutableListOf<Short>())
@@ -201,6 +205,39 @@ class IcomSessionLifecycleTest {
                 assertEquals(61.toShort(), samples.last())
                 assertTrue("Discarded backlog was restored as silence: $samples", samples.none { it == 0.toShort() })
                 assertTrue("Played stale RX packets: $samples", samples.drop(1).all { it >= 47 })
+            } finally { resume.countDown(); manager.disconnect() }
+        }
+    }
+
+    @Test fun radeDecoderReceivesAWholeStallBurstLateButIntact() = runBlocking {
+        FakeRadio().use { radio ->
+            val manager = IcomNetworkManager(FakePty())
+            manager.rxAudioRate = 16000          // RADE decoding: no low-latency trim
+            val blocked = CountDownLatch(1)
+            val resume = CountDownLatch(1)
+            val played = Collections.synchronizedList(mutableListOf<Short>())
+            val latest = CompletableDeferred<Unit>()
+            manager.onAudioPcm = { pcm ->
+                played.add(pcm[0])
+                if (pcm[0] == 1.toShort()) { blocked.countDown(); check(resume.await(3, TimeUnit.SECONDS)) }
+                if (pcm[0] == 61.toShort()) latest.complete(Unit)
+            }
+            try {
+                assertEquals(FakePty.PATH, withTimeout(8000) {
+                    manager.connect("127.0.0.1", radio.controlPort, "test", "test")
+                })
+                radio.sendRxAudio(100, 320, 1)
+                await(blocked, "RX consumer never blocked")
+                for (i in 2..61) {
+                    radio.sendRxAudio(99 + i, 320, i)
+                    delay(2)
+                }
+                delay(100)
+                resume.countDown()
+                withTimeout(2000) { latest.await() }
+                val samples = synchronized(played) { played.toList() }
+                // 1.2 s of audio delayed by a stall is decoded late, not thrown away.
+                assertEquals((1..61).map { it.toShort() }, samples)
             } finally { resume.countDown(); manager.disconnect() }
         }
     }
