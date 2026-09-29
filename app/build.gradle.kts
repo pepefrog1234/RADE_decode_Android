@@ -72,8 +72,8 @@ android {
         applicationId = "yakumo2683.RADEdecode"
         minSdk = 26
         targetSdk = 35
-        versionCode = 10628
-        versionName = "1.6.28-probe-ack-rx-queue"
+        versionCode = 10629
+        versionName = "1.6.29-cat-recovery"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 

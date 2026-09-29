@@ -142,7 +142,7 @@ class TransceiverViewModel(application: Application) : AndroidViewModel(applicat
     private val _uiState = MutableStateFlow(UiState())
     val uiState: StateFlow<UiState> = _uiState.asStateFlow()
 
-    private var audioService: AudioService? = null
+    @Volatile private var audioService: AudioService? = null
     private var serviceCollectJob: Job? = null
 
     /** In-flight TX→RX transition (EOO drain → PTT tail → unkey → resume RX). */
@@ -190,9 +190,12 @@ class TransceiverViewModel(application: Application) : AndroidViewModel(applicat
     private var icomLastUser = ""
     private var icomLastPass = ""
     private var icomAutoReconnectJob: Job? = null
-    /** The engine was running (RX or TX) when the Icom link dropped — resume RX
-     *  decoding after the automatic reconnect. */
-    @Volatile private var icomResumeRxAfterReconnect = false
+    private val icomCatRecoveryLock = Any()
+    private val icomCatRecoveryGeneration = java.util.concurrent.atomic.AtomicLong()
+    private var icomCatRecoveryJob: Job? = null
+    private data class IcomRxResume(val service: AudioService, val ticket: Long)
+    /** Resume only the existing service/session, never start a background FGS. */
+    @Volatile private var icomRxResume: IcomRxResume? = null
 
     private val serviceConnection = object : ServiceConnection {
         override fun onServiceConnected(name: ComponentName?, binder: IBinder?) {
@@ -256,13 +259,11 @@ class TransceiverViewModel(application: Application) : AndroidViewModel(applicat
         // liveness/exit cause (crash vs. USB-bridge failure) in the on-screen error.
         rigController.diagnosticsProvider = { rigctldProcess.exitDiagnostics() }
         rigController.authorizeFrequencyChange = { hz -> icomNetwork.authorizeFrequencyChange(hz) }
-        rigController.onCatUnresponsive = {
-            if (!icomUserDisconnect && !_rigConnecting.value && icomNetwork.isConnected)
-                icomNetwork.recoverCatSession()
-        }
-        // Never tear the Icom session down in the middle of an over.
+        rigController.onCatUnresponsive = { scheduleIcomCatRecovery() }
+        // Never tear down an active over. Pending OFF ownership after audio has
+        // returned to RX must not block the recovery needed to deliver that OFF.
         rigController.txInProgress = {
-            _uiState.value.isTx || _uiState.value.txSwitching || pttKeyedByApp
+            audioService?.state?.value?.isTx == true || _uiState.value.txSwitching
         }
 
         // Persist the Icom login token across app runs, so a token left on the
@@ -376,8 +377,11 @@ class TransceiverViewModel(application: Application) : AndroidViewModel(applicat
                     wasConnected = true
                     return@collect
                 }
+                // CAT-only repair leaves UDP/audio live; a real transport drop
+                // during that repair must still enter the full reconnect path.
                 val unexpectedLoss = wasConnected && !icomUserDisconnect &&
-                    st.error.isNotEmpty() && !_rigConnecting.value
+                    st.error.isNotEmpty() &&
+                    (!_rigConnecting.value || icomCatRecoveryJob?.isActive == true)
                 wasConnected = false
                 if (unexpectedLoss) handleIcomLinkLost()
             }
@@ -473,35 +477,61 @@ class TransceiverViewModel(application: Application) : AndroidViewModel(applicat
         val session = rxRecovery.snapshot()
         _uiState.value = _uiState.value.copy(txStartError = false, rxRestartError = false)
         val app = getApplication<Application>()
-
         val intent = Intent(app, AudioService::class.java)
-        app.startForegroundService(intent)
-        bindToService()
+        var requestedForegroundStart = false
+        try {
+            if (audioService?.hasForegroundSession != true) {
+                app.startForegroundService(intent)
+                requestedForegroundStart = true
+            }
+            bindToService()
+        } catch (e: RuntimeException) {
+            // The activity can leave the foreground between the user's tap and
+            // Android accepting the request (or microphone permission can lapse).
+            Log.e("TransceiverVM", "RX service start rejected; return to the app and tap Start", e)
+            if (requestedForegroundStart) app.stopService(intent)
+            _uiState.value = _uiState.value.copy(rxRestartError = true)
+            return
+        }
 
         viewModelScope.launch {
-            var attempts = 0
-            while (audioService == null && attempts < 20) {
-                delay(100)
-                attempts++
-            }
-            if (!rxRecovery.isCurrent(session)) return@launch
-            if (useNetworkAudio()) {
-                audioService?.startNetworkDecoding(
-                    outputDeviceId = _uiState.value.selectedRxOutputDeviceId
-                )
-            } else {
-                audioService?.startDecoding(
-                    inputDeviceId = _uiState.value.selectedDeviceId,
-                    outputDeviceId = _uiState.value.selectedRxOutputDeviceId,
-                    recordWav = false,
-                    useLeAudioCommunication = shouldUseLeAudioCommunicationSession()
-                )
+            try {
+                var attempts = 0
+                while (audioService == null && attempts < 20) {
+                    delay(100)
+                    attempts++
+                }
+                if (!rxRecovery.isCurrent(session)) return@launch
+                val service = audioService ?: error("Audio service did not bind")
+                if (useNetworkAudio()) {
+                    service.startNetworkDecoding(
+                        outputDeviceId = _uiState.value.selectedRxOutputDeviceId
+                    )
+                } else {
+                    service.startDecoding(
+                        inputDeviceId = _uiState.value.selectedDeviceId,
+                        outputDeviceId = _uiState.value.selectedRxOutputDeviceId,
+                        recordWav = false,
+                        useLeAudioCommunication = shouldUseLeAudioCommunicationSession()
+                    )
+                }
+                check(service.state.value.isRunning) { "RX audio did not start" }
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                Log.e("TransceiverVM", "RX startup failed; return to the app and tap Start", e)
+                if (rxRecovery.isCurrent(session)) {
+                    audioService?.stopDecoding()
+                    app.stopService(intent)
+                    _uiState.value = _uiState.value.copy(rxRestartError = true)
+                }
             }
         }
     }
 
     private fun stopReceiving() {
         rxRecovery.invalidate()
+        cancelIcomRxResume()
         audioService?.stopDecoding()
     }
 
@@ -862,7 +892,7 @@ class TransceiverViewModel(application: Application) : AndroidViewModel(applicat
             try {
                 rxRecovery.restore(
                     session,
-                    stopTxAndUnkey = { stopTxAndUnkeyPtt(fullTeardown) },
+                    stopTxAndUnkey = { stopTxAndUnkeyPtt(fullTeardown, keepForeground = true) },
                     canResume = { service != null && audioService === service },
                     resumeRx = {
                         if (useNetworkAudio()) {
@@ -875,7 +905,9 @@ class TransceiverViewModel(application: Application) : AndroidViewModel(applicat
                                 useLeAudioCommunication = shouldUseLeAudioCommunicationSession()
                             )
                         }
-                        _uiState.value = _uiState.value.copy(rxRestartError = service?.state?.value?.isRunning != true)
+                        val resumed = service?.state?.value?.isRunning == true
+                        if (!resumed) service?.stopDecoding()
+                        _uiState.value = _uiState.value.copy(rxRestartError = !resumed)
                     }
                 )
             } catch (e: CancellationException) {
@@ -883,6 +915,7 @@ class TransceiverViewModel(application: Application) : AndroidViewModel(applicat
             } catch (e: Exception) {
                 Log.e("TransceiverVM", "RX recovery failed", e)
                 if (rxRecovery.isCurrent(session)) {
+                    if (audioService === service) service?.stopDecoding()
                     _uiState.value = _uiState.value.copy(rxRestartError = true)
                 }
             } finally {
@@ -898,7 +931,10 @@ class TransceiverViewModel(application: Application) : AndroidViewModel(applicat
      * TX audio chain, and only then is PTT dropped. Unkeying first (the old
      * behaviour) cut the callsign off mid-air.
      */
-    private suspend fun stopTxAndUnkeyPtt(fullTeardown: Boolean = false) {
+    private suspend fun stopTxAndUnkeyPtt(
+        fullTeardown: Boolean = false,
+        keepForeground: Boolean = !fullTeardown
+    ) {
         // Only drain the EOO callsign and hold the RF tail when there is a real
         // transmit path: a CAT-keyed rig, network audio, or a USB audio output.
         // With none of those (pure local LC3 monitoring) tear down immediately —
@@ -911,7 +947,9 @@ class TransceiverViewModel(application: Application) : AndroidViewModel(applicat
         // so a keep-alive (local LC3) TX doesn't leave RX running after Stop.
         try {
             withContext(Dispatchers.IO) {
-                audioService?.stopTransmitting(drainEoo = onAir, forceFullTeardown = fullTeardown)
+                audioService?.stopTransmitting(
+                    drainEoo = onAir, forceFullTeardown = fullTeardown, keepForeground = keepForeground
+                )
             }
         } finally {
             // Even an audio teardown exception must not skip releasing the rig.
@@ -1025,6 +1063,7 @@ class TransceiverViewModel(application: Application) : AndroidViewModel(applicat
     fun stopAll() {
         ++txRequestId
         rxRecovery.invalidate()
+        cancelIcomRxResume()
         pttKeyJob?.cancel()
         val app = getApplication<Application>()
         clearAnalogMonitor()
@@ -1039,6 +1078,10 @@ class TransceiverViewModel(application: Application) : AndroidViewModel(applicat
                 if (audioService?.state?.value?.isTx == true || pttKeyedByApp || rtsPttKeyed) {
                     stopTxAndUnkeyPtt(fullTeardown = true)
                 }
+                // Stop can invalidate RX during the TX→RX gap, leaving both
+                // engine flags false but the transition's foreground lease held.
+                // stopService alone cannot destroy a still-bound service.
+                audioService?.stopDecoding()
                 app.stopService(Intent(app, AudioService::class.java))
             }
         } else {
@@ -1339,6 +1382,7 @@ class TransceiverViewModel(application: Application) : AndroidViewModel(applicat
     }
 
     fun rigDisconnect() {
+        cancelIcomCatRecovery()
         frequencySetJob?.cancel()
         ++txRequestId
         rxRecovery.invalidate()
@@ -1346,7 +1390,7 @@ class TransceiverViewModel(application: Application) : AndroidViewModel(applicat
         icomUserDisconnect = true   // this teardown is intentional — not a link loss
         icomAutoReconnectJob?.cancel()
         icomAutoReconnectJob = null
-        icomResumeRxAfterReconnect = false
+        cancelIcomRxResume()
         // A pending unkey can't be delivered once the operator tears the link
         // down; the radio's own TX time-out is the fallback. Don't leave TX blocked.
         pttUnkeyJob?.cancel()
@@ -1373,20 +1417,20 @@ class TransceiverViewModel(application: Application) : AndroidViewModel(applicat
      */
     private fun handleIcomLinkLost() {
         if (icomLinkLostHandling) return
+        cancelIcomCatRecovery()
         frequencySetJob?.cancel()
         rxRecovery.invalidate()
         icomLinkLostHandling = true
         viewModelScope.launch(Dispatchers.IO) {
             try {
                 Log.w("TransceiverVM", "Icom transport lost — tearing down local rig stack")
-                val wasTx = audioService?.state?.value?.isTx == true
-                val wasRx = audioService?.state?.value?.isRunning == true
-                // Nothing reaches the radio right now: drop the engine's TX/RX state
-                // so it isn't left pretending to transmit into the void.
-                if (wasTx) {
-                    audioService?.stopTransmitting(drainEoo = false, forceFullTeardown = true)
-                } else if (wasRx) {
-                    audioService?.stopDecoding()
+                val service = audioService
+                val wasTx = service?.state?.value?.isTx == true
+                // Suspend audio while preserving the existing foreground lease.
+                // stopDecoding() used to demote it, then automatic Start crashed
+                // with ForegroundServiceStartNotAllowedException in background.
+                icomRxResume = service?.pauseNetworkAudioForReconnect()?.let {
+                    IcomRxResume(service, it)
                 }
                 // Cancel any in-flight key-on retry so it can't keep trying to
                 // key a radio that is gone.
@@ -1401,20 +1445,139 @@ class TransceiverViewModel(application: Application) : AndroidViewModel(applicat
                 // "PTT not confirmed" instead of a clean RX display meanwhile.
                 if (wasTx) pttKeyedByApp = true
                 if (pttKeyedByApp) startPersistentUnkey()
-                icomResumeRxAfterReconnect = wasRx || wasTx
                 // Weak-LTE drops are transient: reconnect by ourselves (connect()
                 // already retries across the radio's session-cleanup window).
                 if (!icomUserDisconnect && icomLastHost.isNotEmpty()) {
                     scheduleIcomAutoReconnect()
-                } else if (pttKeyedByApp) {
-                    Log.w("TransceiverVM", "PTT release pending but no auto-reconnect (operator disconnect)")
+                } else {
+                    cancelIcomRxResume()
+                    if (pttKeyedByApp) {
+                        Log.w("TransceiverVM", "PTT release pending but no auto-reconnect (operator disconnect)")
+                    }
                 }
             } catch (e: Exception) {
+                cancelIcomRxResume()
                 Log.w("TransceiverVM", "handleIcomLinkLost", e)
             } finally {
                 icomLinkLostHandling = false
             }
         }
+    }
+
+    /** Invalidate queued callbacks before an explicit disconnect/new session.
+     * The process gate also covers the short native launch, so a cancelled repair
+     * cannot create a daemon after the user's Disconnect already stopped it. */
+    private fun cancelIcomCatRecovery() {
+        synchronized(icomCatRecoveryLock) {
+            icomCatRecoveryGeneration.incrementAndGet()
+            val job = icomCatRecoveryJob
+            icomCatRecoveryJob = null
+            job?.cancel()
+            if (job != null) {
+                rigController.disconnect()
+                rigctldProcess.stop()
+                _rigConnecting.value = false
+            }
+        }
+    }
+
+    /** A CAT parser/daemon stall need not tear down healthy UDP audio. Repair the
+     * local daemon on the existing PTY first; only an unsuccessful repair asks
+     * the transport watchdog to perform a full, foreground-safe reconnect. */
+    private fun scheduleIcomCatRecovery() {
+        val generation = icomCatRecoveryGeneration.get()
+        // RigController invokes this under its own lock: never take our process
+        // gate or block on its transport synchronously from that callback.
+        viewModelScope.launch(Dispatchers.Main) {
+            fun current(): Boolean = generation == icomCatRecoveryGeneration.get() &&
+                !icomUserDisconnect && icomNetwork.isConnected
+            if (!current() || _rigConnecting.value || icomLinkLostHandling ||
+                icomCatRecoveryJob?.isActive == true) return@launch
+            // A new over may begin between the controller's deferred callback
+            // and this Main dispatch. Keep the recovery request until it ends.
+            while (audioService?.state?.value?.isTx == true || _uiState.value.txSwitching) {
+                delay(100)
+                if (!current() || _rigConnecting.value || icomLinkLostHandling ||
+                    icomCatRecoveryJob?.isActive == true) return@launch
+            }
+            frequencySetJob?.cancel()
+            _rigConnecting.value = true
+            icomCatRecoveryJob = viewModelScope.launch(Dispatchers.IO, start = CoroutineStart.LAZY) recovery@ {
+                var recovered = false
+                var cancelled = false
+                try {
+                    Log.w("TransceiverVM", "Recovering Icom CAT daemon while keeping network audio")
+                    val started = synchronized(icomCatRecoveryLock) {
+                        if (!current()) false else {
+                            rigController.disconnect()
+                            rigctldProcess.stop()
+                            val pty = icomNetwork.prepareCatRestart()
+                            pty != null && rigctldProcess.startWithPty(
+                                model = 3085, ptyPath = pty, speed = 115200,
+                                civAddr = "", uncachedReadback = true
+                            )
+                        }
+                    }
+                    if (!started) return@recovery
+                    for (attempt in 1..6) {
+                        delay(500)
+                        // Serialize connect intent with user Disconnect on main.
+                        // RigController then performs socket I/O on Dispatchers.IO
+                        // and guards its own generation before accepting replies.
+                        withContext(Dispatchers.Main.immediate) {
+                            if (current()) rigController.connect("127.0.0.1", 4532, verifyPttOff = true)
+                        }
+                        if (!current()) return@recovery
+                        if (rigController.isConnected) break
+                    }
+                    if (!rigController.isConnected || !current()) return@recovery
+                    // A TCP listener alone is not proof that radio CAT recovered.
+                    // Let pending OFF retries use the repaired transport; the TX
+                    // ownership guard remains until a real OFF readback succeeds.
+                    if (pttKeyedByApp) startPersistentUnkey()
+                    recovered = withTimeoutOrNull(15_000) {
+                        var frequencyReadBack = false
+                        while (current()) {
+                            if (!frequencyReadBack) frequencyReadBack = rigController.readFrequency() != null
+                            val pendingOff = pttKeyedByApp
+                            val ptt = rigController.readPtt(expected = if (pendingOff) false else null)
+                            if (frequencyReadBack && ptt != null && (!pendingOff || !ptt)) {
+                                return@withTimeoutOrNull true
+                            }
+                            delay(500)
+                        }
+                        false
+                    } == true
+                    if (recovered) Log.i("TransceiverVM", "Icom CAT recovered; network audio was kept running")
+                } catch (e: CancellationException) {
+                    cancelled = true
+                    throw e
+                } catch (e: Exception) {
+                    Log.w("TransceiverVM", "Icom CAT daemon repair failed", e)
+                } finally {
+                    withContext(NonCancellable + Dispatchers.Main.immediate) {
+                        if (generation == icomCatRecoveryGeneration.get()) {
+                            icomCatRecoveryJob = null
+                            _rigConnecting.value = false
+                            if (!cancelled && !recovered && current()) {
+                                Log.w("TransceiverVM", "Icom CAT repair failed — requesting full transport recovery")
+                                // Block new key-on before the manager's async
+                                // teardown posts its disconnected state.
+                                rigController.disconnect()
+                                rigctldProcess.stop()
+                                icomNetwork.recoverCatSession()
+                            }
+                        }
+                    }
+                }
+            }.also { it.start() }
+        }
+    }
+
+    private fun cancelIcomRxResume() {
+        val pending = icomRxResume
+        icomRxResume = null
+        pending?.service?.cancelNetworkAudioReconnect(pending.ticket)
     }
 
     /**
@@ -1428,31 +1591,55 @@ class TransceiverViewModel(application: Application) : AndroidViewModel(applicat
      */
     private fun scheduleIcomAutoReconnect() {
         if (icomAutoReconnectJob?.isActive == true) return
+        val pending = icomRxResume
         icomAutoReconnectJob = viewModelScope.launch(Dispatchers.IO) {
-            delay(1500)   // let the radio notice the dead session first
-            for (round in 1..2) {
-                if (icomUserDisconnect) return@launch
-                Log.i("TransceiverVM", "Icom auto-reconnect round $round/2 → $icomLastHost:$icomLastPort")
-                val ok = connectIcomNetwork(icomLastHost, icomLastPort, icomLastUser, icomLastPass)
-                if (icomUserDisconnect) return@launch
-                if (ok) {
-                    Log.i("TransceiverVM", "Icom auto-reconnect succeeded " +
-                        "(pttPending=$pttKeyedByApp resumeRx=$icomResumeRxAfterReconnect)")
-                    if (pttKeyedByApp) startPersistentUnkey()
-                    if (icomResumeRxAfterReconnect) {
-                        icomResumeRxAfterReconnect = false
-                        val st = audioService?.state?.value
-                        if (st?.isRunning != true && st?.isTx != true) startReceiving()
+            try {
+                delay(1500)   // let the radio notice the dead session first
+                for (round in 1..2) {
+                    if (icomUserDisconnect) return@launch
+                    Log.i("TransceiverVM", "Icom auto-reconnect round $round/2 → $icomLastHost:$icomLastPort")
+                    val ok = connectIcomNetwork(icomLastHost, icomLastPort, icomLastUser, icomLastPass)
+                    if (icomUserDisconnect) return@launch
+                    if (ok) {
+                        Log.i("TransceiverVM", "Icom auto-reconnect succeeded " +
+                            "(pttPending=$pttKeyedByApp resumeRx=${pending != null})")
+                        if (pttKeyedByApp) startPersistentUnkey()
+                        if (pending != null && icomRxResume === pending) {
+                            val restored = if (audioService === pending.service) {
+                                pending.service.resumeNetworkAudioAfterReconnect(
+                                    pending.ticket, _uiState.value.selectedRxOutputDeviceId
+                                )
+                            } else false
+                            if (restored == true) pending.service.setAnalogMonitor(_uiState.value.analogMonitor)
+                            withContext(Dispatchers.Main.immediate) {
+                                // A user Stop revokes the ticket. Do not restart or
+                                // show an error for that intentional cancellation.
+                                if (icomRxResume === pending && restored != null) {
+                                    _uiState.value = _uiState.value.copy(rxRestartError = !restored)
+                                }
+                            }
+                        }
+                        return@launch
                     }
-                    return@launch
+                    delay(5000)
                 }
-                delay(5000)
+                Log.e("TransceiverVM", "Icom auto-reconnect gave up — press Connect to retry")
+                // Keep PTT ownership/OFF retries; failure is not proof RF stopped.
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                Log.e("TransceiverVM", "Icom automatic RX recovery failed; tap Start to resume", e)
+                withContext(Dispatchers.Main.immediate) {
+                    if (pending != null && icomRxResume === pending) {
+                        _uiState.value = _uiState.value.copy(rxRestartError = true)
+                    }
+                }
+            } finally {
+                // Release the retained notification on exhaustion/cancel. A
+                // successful resume consumed its ticket, so this cannot stop RX.
+                pending?.service?.cancelNetworkAudioReconnect(pending.ticket)
+                if (icomRxResume === pending) icomRxResume = null
             }
-            Log.e("TransceiverVM", "Icom auto-reconnect gave up — press Connect to retry")
-            // Exhausting reconnect attempts is not proof that RF stopped.
-            // Keep the warning/ownership and background OFF recovery so a later
-            // successful connection can still unkey before accepting another TX.
-            icomResumeRxAfterReconnect = false
         }
     }
 
@@ -1567,8 +1754,10 @@ class TransceiverViewModel(application: Application) : AndroidViewModel(applicat
         rxAudioRate: Int = IcomNetworkManager.NET_AUDIO_RATE
     ) {
         if (_rigConnecting.value || rigController.isConnected) return
+        cancelIcomCatRecovery()
         icomAutoReconnectJob?.cancel()
         icomAutoReconnectJob = null
+        cancelIcomRxResume()
         // Remembered for the automatic reconnect after a link loss.
         icomLastHost = host
         icomLastPort = controlPort
@@ -1824,7 +2013,9 @@ class TransceiverViewModel(application: Application) : AndroidViewModel(applicat
     }
 
     override fun onCleared() {
+        cancelIcomCatRecovery()
         rxRecovery.invalidate()
+        cancelIcomRxResume()
         super.onCleared()
         serviceCollectJob?.cancel()
         reporter.disconnect()

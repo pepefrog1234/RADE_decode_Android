@@ -46,6 +46,9 @@ class AudioService : LifecycleService() {
     }
 
     private val binder = LocalBinder()
+    private val foregroundSession = ForegroundAudioSession()
+    val hasForegroundSession: Boolean
+        @Synchronized get() = foregroundSession.isActive
     var reporter: yakumo2683.RADEdecode.network.FreeDVReporter? = null
     /** Set by the ViewModel when rig control runs over the IC-705's Wi-Fi.
      *  When non-null and its audio stream is up, RX/TX audio rides UDP 50003
@@ -193,15 +196,7 @@ class AudioService : LifecycleService() {
 
         // Start as foreground service
         val notification = buildNotification(getString(R.string.notification_starting), 0, "")
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-            startForeground(
-                NOTIFICATION_ID, notification,
-                ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE or
-                    ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PLAYBACK
-            )
-        } else {
-            startForeground(NOTIFICATION_ID, notification)
-        }
+        ensureForeground(notification)
 
         val rxOutputDeviceId = resolveRxOutputDeviceId(bridge, outputDeviceId)
         val leRoute = if (useLeAudioCommunication) activateBleAudioCommunicationRoute() else null
@@ -297,7 +292,7 @@ class AudioService : LifecycleService() {
     }
 
     @Synchronized
-    fun stopDecoding() {
+    fun stopDecoding(keepForeground: Boolean = false) {
         txKeepRxAliveActive = false  // never let a keep-alive flag survive a full RX teardown
         stopPolling()
         stopNotificationUpdates()
@@ -319,7 +314,7 @@ class AudioService : LifecycleService() {
         finalizeCurrentSession()
 
         _state.value = ServiceState()
-        stopForeground(STOP_FOREGROUND_REMOVE)
+        if (!keepForeground) endForegroundSession()
     }
 
     fun setOutputVolume(volume: Float) {
@@ -831,14 +826,57 @@ class AudioService : LifecycleService() {
             // after an app restart). Reattaching alone cannot turn that local
             // modem into a network receiver, or change its decimation rate.
             Log.i("AudioService", "Rebuilding network RX: previousRate=$networkRxRate newRate=${net.audioRate}")
-            stopDecoding()
-            startNetworkDecoding(outputDeviceId)
+            stopDecoding(keepForeground = true)
+            try {
+                startNetworkDecoding(outputDeviceId)
+            } finally {
+                if (!_state.value.isRunning) stopDecoding()
+            }
             return
         }
         val bridge = audioBridge ?: return
         net.onAudioPcm = { pcm -> bridge.feedNetRx(pcm, pcm.size) }
         Log.i("AudioService", "reattachNetworkRx: RX hook re-installed after reconnect")
     }
+    /** Stop feeding a dead transport, but keep the foreground session that the
+     * user started while the activity was visible. A reconnect may reuse this
+     * session; it must never launch a fresh microphone service in the background. */
+    @Synchronized
+    fun pauseNetworkAudioForReconnect(): Long? {
+        // During the TX tail/route-settle gap both engine flags are false, but
+        // the granted session still belongs to RX recovery. Retain it as well.
+        if (!_state.value.isRunning && !_state.value.isTx && !foregroundSession.isActive) return null
+        if (_state.value.isTx) {
+            stopTransmitting(drainEoo = false, forceFullTeardown = true, keepForeground = true)
+        } else {
+            stopDecoding(keepForeground = true)
+        }
+        val ticket = foregroundSession.holdForReconnect() ?: return null
+        getSystemService(NotificationManager::class.java).notify(
+            NOTIFICATION_ID, buildNotification(getString(R.string.rig_connecting), 0, "")
+        )
+        return ticket
+    }
+
+    /** Stop, including the notification action, revokes this ticket. A replaced
+     * bound service cannot restore another instance's stopped audio session.
+     * Returns null for a revoked ticket, false for an audio startup failure. */
+    @Synchronized
+    fun resumeNetworkAudioAfterReconnect(ticket: Long, outputDeviceId: Int): Boolean? =
+        foregroundSession.resume(ticket) {
+            try {
+                startNetworkDecoding(outputDeviceId)
+                _state.value.isRunning
+            } finally {
+                if (!_state.value.isRunning) stopDecoding()
+            }
+        }
+
+    @Synchronized
+    fun cancelNetworkAudioReconnect(ticket: Long) {
+        if (foregroundSession.canResume(ticket)) stopDecoding()
+    }
+
     private var netTxPumpJob: Job? = null
     /** Counted down when the net TX pump has drained the EOO out of the ring. */
     private var netTxPumpDone: java.util.concurrent.CountDownLatch? = null
@@ -867,15 +905,7 @@ class AudioService : LifecycleService() {
         }
 
         val notification = buildNotification(getString(R.string.notification_starting), 0, "")
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-            startForeground(
-                NOTIFICATION_ID, notification,
-                ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE or
-                    ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PLAYBACK
-            )
-        } else {
-            startForeground(NOTIFICATION_ID, notification)
-        }
+        ensureForeground(notification)
 
         val audioUp = net.audioLinkUp
         Log.i("AudioService", "startNetworkDecoding: audioStreamConnected=$audioUp rate=${net.audioRate} " +
@@ -982,15 +1012,7 @@ class AudioService : LifecycleService() {
         bridge.setRadeV2Enabled(radeV2Mode)
 
         val notification = buildNotification(getString(R.string.btn_tx), 0, callsign)
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-            startForeground(
-                NOTIFICATION_ID, notification,
-                ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE or
-                    ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PLAYBACK
-            )
-        } else {
-            startForeground(NOTIFICATION_ID, notification)
-        }
+        ensureForeground(notification)
 
         if (callsign.isNotEmpty()) bridge.setTxCallsign(callsign)
 
@@ -1359,15 +1381,7 @@ class AudioService : LifecycleService() {
 
         // Start/update foreground service (no gap in foreground status)
         val notification = buildNotification(getString(R.string.btn_tx), 0, callsign)
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-            startForeground(
-                NOTIFICATION_ID, notification,
-                ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE or
-                    ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PLAYBACK
-            )
-        } else {
-            startForeground(NOTIFICATION_ID, notification)
-        }
+        ensureForeground(notification)
 
         if (callsign.isNotEmpty()) {
             bridge.setTxCallsign(callsign)
@@ -1469,11 +1483,16 @@ class AudioService : LifecycleService() {
      *   When false (no rig — pure local LC3 monitoring) the native side tears the
      *   TX engine down immediately, removing up to ~2.5 s of pointless drain/tail.
      * @param forceFullTeardown when true, even a keep-alive (local LC3) TX is fully
-     *   torn down (bridge released, foreground stopped) instead of resuming RX —
-     *   used by the Stop button / ACTION_STOP / onDestroy so the service can die.
+     *   torn down instead of resuming RX on the kept-open bridge.
+     * @param keepForeground retain the granted foreground session during a
+     *   TX→RX transition or bounded reconnect. Hard Stop/destroy demotes it.
      */
     @Synchronized
-    fun stopTransmitting(drainEoo: Boolean = true, forceFullTeardown: Boolean = false) {
+    fun stopTransmitting(
+        drainEoo: Boolean = true,
+        forceFullTeardown: Boolean = false,
+        keepForeground: Boolean = !forceFullTeardown
+    ) {
         stopTxPolling()
         stopNotificationUpdates()
         val preserveLeCommunicationRoute = leAudioCommunicationSessionActive && !forceFullTeardown
@@ -1529,7 +1548,7 @@ class AudioService : LifecycleService() {
         // Full reset — but the decoded-callsign display survives the TX→RX
         // cycle; it is only replaced when a new station's EOO decodes.
         _state.value = ServiceState(lastCallsign = _state.value.lastCallsign)
-        stopForeground(STOP_FOREGROUND_REMOVE)
+        if (!keepForeground) endForegroundSession()
     }
 
     /** Block (bounded) until a TX pump has drained the ring and played it out. */
@@ -2032,6 +2051,28 @@ class AudioService : LifecycleService() {
             .setOngoing(true)
             .setSilent(true)
             .build()
+    }
+
+    private fun ensureForeground(notification: Notification) {
+        val alreadyActive = foregroundSession.isActive
+        foregroundSession.start {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                startForeground(
+                    NOTIFICATION_ID, notification,
+                    ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE or
+                        ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PLAYBACK
+                )
+            } else {
+                startForeground(NOTIFICATION_ID, notification)
+            }
+        }
+        if (alreadyActive) {
+            getSystemService(NotificationManager::class.java).notify(NOTIFICATION_ID, notification)
+        }
+    }
+
+    private fun endForegroundSession() {
+        foregroundSession.stop { stopForeground(STOP_FOREGROUND_REMOVE) }
     }
 
     private fun updateNotification() {

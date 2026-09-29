@@ -24,19 +24,20 @@ internal class RigCatHealth(private val failureWindowMs: Long = 15_000) {
         val offConfirmed = (off && response.result == 0 && !confirmOffByReadback) ||
             (name == "get_ptt" && response.value("PTT") == "0")
         if (offConfirmed) { offFailedSince = null; offFailures = 0 }
-        // Only a timeout (-5) or I/O error (-6) says the radio did not answer.
-        // A NAK (-9), protocol error (-8), ENAVAIL (-13) or collision (-14) is
-        // an ANSWER from a live radio: v1.6.27 counted them, and Hamlib's
-        // set_vfo-before-read fallback (after one lost reply) then produced an
-        // "RPRT -9" on every poll — a working session torn down mid-over.
-        val linkFailure = response.result in setOf(-5, -6)
+        // This measures usable CAT, not merely whether rigctld/TCP is alive.
+        // A NAK/protocol error can be generated locally from a stale CI-V
+        // reply; it does not prove the requested radio operation succeeded.
+        // v1.6.28 ignored these indefinitely, leaving PTT and Set unusable for
+        // minutes. The time/count threshold tolerates isolated rejection, and
+        // RigController defers recovery while audio TX is actually active.
+        val commandFailure = response.result in setOf(-5, -6, -8, -9, -13, -14)
         val validRead = when (name) {
             "get_freq" -> response.value("Frequency")?.toLongOrNull()?.let { it in 10_000L..1_300_000_000L } == true
             "get_ptt" -> rigctldPtt(response.value("PTT")) != null
             else -> response.result == 0
         }
-        val failedRead = linkFailure || (response.result == 0 && !validRead)
-        if (off && (linkFailure || (confirmOffByReadback && response.result == 0))) {
+        val failedRead = commandFailure || (response.result == 0 && !validRead)
+        if (off && (commandFailure || (confirmOffByReadback && response.result == 0))) {
             if (offFailedSince == null) offFailedSince = nowMs
             offFailures++
         }

@@ -27,7 +27,7 @@ import kotlin.concurrent.thread
 
 /** Exercises the actual UDP reader, retransmit buffer and teardown against a local radio. */
 class IcomSessionLifecycleTest {
-    @Test fun tuningProbeIsRejectedLocallyWithoutHidingPttOrFrequencyQueries() = runBlocking {
+    @Test fun virtualVfoSelectIsAcknowledgedButUnrequestedTuningIsRejected() = runBlocking {
         FakeRadio().use { radio ->
             val pty = FakePty()
             val manager = IcomNetworkManager(pty)
@@ -39,19 +39,22 @@ class IcomSessionLifecycleTest {
                 // A split PTY read must not bypass the frame-level guard.
                 pty.outbound.offer(probe.copyOfRange(0, 5))
                 pty.outbound.offer(probe.copyOfRange(5, probe.size))
-                // Blocked probes are answered OK (never forwarded): a NAK made
-                // Hamlib's set_vfo-before-read fallback fail every poll (v1.6.27).
+                // A frequency write must not claim success when it was blocked.
                 val ack = kotlinx.coroutines.withContext(Dispatchers.IO) { pty.inbound.poll(2, TimeUnit.SECONDS) }
-                assertArrayEquals(IcomTuningGuardTest.bytes("FEFEE0A4FBFD"), ack)
+                assertArrayEquals(probe + NAK, ack)
                 val echo = IcomTuningGuardTest.frame("03")
                 radio.sendRxSerial(100, echo)
-                assertArrayEquals(echo, kotlinx.coroutines.withContext(Dispatchers.IO) { pty.inbound.poll(2, TimeUnit.SECONDS) })
+                assertNull("An unsolicited physical echo reached Hamlib", takePty(pty, 100))
                 val vfo = IcomTuningGuardTest.frame("0700")
                 pty.outbound.offer(vfo)
-                assertArrayEquals(vfo + IcomTuningGuardTest.bytes("FEFEE0A4FBFD"),
+                // Pure VFO selection is virtual: ACK keeps Hamlib's selected-
+                // VFO fallback working while leaving the real dial untouched.
+                assertArrayEquals(vfo + ACK,
                     kotlinx.coroutines.withContext(Dispatchers.IO) { pty.inbound.poll(2, TimeUnit.SECONDS) })
                 pty.outbound.offer(IcomTuningGuardTest.frame("2500"))
+                assertArrayEquals(IcomTuningGuardTest.frame("2500"), takePty(pty))
                 pty.outbound.offer(PTT_ON)
+                assertArrayEquals(PTT_ON, takePty(pty))
                 withTimeout(2000) { while (radio.snapshot().count { it.isSerialData } < 2) delay(10) }
                 val commands = radio.snapshot().filter { it.isSerialData }.map { it.bytes.copyOfRange(21, it.bytes.size) }
                 assertEquals(2, commands.size)
@@ -89,8 +92,8 @@ class IcomSessionLifecycleTest {
                     manager.connect("127.0.0.1", radio.controlPort, "test", "test")
                 })
                 pty.outbound.offer(change)
-                // Unpermitted writes are acknowledged locally and never forwarded.
-                assertArrayEquals(IcomTuningGuardTest.bytes("FEFEE0A4FBFD"),
+                // The old permit cannot authorize a write in the new session.
+                assertArrayEquals(change + NAK,
                     kotlinx.coroutines.withContext(Dispatchers.IO) { pty.inbound.poll(2, TimeUnit.SECONDS) })
                 assertEquals(3, radio.snapshot().count { it.isSerialData })
                 old?.close()
@@ -136,18 +139,170 @@ class IcomSessionLifecycleTest {
                 assertEquals(FakePty.PATH, withTimeout(8000) {
                     manager.connect("127.0.0.1", radio.controlPort, "test", "test")
                 })
+                pty.outbound.offer(PTT_ON)
+                assertArrayEquals(PTT_ON, takePty(pty))
+                await(radio.sawSerialData, "PTT never reached the radio")
                 radio.sendRxSerial(100, ack)
                 radio.sendRxSerial(100, ack)
                 radio.sendRxSerial(101, ack, wrongSession = true)
-                radio.sendRxSerial(102, status)
                 assertArrayEquals(ack, withTimeout(2000) {
                     kotlinx.coroutines.withContext(Dispatchers.IO) { pty.inbound.poll(1, TimeUnit.SECONDS) }
                 })
+                pty.outbound.offer(PTT_READ)
+                assertArrayEquals(PTT_READ, takePty(pty))
+                radio.sendRxSerial(102, status)
                 assertArrayEquals(status, kotlinx.coroutines.withContext(Dispatchers.IO) {
                     pty.inbound.poll(1, TimeUnit.SECONDS)
                 })
                 delay(100)
                 assertTrue(pty.inbound.isEmpty())
+            } finally { manager.disconnect() }
+        }
+    }
+
+    @Test fun completedPttOnCannotReplayAfterOffAndReadback() =
+        checkPttReplayAfterOff(acknowledgeOn = true)
+
+    @Test fun unacknowledgedPttOnCannotReplayAfterOffAndReadback() =
+        checkPttReplayAfterOff(acknowledgeOn = false)
+
+    private fun checkPttReplayAfterOff(acknowledgeOn: Boolean) = runBlocking {
+        FakeRadio().use { radio ->
+            val pty = FakePty()
+            val manager = IcomNetworkManager(pty)
+            try {
+                assertEquals(FakePty.PATH, withTimeout(8000) {
+                    manager.connect("127.0.0.1", radio.controlPort, "test", "test")
+                })
+                pty.outbound.offer(PTT_ON)
+                assertArrayEquals(PTT_ON, takePty(pty))
+                await(radio.sawSerialData, "PTT ON never reached the radio")
+                val on = radio.snapshot().first { it.isSerialData }
+                if (acknowledgeOn) {
+                    radio.sendRxSerial(100, ACK)
+                    assertArrayEquals(ACK, takePty(pty))
+                    radio.requestSerialPacket(on.seq)
+                    withTimeout(2000) { while (radio.snapshot().none {
+                        it.stream == "serial" && it.seq == on.seq && it.bytes.size == 16
+                    }) delay(10) }
+                    assertEquals("A completed PTT ON was replayed", 1,
+                        radio.snapshot().count { it.isSerialData })
+                }
+
+                pty.outbound.offer(PTT_OFF)
+                assertArrayEquals(PTT_OFF, takePty(pty))
+                withTimeout(2000) { while (radio.snapshot().count { it.isSerialData } < 2) delay(10) }
+                radio.sendRxSerial(101, ACK)
+                assertArrayEquals(ACK, takePty(pty))
+                pty.outbound.offer(PTT_READ)
+                assertArrayEquals(PTT_READ, takePty(pty))
+                withTimeout(2000) { while (radio.snapshot().count { it.isSerialData } < 3) delay(10) }
+                radio.sendRxSerial(102, PTT_IDLE)
+                assertArrayEquals(PTT_IDLE, takePty(pty))
+
+                val fillers = radio.snapshot().count {
+                    it.stream == "serial" && it.seq == on.seq && it.bytes.size == 16
+                }
+                radio.requestSerialPacket(on.seq)
+                withTimeout(2000) { while (radio.snapshot().count {
+                    it.stream == "serial" && it.seq == on.seq && it.bytes.size == 16
+                } <= fillers) delay(10) }
+                assertEquals("Old PTT ON re-keyed the radio after OFF readback", 3,
+                    radio.snapshot().count { it.isSerialData })
+            } finally { manager.disconnect() }
+        }
+    }
+
+    @Test fun catOnlyRestartKeepsUdpAndAudioButClearsPendingCommandsAndPermits() = runBlocking {
+        FakeRadio().use { radio ->
+            val pty = FakePty()
+            val manager = IcomNetworkManager(pty)
+            val audio = LinkedBlockingQueue<Short>()
+            manager.rxAudioRate = 16000
+            manager.onAudioPcm = { audio.offer(it.first()) }
+            try {
+                assertEquals(FakePty.PATH, withTimeout(8000) {
+                    manager.connect("127.0.0.1", radio.controlPort, "test", "test")
+                })
+                radio.sendRxAudio(100, 320, 123)
+                assertEquals(123.toShort(), kotlinx.coroutines.withContext(Dispatchers.IO) {
+                    audio.poll(2, TimeUnit.SECONDS)
+                })
+                val oldPermit = checkNotNull(manager.authorizeFrequencyChange(7_177_000))
+                pty.outbound.offer(PTT_ON)
+                assertArrayEquals(PTT_ON, takePty(pty))
+                await(radio.sawSerialData, "Pending PTT never reached the radio")
+                val on = radio.snapshot().first { it.isSerialData }
+                // Model unread replies and commands left by the stopped daemon.
+                pty.readsPaused = true
+                await(pty.readPauseReached, "PTY reader did not reach its pause")
+                pty.inbound.offer(ACK)
+                pty.outbound.offer(PTT_ON)
+                assertEquals(FakePty.PATH, manager.prepareCatRestart())
+                assertEquals(1, pty.flushes.get())
+                assertEquals(1, pty.opens.get())
+                assertTrue(pty.inbound.isEmpty())
+                assertTrue(pty.outbound.isEmpty())
+                assertTrue(pty.isOpen)
+                pty.readsPaused = false
+                assertTrue(manager.isConnected)
+                assertTrue(manager.audioLinkUp)
+
+                radio.sendRxSerial(100, ACK)
+                assertNull("A reply from the previous daemon survived restart", takePty(pty, 100))
+                radio.requestSerialPacket(on.seq)
+                withTimeout(2000) { while (radio.snapshot().none {
+                    it.stream == "serial" && it.seq == on.seq && it.bytes.size == 16
+                }) delay(10) }
+                val change = IcomTuningGuardTest.frame("25000070170700")
+                pty.outbound.offer(change)
+                assertArrayEquals(change + NAK, takePty(pty))
+                oldPermit.close()
+
+                radio.sendRxAudio(101, 320, 456)
+                assertEquals(456.toShort(), kotlinx.coroutines.withContext(Dispatchers.IO) {
+                    audio.poll(2, TimeUnit.SECONDS)
+                })
+                pty.outbound.offer(PTT_READ)
+                assertArrayEquals(PTT_READ, takePty(pty))
+                withTimeout(2000) { while (radio.snapshot().count { it.isSerialData } < 2) delay(10) }
+                val read = radio.snapshot().last { it.isSerialData }
+                assertArrayEquals("CAT repair replaced the serial stream",
+                    on.bytes.copyOfRange(8, 16), read.bytes.copyOfRange(8, 16))
+                radio.sendRxSerial(101, PTT_IDLE)
+                assertArrayEquals(PTT_IDLE, takePty(pty))
+                val packets = radio.snapshot()
+                assertEquals(1, packets.count { it.isLogin })
+                assertTrue("CAT repair logged out or closed UDP streams",
+                    packets.none { it.isLogout || it.type == 5 })
+                assertEquals("Stale commands escaped the CAT reset", 2, packets.count { it.isSerialData })
+            } finally { pty.readsPaused = false; manager.disconnect() }
+        }
+    }
+
+    @Test fun catOnlyRestartDropsPartialRepliesFromPreviousDaemon() = runBlocking {
+        FakeRadio().use { radio ->
+            val pty = FakePty()
+            val manager = IcomNetworkManager(pty)
+            val query = IcomTuningGuardTest.frame("2500")
+            val oldReply = IcomTuningGuardTest.bytes("FEFEE0A425000050060700FD")
+            val currentReply = IcomTuningGuardTest.bytes("FEFEE0A425000070170700FD")
+            try {
+                assertEquals(FakePty.PATH, withTimeout(8000) {
+                    manager.connect("127.0.0.1", radio.controlPort, "test", "test")
+                })
+                pty.outbound.offer(query)
+                assertArrayEquals(query, takePty(pty))
+                await(radio.sawSerialData, "Frequency query never reached the radio")
+                radio.sendRxSerial(100, oldReply.copyOfRange(0, 7))
+                assertNull(takePty(pty, 100))
+                assertEquals(FakePty.PATH, manager.prepareCatRestart())
+                pty.outbound.offer(query)
+                assertArrayEquals(query, takePty(pty))
+                radio.sendRxSerial(101, oldReply.copyOfRange(7, oldReply.size))
+                assertNull("An old partial reply completed in the new daemon", takePty(pty, 100))
+                radio.sendRxSerial(102, currentReply)
+                assertArrayEquals(currentReply, takePty(pty))
             } finally { manager.disconnect() }
         }
     }
@@ -454,6 +609,10 @@ class IcomSessionLifecycleTest {
         @Volatile var outbound = LinkedBlockingQueue<ByteArray>()
             private set
         val inbound = LinkedBlockingQueue<ByteArray>()
+        val opens = AtomicInteger()
+        val flushes = AtomicInteger()
+        @Volatile var readsPaused = false
+        val readPauseReached = CountDownLatch(1)
         @Volatile private var opened = false
         val isOpen get() = opened
         override fun open(): String {
@@ -462,11 +621,26 @@ class IcomSessionLifecycleTest {
             outbound = LinkedBlockingQueue()
             inbound.clear()
             opened = true
+            opens.incrementAndGet()
             return PATH
         }
         override fun write(data: ByteArray, len: Int): Int { inbound.offer(data.copyOf(len)); return len }
-        override fun read(timeoutMs: Int): ByteArray? =
-            if (opened) outbound.poll(timeoutMs.toLong(), TimeUnit.MILLISECONDS) ?: byteArrayOf() else null
+        override fun read(timeoutMs: Int): ByteArray? {
+            if (!opened) return null
+            if (readsPaused) {
+                readPauseReached.countDown()
+                Thread.sleep(10)
+                return byteArrayOf()
+            }
+            return outbound.poll(timeoutMs.toLong(), TimeUnit.MILLISECONDS) ?: byteArrayOf()
+        }
+        override fun flush(): Boolean {
+            if (!opened) return false
+            inbound.clear()
+            outbound.clear()
+            flushes.incrementAndGet()
+            return true
+        }
         override fun close() { opened = false; outbound.clear() }
     }
 
@@ -736,6 +910,13 @@ class IcomSessionLifecycleTest {
 
     companion object {
         private val PTT_ON = byteArrayOf(0xfe.toByte(), 0xfe.toByte(), 0xa4.toByte(), 0xe0.toByte(), 0x1c, 0, 1, 0xfd.toByte())
+        private val PTT_OFF = IcomTuningGuardTest.frame("1C0000")
+        private val PTT_READ = IcomTuningGuardTest.frame("1C00")
+        private val PTT_IDLE = IcomTuningGuardTest.bytes("FEFEE0A41C0000FD")
+        private val ACK = IcomTuningGuardTest.bytes("FEFEE0A4FBFD")
+        private val NAK = IcomTuningGuardTest.bytes("FEFEE0A4FAFD")
+        private suspend fun takePty(pty: FakePty, timeoutMs: Long = 2000): ByteArray? =
+            kotlinx.coroutines.withContext(Dispatchers.IO) { pty.inbound.poll(timeoutMs, TimeUnit.MILLISECONDS) }
         private fun u16(bytes: ByteArray, offset: Int) =
             (bytes[offset].toInt() and 0xff) or ((bytes[offset + 1].toInt() and 0xff) shl 8)
         private fun hex(bytes: ByteArray) = bytes.joinToString("") { "%02x".format(it) }

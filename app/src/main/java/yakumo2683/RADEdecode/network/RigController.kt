@@ -68,12 +68,11 @@ class RigController internal constructor(
     private val pttOperation = java.util.concurrent.atomic.AtomicLong()
     /** Installed only for the Icom network tunnel. */
     var onCatUnresponsive: (() -> Unit)? = null
-    /** True while an over is in progress (keyed, transmitting, or switching
-     *  back). CAT-health recovery is deferred until it ends: tearing the
-     *  session down mid-over cuts the transmission (field log v1.6.27), and
-     *  the poll results that trigger it are unreliable during TX anyway. */
+    /** True while audio TX or its transition is active. This must exclude an
+     *  unconfirmed OFF after RX resumes: CAT recovery is needed to deliver
+     *  that OFF, so waiting for its confirmation would deadlock recovery. */
     var txInProgress: () -> Boolean = { false }
-    private var deferredRecovery: (() -> Unit)? = null
+    private var recoveryJob: Job? = null
     /** Network CI-V permits exist only while this explicit Set is in flight. */
     var authorizeFrequencyChange: ((Long) -> AutoCloseable?)? = null
 
@@ -138,7 +137,8 @@ class RigController internal constructor(
                     connection = transport
                     requirePttOffReadback = verifyPttOff
                     catHealth.reset()
-                    deferredRecovery = null
+                    recoveryJob?.cancel()
+                    recoveryJob = null
                     consecutiveTimeouts = 0
                     _state.update { it.copy(connected = true, host = host, port = port, error = "") }
                     lastConnectMs = System.currentTimeMillis()
@@ -168,52 +168,58 @@ class RigController internal constructor(
             connection?.close()
             connection = null
             unconfirmedFrequencyHz = null
-            deferredRecovery = null
+            recoveryJob?.cancel()
+            recoveryJob = null
             _state.update { it.copy(connected = false, frequencyError = "") }
         }
         Log.i(TAG, "Disconnected")
     }
 
     private fun transportFailed(transport: RigctldTransport, cause: Exception) {
-        var recover: (() -> Unit)? = null
         synchronized(lock) {
             if (connection !== transport || userDisconnected) return
-            if (cause is java.net.SocketTimeoutException) recover = onCatUnresponsive
+            val recover = if (cause is java.net.SocketTimeoutException) onCatUnresponsive else null
             connection = null
             handleDisconnect(cause)
+            // Queue under the same lock that identified the failing session.
+            // Otherwise a reconnect between these steps could assign an old
+            // failure to the replacement session's generation.
+            recover?.let { requestRecovery(it, "rigctld transport timed out") }
         }
-        recover?.let { requestRecovery(it, "rigctld transport timed out") }
     }
 
     /** Run [recover] now, or after the current over if one is in progress. */
     private fun requestRecovery(recover: () -> Unit, why: String) {
-        if (txInProgress()) {
-            Log.w(TAG, "$why — Icom session recovery deferred until the over ends")
-            synchronized(lock) { deferredRecovery = recover }
-        } else {
-            Log.w(TAG, "$why — recovering Icom session")
-            recover.invoke()
+        synchronized(lock) {
+            if (userDisconnected || recoveryJob?.isActive == true) return
+            val generation = connectionGeneration
+            // Transport failure cancels polling, so deferred recovery must not
+            // depend on another poll. A replacement/user-disconnected session
+            // cancels this job and cannot receive its predecessor's recovery.
+            recoveryJob = scope.launch(start = CoroutineStart.LAZY) {
+                if (txInProgress()) {
+                    Log.w(TAG, "$why — Icom session recovery deferred until audio TX ends")
+                    while (txInProgress()) delay(100)
+                }
+                synchronized(lock) {
+                    if (userDisconnected || generation != connectionGeneration) return@launch
+                    Log.w(TAG, "$why — recovering Icom session")
+                    recover.invoke()
+                }
+            }.also { it.start() }
         }
     }
 
-    /** Called from the poller: fire a recovery that was deferred during TX. */
-    private fun runDeferredRecovery() {
-        if (txInProgress()) return
-        val r = synchronized(lock) { deferredRecovery?.also { deferredRecovery = null } } ?: return
-        Log.w(TAG, "Over ended — running the deferred Icom session recovery")
-        r.invoke()
-    }
-
     private fun recordCatResponse(transport: RigctldTransport, name: String, args: String, response: RigctldResponse) {
-        val recover = synchronized(lock) {
+        synchronized(lock) {
             if (connection !== transport || userDisconnected) return
             if (name == "get_freq" || name == "set_freq") {
                 Log.i(TAG, "Frequency reply: '$name $args' RPRT=${response.result} values=${response.lines}")
             }
-            if (catHealth.record(name, args, response, System.nanoTime() / 1_000_000,
+            val recover = if (catHealth.record(name, args, response, System.nanoTime() / 1_000_000,
                     confirmOffByReadback = requirePttOffReadback)) onCatUnresponsive else null
+            if (recover != null) requestRecovery(recover, "Essential radio CAT commands repeatedly failed")
         }
-        if (recover != null) requestRecovery(recover, "Radio CAT has repeatedly failed for 15 s")
     }
 
     fun destroy() {
@@ -342,21 +348,26 @@ class RigController internal constructor(
     private fun isCurrentFrequencyOperation(operation: Long, session: RigctldTransport): Boolean =
         synchronized(lock) { operation == frequencyOperation && connection === session }
 
-    suspend fun getFreq(): Long {
+    /** UI polling retains the last reported dial value during temporary loss. */
+    suspend fun getFreq(): Long = readFrequency() ?: _state.value.freqHz
+
+    /** A fresh, successful read on the current CAT session. Recovery probes must
+     * distinguish this from [getFreq]'s last-known-value fallback. */
+    suspend fun readFrequency(): Long? {
         val (operation, session) = synchronized(lock) { frequencyOperation to connection }
-        if (session == null) return _state.value.freqHz
+        if (session == null) return null
         return withContext(Dispatchers.IO) {
             val freq = sendCommand("get_freq", expectedConnection = session)?.value("Frequency")?.toLongOrNull()
+                ?.takeIf { it in 10_000L..1_300_000_000L }
             synchronized(lock) {
-                if (isCurrentFrequencyOperation(operation, session) && freq != null && freq in 10_000L..1_300_000_000L) {
-                    val confirmed = freq == unconfirmedFrequencyHz
-                    if (confirmed) {
-                        unconfirmedFrequencyHz = null
-                        Log.i(TAG, "setFreq request=$operation confirmed by later poll reportedHz=$freq")
-                    }
-                    _state.update { it.copy(freqHz = freq, frequencyError = if (confirmed) "" else it.frequencyError) }
+                if (!isCurrentFrequencyOperation(operation, session) || freq == null) return@synchronized null
+                val confirmed = freq == unconfirmedFrequencyHz
+                if (confirmed) {
+                    unconfirmedFrequencyHz = null
+                    Log.i(TAG, "setFreq request=$operation confirmed by later poll reportedHz=$freq")
                 }
-                _state.value.freqHz
+                _state.update { it.copy(freqHz = freq, frequencyError = if (confirmed) "" else it.frequencyError) }
+                freq
             }
         }
     }
@@ -533,7 +544,6 @@ class RigController internal constructor(
             try { gate(); getMode() } catch (_: Exception) {}
             while (isActive && _state.value.connected) {
                 try {
-                    runDeferredRecovery()
                     // Gate each read, not just the start of a polling cycle. No
                     // frequency read while transmitting: Hamlib answers it with
                     // an empty reply during PTT, which only feeds the health

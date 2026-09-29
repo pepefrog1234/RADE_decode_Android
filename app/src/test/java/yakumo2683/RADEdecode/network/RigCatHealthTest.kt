@@ -26,16 +26,36 @@ class RigCatHealthTest {
         }
     }
 
-    @Test fun rejectedOrProtocolRepliesAreAnswersFromALiveRadioNotLinkFailures() {
-        // v1.6.27 field log: Hamlib's set_vfo-before-read fallback made every
-        // poll "RPRT -9" while PTT and audio worked; that must not recover.
+    @Test fun unusablePttRepliesRecoverEvenWhenFrequencyStillWorks() {
+        // v1.6.28 field log: audio and some frequency reads survived, but
+        // persistent get_ptt -9 left OFF unconfirmed and subsequent TX blocked.
+        for (error in listOf(-8, -9, -13, -14)) {
+            val health = RigCatHealth()
+            for (now in listOf(0L, 7_000L, 15_000L)) {
+                assertFalse(health.record("get_freq", "", ok, now))
+                assertEquals("error=$error now=$now", now == 15_000L,
+                    health.record("get_ptt", "", RigctldResponse(emptyList(), error), now))
+            }
+        }
+    }
+
+    @Test fun transientRejectionsWithSuccessfulReadbacksDoNotRecover() {
         val health = RigCatHealth()
         for (i in 0 until 12) {
             val now = i * 5_000L
             assertFalse(health.record("get_ptt", "", RigctldResponse(emptyList(), -9), now))
-            assertFalse(health.record("get_freq", "", RigctldResponse(emptyList(), -9), now))
             assertFalse(health.record("get_freq", "", protocolError, now))
-            assertFalse(health.record("get_freq", "", RigctldResponse(emptyList(), -13), now))
+            assertFalse(health.record("get_ptt", "", RigctldResponse(listOf("PTT: 0"), 0), now + 1))
+            assertFalse(health.record("get_freq", "", ok, now + 1))
+        }
+    }
+
+    @Test fun rejectedOffCommandsCannotRemainPendingForever() {
+        val health = RigCatHealth()
+        for (now in listOf(0L, 7_000L, 15_000L)) {
+            assertFalse(health.record("get_freq", "", ok, now))
+            assertEquals(now == 15_000L, health.record("set_ptt", "0",
+                RigctldResponse(emptyList(), -9), now, confirmOffByReadback = true))
         }
     }
 

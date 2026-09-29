@@ -14,7 +14,7 @@
  *
  * Unlike usb_serial_helper.c (which bridges USB bulk endpoints to a pty entirely
  * in native threads), here the CI-V bytes live in Kotlin: they are tunnelled over
- * UDP by IcomNetworkManager.  So we expose the pty master as four primitive JNI
+ * UDP by IcomNetworkManager.  So we expose the pty master as primitive JNI
  * calls and let Kotlin pump bytes both ways:
  *
  *   radio --UDP 50002--> IcomNetworkManager --nativeIcomPtyWrite--> pty master
@@ -182,4 +182,19 @@ Java_yakumo2683_RADEdecode_network_IcomNetworkManager_nativeIcomPtyClose(
     if (g_slave  >= 0) { close(g_slave);  g_slave  = -1; }
     pthread_mutex_unlock(&g_lock);
     LOGD("pty closed");
+}
+
+/* Discard both directions after the old rigctld exits, without changing FDs. */
+JNIEXPORT jboolean JNICALL
+Java_yakumo2683_RADEdecode_network_IcomNetworkManager_nativeIcomPtyFlush(
+        JNIEnv *env, jclass cls) {
+    pthread_mutex_lock(&g_lock);
+    int ok = g_master >= 0 && g_slave >= 0;
+    if (ok) {
+        int master_result = tcflush(g_master, TCIOFLUSH);
+        int slave_result = tcflush(g_slave, TCIOFLUSH);
+        ok = master_result == 0 && slave_result == 0;
+    }
+    pthread_mutex_unlock(&g_lock);
+    return ok ? JNI_TRUE : JNI_FALSE;
 }

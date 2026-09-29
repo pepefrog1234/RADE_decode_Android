@@ -6,14 +6,14 @@ package yakumo2683.RADEdecode.network
  * Those writes must not reach a radio that the operator has already tuned.
  * Access is serialized by IcomStream.sendLock, including retransmissions.
  *
- * Blocked probes are answered with a CI-V OK ([acknowledgement]), not a NAK.
+ * Only virtual VFO A/B selection is acknowledged locally. Denied frequency,
+ * memory and VFO-copy writes must not be reported as successful.
  * v1.6.27 answered NAK; field log (IC-7300MK2, LTE): after one lost 0x25
  * reply Hamlib sets `x25cmdfails` and from then on issues `set_vfo` (07 00)
  * before EVERY read, so the NAK turned every get_freq/get_ptt/get_level into
  * "RPRT -9" — the CAT-health tracker then tore the session down mid-over.
- * The probe's outcome is irrelevant here: only selected-VFO commands (25 00,
- * 03, 05, 1C 00, 26 00) are ever used, so letting Hamlib believe the probe
- * succeeded keeps it on its normal read path while the radio stays untouched.
+ * Treating A/B selection as a virtual operation lets Hamlib's fallback use
+ * selected-VFO commands without moving the physical radio's VFO.
  */
 internal class IcomTuningGuard(private val nowMs: () -> Long = { System.nanoTime() / 1_000_000 }) {
     private var generation = 0L
@@ -29,6 +29,8 @@ internal class IcomTuningGuard(private val nowMs: () -> Long = { System.nanoTime
     fun end(token: Long) {
         if (generation == token) requestedHz = null
     }
+
+    fun clear() { requestedHz = null; generation++ }
 
     fun allows(frame: ByteArray): Boolean {
         val address = addressOffset(frame) ?: return true
@@ -61,6 +63,13 @@ internal class IcomTuningGuard(private val nowMs: () -> Long = { System.nanoTime
     }
 
     companion object {
+        fun blockedReply(frame: ByteArray, echo: Boolean): ByteArray {
+            val address = requireNotNull(addressOffset(frame))
+            val isVfoSelection = frame.size == address + 5 && frame[address + 2] == 7.toByte() &&
+                frame[address + 3].toInt() in 0..1
+            return if (isVfoSelection) acknowledgement(frame, echo) else rejection(frame, echo)
+        }
+
         private fun addressOffset(frame: ByteArray): Int? {
             var i = 0
             while (i < frame.size && frame[i] == 0xfe.toByte()) i++
@@ -73,8 +82,7 @@ internal class IcomTuningGuard(private val nowMs: () -> Long = { System.nanoTime
             return if (echo) frame + nak else nak
         }
 
-        /** CI-V OK (0xFB) for a blocked write, addressed like the radio's own
-         *  reply, with the command echoed first when the radio echoes. */
+        /** CI-V OK (0xFB) for a virtual VFO selection. */
         fun acknowledgement(frame: ByteArray, echo: Boolean): ByteArray {
             val address = requireNotNull(addressOffset(frame))
             val ack = byteArrayOf(-2, -2, frame[address + 1], frame[address], 0xfb.toByte(), -3)

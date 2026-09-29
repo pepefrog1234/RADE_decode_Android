@@ -5,6 +5,7 @@ internal interface IcomPty {
     fun open(): String?
     fun write(data: ByteArray, len: Int): Int
     fun read(timeoutMs: Int): ByteArray?
+    fun flush(): Boolean
     fun close()
 }
 
@@ -15,5 +16,6 @@ internal object NativeIcomPty : IcomPty {
     override fun open() = IcomNetworkManager.nativeIcomPtyOpen()
     override fun write(data: ByteArray, len: Int) = IcomNetworkManager.nativeIcomPtyWrite(data, len)
     override fun read(timeoutMs: Int) = IcomNetworkManager.nativeIcomPtyRead(timeoutMs)
+    override fun flush() = IcomNetworkManager.nativeIcomPtyFlush()
     override fun close() = IcomNetworkManager.nativeIcomPtyClose()
 }

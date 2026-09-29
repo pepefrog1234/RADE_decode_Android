@@ -17,12 +17,27 @@ class HamlibIcomTuningTest {
     @Test fun selectedBWithoutEcho() = exercise(echo = false, equal = false)
     @Test fun equalFrequenciesWithEcho() = exercise(echo = true, equal = true)
     @Test fun equalFrequenciesWithoutEcho() = exercise(echo = false, equal = true)
+    @Test fun missingFirstPhysicalEchoDoesNotPoisonHamlib() =
+        exercise(echo = true, equal = false, fault = Fault.MISSING_FIRST_ECHO)
+    @Test fun delayedPhysicalEchoDoesNotBecomeTheNextReply() =
+        exercise(echo = true, equal = false, fault = Fault.DELAYED_ECHO)
+    @Test fun lostFrequencyReplyDoesNotDisableSetOrPtt() =
+        exercise(echo = true, equal = false, fault = Fault.LOST_FREQUENCY_REPLY)
+    @Test fun modeReplyCannotBeDecodedAsFrequency1010000() =
+        exercise(echo = false, equal = false, fault = Fault.WRONG_COMMAND_REPLY)
+    @Test fun duplicateRadioRepliesCannotAcknowledgeTheNextCommand() =
+        exercise(echo = true, equal = false, fault = Fault.DUPLICATE_REPLY)
 
-    private fun exercise(echo: Boolean, equal: Boolean) {
+    private enum class Fault {
+        NONE, MISSING_FIRST_ECHO, DELAYED_ECHO, LOST_FREQUENCY_REPLY,
+        WRONG_COMMAND_REPLY, DUPLICATE_REPLY
+    }
+
+    private fun exercise(echo: Boolean, equal: Boolean, fault: Fault = Fault.NONE) {
         val binary = System.getenv("RADE_TEST_RIGCTLD")
         assumeTrue("Set RADE_TEST_RIGCTLD to run the real Hamlib integration", binary != null)
         check(File(binary!!).canExecute())
-        Radio(echo, equal).use { radio ->
+        Radio(echo, equal, fault).use { radio ->
             val port = ServerSocket(0).use { it.localPort }
             val log = File.createTempFile("rade-hamlib-tuning-", ".log")
             val process = ProcessBuilder(binary, "-m", "3085", "-r", radio.path,
@@ -49,6 +64,14 @@ class HamlibIcomTuningTest {
                     assertTrue("Expected actual startup VFO probes", radio.blocked.isNotEmpty())
                     assertEquals(1, radio.selected)
                     assertEquals(7_177_000L, radio.frequencies[1])
+                    radio.faultArmed = true
+                    // A lost query may exhaust Hamlib's own retries; the next
+                    // operation must still work without reconnecting the radio.
+                    val firstRead = command("f")
+                    if (fault == Fault.LOST_FREQUENCY_REPLY) {
+                        assertTrue(firstRead, firstRead == "7177000" || firstRead.startsWith("RPRT -"))
+                    } else assertEquals("7177000", firstRead)
+                    assertEquals("7177000", command("f"))
                     val token = synchronized(radio.guard) { radio.guard.begin(7_142_000) }
                     try {
                         assertEquals("RPRT 0", command("F 7142000"))
@@ -66,6 +89,7 @@ class HamlibIcomTuningTest {
                     assertEquals(1, radio.selected)
                     assertEquals(if (equal) 7_177_000L else 7_065_000L, radio.frequencies[0])
                     assertEquals(7_142_000L, radio.frequencies[1])
+                    if (fault != Fault.NONE) assertTrue("Fault was not exercised: $fault", radio.injectedFaults > 0)
                 }
                 radio.failure.get()?.let { throw AssertionError(it) }
                 passed = true
@@ -78,7 +102,7 @@ class HamlibIcomTuningTest {
         }
     }
 
-    private class Radio(val echo: Boolean, equal: Boolean) : AutoCloseable {
+    private class Radio(val echo: Boolean, equal: Boolean, private val fault: Fault) : AutoCloseable {
         // A real PTY matches Android's transport. Hamlib's Icom host:port mode
         // switches to raw UDP, so a TCP serial fake would exercise a different path.
         private val bridge = ProcessBuilder("python3", "-u", "-c", """
@@ -100,7 +124,13 @@ class HamlibIcomTuningTest {
         val guard = IcomTuningGuard()
         val frequencies = longArrayOf(if (equal) 7_177_000 else 7_065_000, 7_177_000)
         @Volatile var selected = 1
+        @Volatile var faultArmed = false
+        @Volatile var injectedFaults = 0
         private var ptt = 0
+        private val exchange = IcomCivExchange()
+        private var previousEcho = byteArrayOf()
+        private var previousReply = byteArrayOf()
+        private var physicalCommands = 0
         val blocked = Collections.synchronizedList(mutableListOf<String>())
         val failure = AtomicReference<Throwable?>()
         private val worker = thread(name = "hamlib-civ-radio") {
@@ -116,11 +146,23 @@ class HamlibIcomTuningTest {
                         val response = synchronized(guard) {
                             if (!guard.allows(frame)) {
                                 blocked.add(frame.joinToString("") { "%02X".format(it) })
-                                IcomTuningGuard.acknowledgement(frame, echo)
+                                exchange.clear()
+                                IcomTuningGuard.blockedReply(frame, echo = true)
                             } else {
+                                // Model the app's CI-V bridge, not just the fake
+                                // radio. Hamlib always gets one local echo; the
+                                // lossy/reordered radio echoes are filtered by
+                                // the same production exchange used over UDP.
+                                exchange.begin(frame)
+                                output.write(frame); output.flush()
                                 val body = frame.copyOfRange(4, frame.size - 1)
                                 val reply = byteArrayOf(-2, -2, frame[3], frame[2]) + answer(body) + byteArrayOf(-3)
-                                if (echo) frame + reply else reply
+                                val wire = radioDelivery(frame, body, reply)
+                                // UDP can split a CI-V frame between packets, or
+                                // carry several frames in one payload.
+                                wire.asList().chunked(3).flatMap { chunk ->
+                                    exchange.receive(chunk.toByteArray())
+                                }.fold(byteArrayOf()) { all, accepted -> all + accepted }
                             }
                         }
                         output.write(response); output.flush()
@@ -128,6 +170,45 @@ class HamlibIcomTuningTest {
                 }
             } catch (_: SocketException) { /* teardown */ }
             catch (t: Throwable) { failure.set(t) }
+        }
+
+        private fun radioDelivery(frame: ByteArray, body: ByteArray, reply: ByteArray): ByteArray {
+            physicalCommands++
+            val physicalEcho = if (echo) frame else byteArrayOf()
+            if (fault == Fault.MISSING_FIRST_ECHO && physicalCommands == 1) {
+                injectedFaults++
+                return reply
+            }
+            if (fault == Fault.DELAYED_ECHO) {
+                // The previous command's echo arrives after this command's
+                // response, and this echo will not arrive until the next one.
+                val delayed = previousEcho
+                previousEcho = physicalEcho
+                injectedFaults++
+                return reply + delayed
+            }
+            if (!faultArmed) return physicalEcho + reply
+            if (fault == Fault.LOST_FREQUENCY_REPLY && injectedFaults == 0 &&
+                ((body[0].toInt() and 255) == 0x03 ||
+                    ((body[0].toInt() and 255) == 0x25 && body.size == 2))) {
+                injectedFaults++
+                return physicalEcho
+            }
+            if (fault == Fault.WRONG_COMMAND_REPLY &&
+                (body[0].toInt() and 255) in listOf(0x03, 0x25)) {
+                injectedFaults++
+                // A late 26 mode response was accepted as BCD frequency by
+                // Hamlib 4.5.5: logs contained spurious 1,010,000 Hz readings.
+                val mode = byteArrayOf(-2, -2, frame[3], frame[2], 0x26, 0, 1, 1, 1, -3)
+                return physicalEcho + mode + reply
+            }
+            if (fault == Fault.DUPLICATE_REPLY) {
+                val delayed = previousReply
+                previousReply = reply
+                injectedFaults++
+                return physicalEcho + delayed + reply + reply
+            }
+            return physicalEcho + reply
         }
 
         private fun answer(b: ByteArray): ByteArray {
@@ -145,6 +226,10 @@ class HamlibIcomTuningTest {
                 0x0f -> byteArrayOf(0x0f, 0)
                 0x1c -> if (b.size == 2) byteArrayOf(0x1c, 0, ptt.toByte())
                     else { ptt = b[2].toInt(); ack }
+                // rigctld checks power when accepting a client and after CAT
+                // timeouts. Returning NAK here hid filters that discarded the
+                // real radio's valid power-status reply and induced timeouts.
+                0x18 -> if (b.size == 1) byteArrayOf(0x18, 1) else ack
                 0x19 -> byteArrayOf(0x19, 0, 0xa4.toByte())
                 else -> byteArrayOf(0xfa.toByte())
             }

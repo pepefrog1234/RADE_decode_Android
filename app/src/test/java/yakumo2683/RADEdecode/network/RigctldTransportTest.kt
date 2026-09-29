@@ -11,10 +11,68 @@ import java.net.ServerSocket
 import java.net.Socket
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicReference
 import kotlin.concurrent.thread
 
 class RigctldTransportTest {
+    @Test fun freshFrequencyProbeNeverUsesCachedOrMalformedReplies() = runBlocking {
+        val replies = listOf(
+            "Frequency: 7105000\nRPRT 0",
+            "Frequency: 7177000\nRPRT -9", // Failed commands cannot confirm even a labelled value.
+            "RPRT 0",                     // Empty success is not a frequency.
+            "Frequency: 0\nRPRT 0",      // Invalid range.
+            "Frequency: invalid\nRPRT 0",
+            "RPRT -9"
+        )
+        FakeRig { input, output ->
+            for (reply in replies) {
+                assertEquals("+\\get_freq", input.readLine())
+                output.print("get_freq:\n$reply\n"); output.flush()
+            }
+        }.use { rig ->
+            val controller = RigController(pollingEnabled = false)
+            try {
+                controller.connect("127.0.0.1", rig.port)
+                assertEquals(7_105_000L, controller.readFrequency())
+                repeat(4) {
+                    assertNull("Recovery needs a fresh valid response", controller.readFrequency())
+                    assertEquals(7_105_000L, controller.state.value.freqHz)
+                }
+                assertEquals("UI polling retains its last good dial value", 7_105_000L, controller.getFreq())
+                controller.disconnect()
+                assertNull("A disconnected session cannot provide fresh frequency", controller.readFrequency())
+                rig.checkFinished()
+            } finally { controller.destroy() }
+        }
+    }
+
+    @Test fun freshFrequencyProbeCannotFollowAReplacementConnection() = runBlocking {
+        val oldSeen = CompletableDeferred<Unit>()
+        FakeRig { input, _ ->
+            assertEquals("+\\get_freq", input.readLine())
+            oldSeen.complete(Unit)
+            assertNull(input.readLine())
+        }.use { oldRig ->
+            FakeRig { input, output ->
+                assertEquals("+\\get_freq", input.readLine())
+                output.print("get_freq:\nFrequency: 14236000\nRPRT 0\n"); output.flush()
+            }.use { newRig ->
+                val controller = RigController(pollingEnabled = false)
+                try {
+                    controller.connect("127.0.0.1", oldRig.port)
+                    val old = async { controller.readFrequency() }
+                    withTimeout(1000) { oldSeen.await() }
+                    controller.connect("127.0.0.1", newRig.port)
+                    assertNull(old.await())
+                    assertEquals(14_236_000L, controller.readFrequency())
+                    oldRig.checkFinished()
+                    newRig.checkFinished()
+                } finally { controller.destroy() }
+            }
+        }
+    }
+
     @Test fun networkOffAckDoesNotConfirmRxWhileRadioStillReportsTx() = runBlocking {
         FakeRig { input, output ->
             assertEquals("+\\set_ptt 1", input.readLine())
@@ -220,8 +278,6 @@ class RigctldTransportTest {
     }
 
     @Test fun repeatedTimeoutsReachTheNetworkRecoveryHook() = runBlocking {
-        // Only "the radio did not answer" (RPRT -5/-6) is a link failure. A
-        // protocol error or NAK is an answer from a live radio (v1.6.28).
         val recovery = CompletableDeferred<Unit>()
         FakeRig { input, output ->
             repeat(3) {
@@ -238,6 +294,93 @@ class RigctldTransportTest {
                 assertTrue("Local TCP should still be alive when radio-level recovery fires", controller.isConnected)
                 rig.checkFinished()
             } finally { controller.destroy() }
+        }
+    }
+
+    @Test fun repeatedPttRejectionsRecoverAfterAudioTxEndsWithoutDependingOnPolling() = runBlocking {
+        val recovery = CompletableDeferred<Unit>()
+        val audioTx = AtomicBoolean(true)
+        FakeRig { input, output ->
+            repeat(3) {
+                assertEquals("+\\get_freq", input.readLine())
+                output.print("get_freq:\nFrequency: 7105000\nRPRT 0\n"); output.flush()
+                assertEquals("+\\get_ptt", input.readLine())
+                output.print("get_ptt:\nRPRT -9\n"); output.flush()
+            }
+        }.use { rig ->
+            val controller = RigController(pollingEnabled = false, catHealth = RigCatHealth(failureWindowMs = 0))
+            controller.txInProgress = { audioTx.get() }
+            controller.onCatUnresponsive = { recovery.complete(Unit) }
+            try {
+                controller.connect("127.0.0.1", rig.port, verifyPttOff = true)
+                repeat(3) {
+                    assertEquals(7_105_000L, controller.getFreq())
+                    assertNull(controller.readPtt())
+                }
+                delay(150)
+                assertFalse("Recovery must not cut active audio TX", recovery.isCompleted)
+                audioTx.set(false) // OFF is still unknown, but RX has resumed.
+                withTimeout(1000) { recovery.await() }
+                assertTrue(controller.isConnected)
+                rig.checkFinished()
+            } finally { controller.destroy() }
+        }
+    }
+
+    @Test fun disconnectCancelsARecoveryDeferredDuringTx() = runBlocking {
+        val recovered = AtomicBoolean(false)
+        val audioTx = AtomicBoolean(true)
+        FakeRig { input, output ->
+            repeat(3) {
+                assertEquals("+\\get_ptt", input.readLine())
+                output.print("get_ptt:\nRPRT -9\n"); output.flush()
+            }
+        }.use { rig ->
+            val controller = RigController(pollingEnabled = false, catHealth = RigCatHealth(failureWindowMs = 0))
+            controller.txInProgress = { audioTx.get() }
+            controller.onCatUnresponsive = { recovered.set(true) }
+            try {
+                controller.connect("127.0.0.1", rig.port)
+                repeat(3) { assertNull(controller.readPtt()) }
+                delay(150)
+                controller.disconnect()
+                audioTx.set(false)
+                delay(200)
+                assertFalse("User disconnect must invalidate the queued recovery", recovered.get())
+                rig.checkFinished()
+            } finally { controller.destroy() }
+        }
+    }
+
+    @Test fun replacementConnectionCannotInheritTheOldSessionsDeferredRecovery() = runBlocking {
+        val recovered = AtomicBoolean(false)
+        val audioTx = AtomicBoolean(true)
+        FakeRig { input, output ->
+            repeat(3) {
+                assertEquals("+\\get_ptt", input.readLine())
+                output.print("get_ptt:\nRPRT -9\n"); output.flush()
+            }
+        }.use { oldRig ->
+            FakeRig { input, output ->
+                assertEquals("+\\get_freq", input.readLine())
+                output.print("get_freq:\nFrequency: 7105000\nRPRT 0\n"); output.flush()
+            }.use { newRig ->
+                val controller = RigController(pollingEnabled = false, catHealth = RigCatHealth(failureWindowMs = 0))
+                controller.txInProgress = { audioTx.get() }
+                controller.onCatUnresponsive = { recovered.set(true) }
+                try {
+                    controller.connect("127.0.0.1", oldRig.port)
+                    repeat(3) { assertNull(controller.readPtt()) }
+                    controller.connect("127.0.0.1", newRig.port)
+                    audioTx.set(false)
+                    assertEquals(7_105_000L, controller.getFreq())
+                    delay(200)
+                    assertFalse("The failed predecessor cannot recover the healthy replacement", recovered.get())
+                    assertTrue(controller.isConnected)
+                    oldRig.checkFinished()
+                    newRig.checkFinished()
+                } finally { controller.destroy() }
+            }
         }
     }
 

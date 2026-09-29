@@ -60,12 +60,29 @@ class IcomTuningGuardTest {
         assertFalse(IcomTuningGuard().allows(bytes("FEFE") + request))
     }
 
-    @Test fun blockedProbeIsAcknowledgedLikeTheRadioWould() {
+    @Test fun onlyVirtualVfoSelectionsAreAcknowledged() {
         val request = frame("0700")
         val ok = bytes("FEFEE0A4FBFD")
         assertArrayEquals(ok, IcomTuningGuard.acknowledgement(request, false))
         assertArrayEquals(request + ok, IcomTuningGuard.acknowledgement(request, true))
         assertFalse(IcomTuningGuard.isControllerEcho(ok))
+        listOf("0700", "0701").forEach {
+            assertArrayEquals(ok, IcomTuningGuard.blockedReply(frame(it), false))
+        }
+        listOf("07B0", "0801", "25000051060700", "050050060700").forEach {
+            val denied = frame(it)
+            assertArrayEquals(denied + bytes("FEFEE0A4FAFD"), IcomTuningGuard.blockedReply(denied, true))
+        }
+    }
+
+    @Test fun catRestartRevokesOutstandingFrequencyPermit() {
+        val guard = IcomTuningGuard()
+        val old = guard.begin(7_177_000)
+        guard.clear()
+        assertFalse(guard.allows(frame("25000070170700")))
+        guard.begin(7_177_000)
+        guard.end(old)
+        assertTrue(guard.allows(frame("25000070170700")))
     }
 
     companion object {

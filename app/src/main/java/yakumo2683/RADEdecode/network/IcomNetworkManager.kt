@@ -16,6 +16,8 @@ import java.net.InetAddress
 import java.net.InetSocketAddress
 import java.net.SocketTimeoutException
 import java.util.concurrent.atomic.AtomicLong
+import java.util.concurrent.locks.ReentrantLock
+import kotlin.concurrent.withLock as withThreadLock
 
 /**
  * Icom RS-BA1 (LAN/WLAN) network rig control for radios with a built-in server
@@ -121,6 +123,7 @@ class IcomNetworkManager internal constructor(private val pty: IcomPty) : Networ
         @JvmStatic external fun nativeIcomPtyWrite(data: ByteArray, len: Int): Int
         @JvmStatic external fun nativeIcomPtyRead(timeoutMs: Int): ByteArray?
         @JvmStatic external fun nativeIcomPtyClose()
+        @JvmStatic external fun nativeIcomPtyFlush(): Boolean
 
         /** Icom username/password obfuscation ("passcode"), ported from kappanhang. */
         private val PASSCODE = IntArray(160).also { s ->
@@ -193,6 +196,8 @@ class IcomNetworkManager internal constructor(private val pty: IcomPty) : Networ
     fun authorizeFrequencyChange(hz: Long): AutoCloseable? =
         serial?.takeIf { isConnected && isCurrentSession(it.scope) }?.authorizeFrequencyChange(hz)
 
+    private var ptySlavePath: String? = null
+    private val ptyReadLock = ReentrantLock(true)
     private val ptyWriteLock = Any()
     private fun writePty(data: ByteArray) = synchronized(ptyWriteLock) { pty.write(data, data.size) }
     override val audioLinkUp: Boolean get() = _state.value.audioConnected
@@ -509,8 +514,20 @@ class IcomNetworkManager internal constructor(private val pty: IcomPty) : Networ
 
     private fun isCurrentSession(scope: CoroutineScope) = connScope === scope && !disconnecting && scope.isActive
 
-    /** CAT can fail while UDP pings/audio continue. Recover the whole radio
-     * session, not just the localhost socket to the same broken CI-V tunnel. */
+    /** Called after stopping rigctld. Reset CAT state on the same PTY while
+     * healthy UDP/audio streams continue; a failed local restart may escalate
+     * to [recoverCatSession]. Lock order: manager -> read -> send -> write. */
+    @Synchronized
+    fun prepareCatRestart(): String? {
+        val ser = serial ?: return null
+        val path = ptySlavePath ?: return null
+        if (!isConnected || !isCurrentSession(ser.scope)) return null
+        return ptyReadLock.withThreadLock {
+            if (ser.resetCatBridge()) path else null
+        }
+    }
+
+    /** Escalation when a fresh CAT process cannot recover the radio session. */
     fun recoverCatSession() {
         val session = connScope ?: return
         if (!isConnected || !isCurrentSession(session)) return
@@ -585,6 +602,7 @@ class IcomNetworkManager internal constructor(private val pty: IcomPty) : Networ
         audio = null
         serial = null
         control = null
+        ptySlavePath = null
         try { pty.close() } catch (_: Exception) {}
         scope.cancel()
         connScope = null
@@ -734,6 +752,7 @@ class IcomNetworkManager internal constructor(private val pty: IcomPty) : Networ
                     if (!result.isCompleted) result.complete("")
                     return@launch
                 }
+                ptySlavePath = path
                 serialOpened = true
                 serialOpening = false
 
@@ -976,8 +995,7 @@ class IcomNetworkManager internal constructor(private val pty: IcomPty) : Networ
                         recent[seq] = now to r
                         if (recent.size > 256) recent.remove(recent.keys.first())
                         val civ = r.copyOfRange(21, 21 + len)
-                        if (IcomTuningGuard.isControllerEcho(civ)) ser.civEchoSeen = true
-                        writePty(civ)
+                        ser.receiveCiv(civ, seq)
                     }
                 }
             }
@@ -989,25 +1007,14 @@ class IcomNetworkManager internal constructor(private val pty: IcomPty) : Networ
     }
 
     private suspend fun ptyTxLoop(ser: IcomStream) {
-        val frame = ArrayList<Byte>(96)
         try {
             while (true) {
-                yield()                                   // cancellation point
-                val d = pty.read(100) ?: break   // null = pty closed
-                if (d.isEmpty()) continue
-                for (b in d) {
-                    frame.add(b)
-                    val v = b.toInt() and 0xFF
-                    // CI-V frames end in 0xFD (0xFC for some); also cap at 80 bytes.
-                    if (v == 0xFD || v == 0xFC || frame.size >= 80) {
-                        val civ = frame.toByteArray()
-                        ser.sendCiv(civ)
-                        // Let Hamlib and explicit radio retransmit requests
-                        // retry loss. Unsolicited copies of a PTT query/set can
-                        // produce extra replies that acknowledge a later command.
-                        frame.clear()
-                    }
+                yield()
+                val (generation, data) = ptyReadLock.withThreadLock {
+                    ser.catGeneration to pty.read(100)
                 }
+                if (data == null) break
+                ser.forwardPty(data, generation)
             }
         } catch (e: CancellationException) {
             throw e
@@ -1165,7 +1172,28 @@ class IcomNetworkManager internal constructor(private val pty: IcomPty) : Networ
         private val txBuf = LinkedHashMap<Int, ByteArray>()
         private val isAudio = name == "audio"
         private val tuningGuard = IcomTuningGuard()
-        @Volatile var civEchoSeen = false
+        private val civExchange = IcomCivExchange()
+        private var civRequestSeq = -1
+        private val ptyFramer = IcomCivFramer()
+        @Volatile var catGeneration = 0L
+            private set
+
+        fun resetCatBridge(): Boolean = synchronized(sendLock) {
+            if (!running || shuttingDown || !isCurrentSession(scope)) return@synchronized false
+            catGeneration++
+            ptyFramer.clear()
+            civExchange.clear()
+            civRequestSeq = -1
+            tuningGuard.clear()
+            val flushed = synchronized(ptyWriteLock) { pty.flush() }
+            Log.i(TAG, "CI-V CAT bridge reset generation=$catGeneration flushed=$flushed; UDP/audio retained")
+            flushed
+        }
+
+        fun forwardPty(data: ByteArray, generation: Long) = synchronized(sendLock) {
+            if (generation != catGeneration) return@synchronized
+            for (frame in ptyFramer.feed(data)) sendCiv(frame)
+        }
 
         fun authorizeFrequencyChange(hz: Long): AutoCloseable = synchronized(sendLock) {
             val token = tuningGuard.begin(hz)
@@ -1177,26 +1205,46 @@ class IcomNetworkManager internal constructor(private val pty: IcomPty) : Networ
             if (!running || shuttingDown || !isCurrentSession(scope)) return@synchronized
             if (!tuningGuard.allows(civ)) {
                 Log.w(TAG, "CI-V blocked automatic tuning bytes=${civ.joinToString("") { "%02X".format(it) }}")
-                // Answer OK without touching the radio. A NAK (v1.6.27) made
-                // Hamlib's every read fail with ERJCTED once it had fallen back to
-                // set_vfo-before-read after a lost reply, which the CAT-health
-                // tracker read as a dead link and tore the session down mid-TX.
-                // See IcomTuningGuard.
-                writePty(IcomTuningGuard.acknowledgement(civ, civEchoSeen))
+                civExchange.clear()
+                civRequestSeq = -1
+                writePty(IcomTuningGuard.blockedReply(civ, echo = true))
                 return@synchronized
             }
+            civExchange.begin(civ)
+            // A deterministic local echo keeps Hamlib's startup detection and
+            // later reads independent of UDP echo loss/reordering. Real radio
+            // echoes are discarded by receiveCiv, not delivered a second time.
+            writePty(civ)
             val pkt = buildSerialData(this, civ)
             sendTracked(pkt)
+            civRequestSeq = u16le(pkt, 6)
             serialInnerSeq = (serialInnerSeq + 1) and 0xFFFF
             if (isCivControlWrite(civ)) Log.i(TAG,
                 "CI-V TX seq=${u16le(pkt, 6)} bytes=${civ.joinToString("") { "%02X".format(it) }}")
+        }
+
+        fun receiveCiv(civ: ByteArray, seq: Int) = synchronized(sendLock) {
+            if (!running || shuttingDown || !isCurrentSession(scope)) return@synchronized
+            val request = civExchange.pendingRequest()
+            val before = civExchange.discardedReplies
+            for (reply in civExchange.receive(civ)) {
+                val offset = IcomCivFramer.addressOffset(reply) ?: continue
+                if (reply[offset + 2] == 0xfa.toByte()) Log.w(TAG,
+                    "CI-V RX NAK seq=$seq request=${request?.joinToString("") { "%02X".format(it) }}")
+                writePty(reply)
+            }
+            val discarded = civExchange.discardedReplies
+            if (discarded != before && (before == 0L || discarded / 50 != before / 50)) Log.w(TAG,
+                "CI-V RX filtered unmatched=$discarded echoes=${civExchange.discardedEchoes} seq=$seq")
         }
 
         private fun mayReplay(p: ByteArray): Boolean {
             if (name != "serial" || p.size < 22 || p.u(16) != 0xc1) return true
             val len = p.u(17)
             if (21 + len > p.size) return false
-            return tuningGuard.allows(p.copyOfRange(21, 21 + len))
+            val civ = p.copyOfRange(21, 21 + len)
+            return u16le(p, 6) == civRequestSeq &&
+                civExchange.pendingRequest()?.contentEquals(civ) == true && tuningGuard.allows(civ)
         }
 
         init { synchronized(allStreams) { allStreams.add(this) } }
@@ -1632,7 +1680,7 @@ class IcomNetworkManager internal constructor(private val pty: IcomPty) : Networ
                     sendRaw(d, duringShutdown = true)
                     if (!(burst && isAudio)) sendRaw(d, duringShutdown = true)
                 } else {
-                    if (d != null) Log.w(TAG, "CI-V stale tuning retransmit suppressed seq=$seq")
+                    if (d != null) Log.w(TAG, "CI-V stale command retransmit suppressed seq=$seq")
                     resentAsIdle++
                     val idle = idlePacketWithSeq(seq)
                     sendRaw(idle, duringShutdown = true); sendRaw(idle, duringShutdown = true)
