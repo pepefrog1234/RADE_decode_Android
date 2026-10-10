@@ -14,10 +14,12 @@
 #include <memory>
 #include <mutex>
 #include <thread>
+#include <utility>
 #include <vector>
 #include <cstdio>
 
 #include "audio_ring_buffer.h"
+#include "tx_input_health.h"
 
 extern "C" {
 #include "rade_api.h"
@@ -103,6 +105,10 @@ public:
                  bool voiceRecognitionInput = false);
     void stopTx(bool drainEoo = true);
     bool isTxRunning() const { return txRunning_.load(); }
+    /** Poll on the serialized JNI control thread: 0 = healthy/waiting/inactive,
+     * 1 = mic reopened (reattach session effects), -1 = terminal mic failure.
+     * Failure leaves TX teardown/PTT release to the service. */
+    int pollTxInputHealth();
     void setTxCallsign(const char *callsign);
     void setTxOutputDevice(int deviceId);
     float getTxLevel() const { return txInputLevelDb_.load(); }
@@ -274,6 +280,7 @@ private:
     std::shared_ptr<TxOutputCallback> txOutputCb_;
 
     std::atomic<bool> txRunning_{false};
+    TxInputHealth txInputHealth_;
     int txInputDeviceId_ = 0;
     int txOutputDeviceId_ = 0;
     bool txUseJavaOutput_ = false;
@@ -363,6 +370,7 @@ private:
     bool initTxModem();
     void releaseTxModem();
     bool openTxInputStream();   // opens but does NOT start; caller starts it last
+    void closeTxInputStream();
     bool openTxOutputStream();
     void designTxDecimFilter();  // mic-rate → 16 kHz speech decimation FIR
     void processTxInputFrames(const float *data, int32_t numFrames, int32_t channelCount);
@@ -400,11 +408,13 @@ private:
 class TxInputCallback : public oboe::AudioStreamDataCallback,
                          public oboe::AudioStreamErrorCallback {
 public:
-    explicit TxInputCallback(AudioEngine *e) : engine_(e) {}
+    TxInputCallback(AudioEngine *e, std::shared_ptr<TxInputHealth::Capture> capture)
+        : engine_(e), capture_(std::move(capture)) {}
     oboe::DataCallbackResult onAudioReady(oboe::AudioStream *s, void *d, int32_t n) override;
     void onErrorAfterClose(oboe::AudioStream *s, oboe::Result error) override;
 private:
     AudioEngine *engine_;
+    const std::shared_ptr<TxInputHealth::Capture> capture_;
 };
 
 class TxOutputCallback : public oboe::AudioStreamDataCallback,

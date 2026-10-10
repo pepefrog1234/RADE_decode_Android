@@ -104,6 +104,7 @@ class TransceiverViewModel(application: Application) : AndroidViewModel(applicat
         val txSwitching: Boolean = false,
         val pttControlError: Boolean = false,
         val txStartError: Boolean = false,
+        val txInputError: Boolean = false,
         val rxRestartError: Boolean = false,
         val syncState: Int = 0,
         val snrDb: Int = 0,
@@ -149,6 +150,8 @@ class TransceiverViewModel(application: Application) : AndroidViewModel(applicat
     private var txStopJob: Job? = null
     @Volatile private var txRequestId = 0L
     private val rxRecovery = RxRecovery()
+    // A delayed mic failure must not take a fresh RX ticket after Stop/disconnect.
+    private var txInputRecoverySession: Long? = null
 
     /** True while the app itself has keyed the rig's PTT (doSwitchToTx). The
      *  unkey path checks THIS instead of rigController.isConnected so a
@@ -475,7 +478,7 @@ class TransceiverViewModel(application: Application) : AndroidViewModel(applicat
 
     fun startReceiving() {
         val session = rxRecovery.snapshot()
-        _uiState.value = _uiState.value.copy(txStartError = false, rxRestartError = false)
+        _uiState.value = _uiState.value.copy(txStartError = false, txInputError = false, rxRestartError = false)
         val app = getApplication<Application>()
         val intent = Intent(app, AudioService::class.java)
         var requestedForegroundStart = false
@@ -716,7 +719,8 @@ class TransceiverViewModel(application: Application) : AndroidViewModel(applicat
         val requestId = txRequestId
         val session = rxRecovery.snapshot()
         val service = audioService ?: return
-        _uiState.value = _uiState.value.copy(txSwitching = true, txStartError = false, rxRestartError = false)
+        txInputRecoverySession = session
+        _uiState.value = _uiState.value.copy(txSwitching = true, txStartError = false, txInputError = false, rxRestartError = false)
         var audioSetupFailed = false
         clearAnalogMonitor()
         // Auto-PTT via rigctld (both paths)
@@ -883,7 +887,7 @@ class TransceiverViewModel(application: Application) : AndroidViewModel(applicat
 
     /** Shared by normal release and failed TX startup. Stop/disconnect may stop
      * RX restoration, but must never cancel the pending PTT-OFF cleanup. */
-    private fun resumeRxAfterTx(fullTeardown: Boolean = false) {
+    private fun resumeRxAfterTx(fullTeardown: Boolean = false, abortTx: Boolean = false) {
         if (txStopJob?.isActive == true) return
         val session = rxRecovery.snapshot()
         val service = audioService
@@ -892,7 +896,7 @@ class TransceiverViewModel(application: Application) : AndroidViewModel(applicat
             try {
                 rxRecovery.restore(
                     session,
-                    stopTxAndUnkey = { stopTxAndUnkeyPtt(fullTeardown, keepForeground = true) },
+                    stopTxAndUnkey = { stopTxAndUnkeyPtt(fullTeardown, keepForeground = true, abortTx = abortTx) },
                     canResume = { service != null && audioService === service },
                     resumeRx = {
                         if (useNetworkAudio()) {
@@ -933,7 +937,8 @@ class TransceiverViewModel(application: Application) : AndroidViewModel(applicat
      */
     private suspend fun stopTxAndUnkeyPtt(
         fullTeardown: Boolean = false,
-        keepForeground: Boolean = !fullTeardown
+        keepForeground: Boolean = !fullTeardown,
+        abortTx: Boolean = false
     ) {
         // Only drain the EOO callsign and hold the RF tail when there is a real
         // transmit path: a CAT-keyed rig, network audio, or a USB audio output.
@@ -948,20 +953,20 @@ class TransceiverViewModel(application: Application) : AndroidViewModel(applicat
         try {
             withContext(Dispatchers.IO) {
                 audioService?.stopTransmitting(
-                    drainEoo = onAir, forceFullTeardown = fullTeardown, keepForeground = keepForeground
+                    drainEoo = onAir && !abortTx, forceFullTeardown = fullTeardown, keepForeground = keepForeground
                 )
             }
         } finally {
             // Even an audio teardown exception must not skip releasing the rig.
-            releaseTxPtt()
+            releaseTxPtt(skipTail = abortTx)
         }
     }
 
-    private suspend fun releaseTxPtt() {
+    private suspend fun releaseTxPtt(skipTail: Boolean = false) {
         // RTS-as-PTT: drop RTS back to its static Rig-tab setting only after the
         // audio has drained (mirrors the CAT PTT tail below).
         if (rtsPttKeyed) {
-            delay(TX_PTT_TAIL_MS)
+            if (!skipTail) delay(TX_PTT_TAIL_MS)
             usbSerialManager.setModemLines(
                 dtr = rigPrefs.getBoolean("dtr_enabled", true),
                 rts = rigPrefs.getBoolean("rts_enabled", false)
@@ -983,7 +988,7 @@ class TransceiverViewModel(application: Application) : AndroidViewModel(applicat
             // An unkey retry still running from an earlier over yields to this one.
             pttUnkeyJob?.cancel()
             pttUnkeyJob = null
-            delay(pttTailMs())
+            if (!skipTail) delay(pttTailMs())
             if (hermesNetwork.isConnected && !rigController.isConnected) {
                 // HL2 direct: MOX=0 rides every subsequent C&C frame — no ack
                 // round-trip to lose, so no retry loop is needed.
@@ -1099,6 +1104,7 @@ class TransceiverViewModel(application: Application) : AndroidViewModel(applicat
             txLevelDb = -100f,
             analogMonitor = false,
             txStartError = false,
+            txInputError = false,
             rxRestartError = false
         )
     }
@@ -1992,8 +1998,11 @@ class TransceiverViewModel(application: Application) : AndroidViewModel(applicat
     }
 
     private fun startCollectingServiceState() {
+        serviceCollectJob?.cancel()
+        val service = audioService ?: return
         serviceCollectJob = viewModelScope.launch {
-            audioService?.state?.collect { svcState ->
+            service.state.collect { svcState ->
+                if (audioService !== service || service.state.value !== svcState) return@collect
                 _uiState.value = _uiState.value.copy(
                     isRunning = svcState.isRunning,
                     leCommActive = svcState.leCommActive,
@@ -2008,6 +2017,16 @@ class TransceiverViewModel(application: Application) : AndroidViewModel(applicat
                     spectrum = svcState.spectrum,
                     unprocessedRejected = svcState.unprocessedRejected
                 )
+                val session = txInputRecoverySession
+                if (svcState.isTx && svcState.txInputFailed && session != null &&
+                    rxRecovery.isCurrent(session) && txStopJob?.isActive != true) {
+                    txInputRecoverySession = null
+                    ++txRequestId
+                    pttKeyJob?.cancel()
+                    _uiState.value = _uiState.value.copy(txInputError = true)
+                    Log.e("TransceiverVM", "TX microphone failed; aborting TX, releasing PTT and restoring RX")
+                    resumeRxAfterTx(fullTeardown = true, abortTx = true)
+                }
             }
         }
     }

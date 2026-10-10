@@ -665,6 +665,14 @@ JNI_AUDIO(nativeStopTx)(JNIEnv *env, jobject owner, jboolean drainEoo) {
     if (engine) engine->stopTx(drainEoo == JNI_TRUE);
 }
 
+JNIEXPORT jint JNICALL
+JNI_AUDIO(nativePollTxInputHealth)(JNIEnv *env, jobject owner) {
+    // Serialize recovery with stop/destroy and reject polling by an old bridge.
+    AudioEngineAccess access(env, owner);
+    auto *engine = access.get();
+    return engine ? engine->pollTxInputHealth() : 0;
+}
+
 JNIEXPORT void JNICALL
 JNI_AUDIO(nativeSetTxCallsign)(JNIEnv *env, jobject owner, jstring callsign) {
     AudioEngineAccess access(env, owner);

@@ -66,7 +66,10 @@ void OutputCallback::onErrorAfterClose(oboe::AudioStream *s, oboe::Result error)
 
 oboe::DataCallbackResult TxInputCallback::onAudioReady(
         oboe::AudioStream *s, void *d, int32_t n) {
-    if (!engine_->txRunning_.load()) return oboe::DataCallbackResult::Stop;
+    if (!engine_->txRunning_.load() || !capture_->accepting.load())
+        return oboe::DataCallbackResult::Stop;
+    if (n <= 0) return oboe::DataCallbackResult::Continue;
+    if (!capture_->onFrames(nowNs())) return oboe::DataCallbackResult::Stop;
     engine_->processTxInputFrames(static_cast<float*>(d), n, s->getChannelCount());
     return oboe::DataCallbackResult::Continue;
 }
@@ -80,6 +83,9 @@ oboe::DataCallbackResult TxOutputCallback::onAudioReady(
 
 void TxInputCallback::onErrorAfterClose(oboe::AudioStream *s, oboe::Result error) {
     LOGE("TX input stream error: %s", oboe::convertToText(error));
+    // The service polls this token. Do not reopen streams on Oboe's error
+    // thread: it can race PTT-off, destruction, or a newer TX session.
+    capture_->onError();
 }
 
 void TxOutputCallback::onErrorAfterClose(oboe::AudioStream *s, oboe::Result error) {
@@ -93,7 +99,6 @@ AudioEngine::AudioEngine() {
     std::fill(spectrumDb_, spectrumDb_ + FFT_BINS, -100.0f);
     inputCb_ = std::make_shared<InputCallback>(this);
     outputCb_ = std::make_shared<OutputCallback>(this);
-    txInputCb_ = std::make_shared<TxInputCallback>(this);
     txOutputCb_ = std::make_shared<TxOutputCallback>(this);
 }
 
@@ -1017,6 +1022,8 @@ void AudioEngine::releaseTxModem() {
 bool AudioEngine::startTx(int inputDeviceId, int outputDeviceId, bool keepRxAlive,
                           bool voiceCommunicationInput, bool voiceRecognitionInput) {
     if (txRunning_.load()) return true;
+    txInputHealth_.beginSession();
+    txInputLevelDb_.store(-100.0f);
     txKeepRxAlive_ = keepRxAlive;
     txUseVoiceCommInput_ = voiceCommunicationInput;
     txUseVoiceRecInput_ = voiceRecognitionInput;
@@ -1031,6 +1038,7 @@ bool AudioEngine::startTx(int inputDeviceId, int outputDeviceId, bool keepRxAliv
         LOGI("TX(keepRx): mic-only TX, inputDev=%d (RX output kept alive)", txInputDeviceId_);
         txRunning_.store(true);
         if (!openTxInputStream()) { txRunning_.store(false); txKeepRxAlive_ = false; return false; }
+        txInputHealth_.captureStarting(nowNs());
         auto sres = txInputStream_->requestStart();
         if (sres != oboe::Result::OK) {
             LOGE("TX(keepRx): failed to start input: %s", oboe::convertToText(sres));
@@ -1087,6 +1095,7 @@ bool AudioEngine::startTx(int inputDeviceId, int outputDeviceId, bool keepRxAliv
     }
 
     // Everything is initialized — only now is it safe to start the mic callback.
+    txInputHealth_.captureStarting(nowNs());
     auto startRes = txInputStream_->requestStart();
     if (startRes != oboe::Result::OK) {
         LOGE("TX: failed to start input: %s", oboe::convertToText(startRes));
@@ -1103,10 +1112,11 @@ bool AudioEngine::startTx(int inputDeviceId, int outputDeviceId, bool keepRxAliv
 }
 
 void AudioEngine::stopTx(bool drainEoo) {
+    txInputHealth_.endSession();
     if (!txRunning_.load()) return;
 
     // Stop accepting new mic input
-    if (txInputStream_) { txInputStream_->stop(); txInputStream_->close(); txInputStream_.reset(); }
+    closeTxInputStream();
 
     // Join the silence filler (no-op if it already handed off) so the encoder
     // is exclusively ours before the EOO is generated below.
@@ -1149,10 +1159,9 @@ void AudioEngine::stopTx(bool drainEoo) {
             }
         }
     } else {
-        // No rig / pure local LC3 monitoring: nothing is going over the air, so
-        // skip the EOO callsign and its drain/tail entirely and tear down now.
-        // This removes up to ~2.5 s of dead time from each TX->RX switch.
-        LOGI("TX: stop (no rig — skipping EOO drain)");
+        // Explicit aborts and local monitoring skip the EOO callsign and its
+        // drain/tail entirely, avoiding up to ~2.5 s before teardown.
+        LOGI("TX: stop (EOO drain disabled)");
     }
 
     txRunning_.store(false);
@@ -1196,7 +1205,7 @@ void AudioEngine::designTxDecimFilter() {
             sum += txDecimCoeffs_[i];
         }
         for (int i = 0; i < totalTaps; i++) txDecimCoeffs_[i] /= sum;
-        txDecimHistory_.resize(totalTaps, 0.0f);
+        txDecimHistory_.assign(totalTaps, 0.0f);
         txDecimHistPos_ = 0;
         txDecimPhase_ = 0;
         LOGI("TX: decimation %dHz→%dHz factor=%d", txActualInputRate_, SPEECH_SAMPLE_RATE, txDecimFactor_);
@@ -1210,6 +1219,7 @@ void AudioEngine::designTxDecimFilter() {
 }
 
 bool AudioEngine::openTxInputStream() {
+    txInputCb_ = std::make_shared<TxInputCallback>(this, txInputHealth_.beginCapture(nowNs()));
     oboe::AudioStreamBuilder builder;
     builder.setDirection(oboe::Direction::Input)
            ->setPerformanceMode(oboe::PerformanceMode::LowLatency)
@@ -1250,6 +1260,7 @@ bool AudioEngine::openTxInputStream() {
     auto result = builder.openStream(txInputStream_);
     if (result != oboe::Result::OK) {
         LOGE("TX: failed to open input: %s", oboe::convertToText(result));
+        txInputHealth_.captureFailed();
         return false;
     }
 
@@ -1260,7 +1271,11 @@ bool AudioEngine::openTxInputStream() {
         txInputStream_->getDeviceId() != txInputDeviceId_) {
         LOGI("TX: input device mismatch: wanted %d got %d, retrying Exclusive",
              txInputDeviceId_, txInputStream_->getDeviceId());
-        txInputStream_->close(); txInputStream_.reset();
+        closeTxInputStream();
+
+        // The retry is a different stream. Keep any late error from the
+        // rejected route attached only to the retired callback token.
+        txInputCb_ = std::make_shared<TxInputCallback>(this, txInputHealth_.beginCapture(nowNs()));
 
         oboe::AudioStreamBuilder retry;
         retry.setDirection(oboe::Direction::Input)
@@ -1280,8 +1295,26 @@ bool AudioEngine::openTxInputStream() {
         result = retry.openStream(txInputStream_);
         if (result != oboe::Result::OK) {
             LOGE("TX: retry failed: %s", oboe::convertToText(result));
+            txInputHealth_.captureFailed();
             return false;
         }
+    }
+
+    // A successful open does not guarantee that Android honored the pin.
+    // Reject a known wrong route; OpenSL ES reports Unspecified (0), so its
+    // historical default-route fallback cannot be validated here.
+    if (!txUseVoiceCommInput_ && txInputDeviceId_ > 0 &&
+        txInputStream_->getDeviceId() > 0 &&
+        txInputStream_->getDeviceId() != txInputDeviceId_) {
+        LOGE("TX: requested input device %d unavailable (got %d)",
+             txInputDeviceId_, txInputStream_->getDeviceId());
+        txInputHealth_.captureFailed();
+        closeTxInputStream();
+        return false;
+    }
+    if (!txUseVoiceCommInput_ && txInputDeviceId_ > 0 && txInputStream_->getDeviceId() <= 0) {
+        LOGW("TX: input API does not report device id; requested route %d cannot be verified",
+             txInputDeviceId_);
     }
 
     txActualInputRate_ = txInputStream_->getSampleRate();
@@ -1300,6 +1333,64 @@ bool AudioEngine::openTxInputStream() {
     // routing change makes the first callback land inside the setup window).
     // The caller calls requestStart() once everything is initialized.
     return true;
+}
+
+void AudioEngine::closeTxInputStream() {
+    txInputHealth_.suspendCapture();
+    if (txInputStream_) {
+        if (txInputStream_->getState() != oboe::StreamState::Closed) {
+            txInputStream_->stop();
+            txInputStream_->close();
+        }
+        txInputStream_.reset();
+    }
+    inputSessionId_ = -1;
+}
+
+int AudioEngine::pollTxInputHealth() {
+    // JNI's AudioEngineAccess mutex serializes this with start/stop/release;
+    // callbacks only signal their own capture token and never take that mutex.
+    if (!txRunning_.load()) return 0;
+    const auto action = txInputHealth_.poll(nowNs());
+    if (action == TxInputHealth::Action::None) return 0;
+
+    closeTxInputStream();
+    stopTxFiller();
+    txInputLevelDb_.store(-100.0f);
+    if (action == TxInputHealth::Action::Failed) {
+        LOGE("TX: microphone failed after %d reopen attempts — requesting PTT release",
+             txInputHealth_.reopenCount());
+        return -1;
+    }
+
+    LOGW("TX: reopening microphone after capture loss (attempt %d/%d, device=%d)",
+         txInputHealth_.reopenCount(), TxInputHealth::MAX_REOPENS, txInputDeviceId_);
+    if (!openTxInputStream()) {
+        return txInputHealth_.poll(nowNs()) == TxInputHealth::Action::Failed ? -1 : 0;
+    }
+
+    // Input is closed and the filler is joined: neither can access the encoder
+    // while partial speech/features and a possibly changed rate are reset.
+    // Keep the modem and output ring alive across the route's short outage.
+    if (!txKeepRxAlive_) {
+        designTxDecimFilter();
+        txSpeechPos_ = 0;
+        txFeatureFrames_ = 0;
+        std::fill(txSpeechBuf_.begin(), txSpeechBuf_.end(), 0);
+        std::fill(txFeatureAccum_.begin(), txFeatureAccum_.end(), 0.0f);
+        startTxFiller();
+    }
+    txInputHealth_.captureStarting(nowNs());
+    const auto result = txInputStream_->requestStart();
+    if (result != oboe::Result::OK) {
+        LOGE("TX: reopened microphone failed to start: %s", oboe::convertToText(result));
+        txInputHealth_.captureFailed();
+        closeTxInputStream();
+        stopTxFiller();
+        return txInputHealth_.poll(nowNs()) == TxInputHealth::Action::Failed ? -1 : 0;
+    }
+    LOGI("TX: microphone reopened, rate=%d session=%d", txActualInputRate_, inputSessionId_);
+    return 1;
 }
 
 bool AudioEngine::openTxOutputStream() {
@@ -1472,8 +1563,8 @@ void AudioEngine::stopTxFiller() {
 
 void AudioEngine::txFillerLoop() {
     // Keep at least ~200 ms queued; each silence frame adds 120 ms. Give up
-    // after 5 s — a mic that never starts is a separate failure, and the ring
-    // then just drains (the pre-filler behaviour).
+    // after 5 s. The control-thread watchdog then retries the missing capture
+    // or asks the service to stop TX and release PTT when its budget is spent.
     const int lowWater = MODEM_SAMPLE_RATE / 5;
     int filled = 0;
     while (txRunning_.load() && !txFillerStop_.load() && !txMicSeen_.load()) {
@@ -1678,6 +1769,8 @@ void AudioEngine::feedNetRx(const int16_t *pcm, int count) {
 bool AudioEngine::startNetTx(int inputDeviceId, int netRate, bool voiceCommunicationInput) {
     if (txRunning_.load()) return true;
     if (running_.load()) stop();  // stop RX first
+    txInputHealth_.beginSession();
+    txInputLevelDb_.store(-100.0f);
 
     txInputDeviceId_ = (inputDeviceId > 0) ? inputDeviceId : 0;
     txOutputDeviceId_ = 0;
@@ -1733,6 +1826,7 @@ bool AudioEngine::startNetTx(int inputDeviceId, int netRate, bool voiceCommunica
     startTxFiller();
 
     // Everything is initialized — only now is it safe to start the mic callback.
+    txInputHealth_.captureStarting(nowNs());
     auto startRes = txInputStream_->requestStart();
     if (startRes != oboe::Result::OK) {
         LOGE("Net TX: failed to start input: %s", oboe::convertToText(startRes));

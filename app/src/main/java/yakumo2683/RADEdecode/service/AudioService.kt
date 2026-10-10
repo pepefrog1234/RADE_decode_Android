@@ -127,6 +127,8 @@ class AudioService : LifecycleService() {
         val inputLevelDb: Float = -100f,
         val outputLevelDb: Float = -100f,
         val txLevelDb: Float = -100f,
+        /** Latched until teardown; isTx stays true so the owner releases PTT. */
+        val txInputFailed: Boolean = false,
         val lastCallsign: String = "",
         val spectrum: FloatArray = FloatArray(AudioBridge.SPECTRUM_BINS) { -100f },
         val unprocessedRejected: Boolean = false,
@@ -1056,9 +1058,9 @@ class AudioService : LifecycleService() {
         }
 
         networkAudioMode = true
-        _state.value = _state.value.copy(isTx = true, isRunning = false)
+        _state.value = _state.value.copy(isTx = true, isRunning = false, txInputFailed = false)
         startNetTxPump(bridge, net)
-        startTxPolling()
+        startTxPolling(disableMicEffects = bluetoothMicEngaged)
         startNotificationUpdates()
     }
 
@@ -1294,7 +1296,7 @@ class AudioService : LifecycleService() {
                 return
             }
             txKeepRxAliveActive = true
-            _state.value = _state.value.copy(isTx = true, isRunning = false)
+            _state.value = _state.value.copy(isTx = true, isRunning = false, txInputFailed = false)
             Log.i("AudioService", "TX (keepRxAlive): RX LC3 output kept open across TX")
             startTxPolling()
             startNotificationUpdates()
@@ -1454,7 +1456,7 @@ class AudioService : LifecycleService() {
             return
         }
 
-        _state.value = _state.value.copy(isTx = true, isRunning = false)
+        _state.value = _state.value.copy(isTx = true, isRunning = false, txInputFailed = false)
 
         // Experimental: turn off Android's mic processing (NS/AGC/AEC) on the
         // Bluetooth SCO TX session — same trick RX uses on the built-in mic. May
@@ -1473,7 +1475,7 @@ class AudioService : LifecycleService() {
             startTxAudioTrackPump(bridge, effectiveOutputDeviceId)
         }
 
-        startTxPolling()
+        startTxPolling(disableMicEffects = bluetoothMicEngaged)
         startNotificationUpdates()
     }
 
@@ -1507,7 +1509,7 @@ class AudioService : LifecycleService() {
             val resumed = keepBridge.resumeRxInput()
             txKeepRxAliveActive = false
             if (resumed) {
-                _state.value = _state.value.copy(isTx = false, isRunning = true)
+                _state.value = _state.value.copy(isTx = false, isRunning = true, txInputFailed = false)
                 startPolling()
                 startNotificationUpdates()
                 Log.i("AudioService", "TX (keepRxAlive) stopped; RX resumed on the kept-open LC3 output")
@@ -1527,8 +1529,10 @@ class AudioService : LifecycleService() {
 
         // Wait for the pump to finish playing the EOO before tearing anything
         // down, so the callsign makes it over the air before PTT drops.
-        awaitTxPumpDrained(txPumpDone)
-        awaitTxPumpDrained(netTxPumpDone)
+        if (drainEoo) {
+            awaitTxPumpDrained(txPumpDone)
+            awaitTxPumpDrained(netTxPumpDone)
+        }
         txPumpDone = null
         netTxPumpDone = null
 
@@ -1753,20 +1757,36 @@ class AudioService : LifecycleService() {
     }
 
     private var txPollingJob: Job? = null
+    private var txPollingGeneration = 0L
 
-    private fun startTxPolling() {
-        txPollingJob = lifecycleScope.launch {
+    private fun startTxPolling(disableMicEffects: Boolean = false) {
+        stopTxPolling()
+        val generation = txPollingGeneration
+        val bridge = audioBridge ?: return
+        // Reopening a device can block in Android. Keep it off the UI thread,
+        // serialized with service teardown and scoped to this exact TX session.
+        txPollingJob = lifecycleScope.launch(Dispatchers.IO) {
             while (isActive) {
-                val bridge = audioBridge ?: break
-                _state.value = _state.value.copy(
-                    txLevelDb = bridge.txLevel
-                )
                 delay(100)
+                if (!pollTxState(bridge, generation, disableMicEffects)) break
             }
         }
     }
 
+    @Synchronized
+    private fun pollTxState(bridge: AudioBridge, generation: Long, disableMicEffects: Boolean): Boolean {
+        if (generation != txPollingGeneration || audioBridge !== bridge || !_state.value.isTx) return false
+        val health = bridge.pollTxInputHealth()
+        if (health == 1 && disableMicEffects) {
+            Log.i("AudioService", "TX recovered mic effects: ${bridge.disableInputEffects()}")
+        }
+        _state.value = _state.value.copy(txLevelDb = bridge.txLevel, txInputFailed = health < 0)
+        if (health < 0) Log.e("AudioService", "TX microphone recovery exhausted; requesting PTT release and RX recovery")
+        return health >= 0
+    }
+
     private fun stopTxPolling() {
+        ++txPollingGeneration
         txPollingJob?.cancel()
         txPollingJob = null
     }

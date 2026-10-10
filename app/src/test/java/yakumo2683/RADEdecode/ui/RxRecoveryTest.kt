@@ -54,6 +54,24 @@ class RxRecoveryTest {
     }
 
     @Test
+    fun delayedMicrophoneFailureAfterStopCannotRestoreTheOldReceiveSession() = runBlocking {
+        val recovery = RxRecovery()
+        val txStartTicket = recovery.snapshot()
+        val events = mutableListOf<String>()
+        // The watchdog result arrives after the operator has already stopped.
+        recovery.invalidate()
+        assertFalse(recovery.isCurrent(txStartTicket))
+        val resumed = recovery.restore(
+            session = txStartTicket,
+            stopTxAndUnkey = { events += "abort-audio"; events += "unkey" },
+            canResume = { true },
+            resumeRx = { events += "rx" }
+        )
+        assertFalse(resumed)
+        assertEquals(listOf("abort-audio", "unkey"), events)
+    }
+
+    @Test
     fun stopOrDisconnectDuringRouteSettleSuppressesReceive() = runBlocking {
         assertInvalidationDuringSettle()
     }

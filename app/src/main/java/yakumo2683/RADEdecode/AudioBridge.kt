@@ -265,6 +265,10 @@ class AudioBridge private constructor(
     /** Check if TX is currently running. */
     val isTxRunning: Boolean get() = nativeIsTxRunning()
 
+    /** Service-thread watchdog: 0 = healthy/waiting, 1 = mic reopened,
+     * -1 = recovery exhausted. Never called from an audio callback. */
+    fun pollTxInputHealth(): Int = nativePollTxInputHealth()
+
     /** Set the callsign to embed in the EOO frame. */
     fun setTxCallsign(callsign: String) = nativeSetTxCallsign(callsign)
 
@@ -470,6 +474,7 @@ class AudioBridge private constructor(
     private external fun nativeResumeRxInput(): Boolean
     private external fun nativeStopTx(drainEoo: Boolean)
     private external fun nativeIsTxRunning(): Boolean
+    private external fun nativePollTxInputHealth(): Int
     private external fun nativeSetTxCallsign(callsign: String)
     private external fun nativeGetTxLevel(): Float
     private external fun nativeSetTxOutputDevice(deviceId: Int)
