@@ -72,8 +72,8 @@ android {
         applicationId = "yakumo2683.RADEdecode"
         minSdk = 26
         targetSdk = 35
-        versionCode = 10630
-        versionName = "1.6.30-tx-mic-recovery"
+        versionCode = 10631
+        versionName = "1.6.31-usb-mic-compat"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 

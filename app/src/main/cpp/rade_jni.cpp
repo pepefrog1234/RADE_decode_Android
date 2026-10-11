@@ -629,7 +629,8 @@ JNI_AUDIO(nativeStopRecording)(JNIEnv *env, jobject owner) {
 JNIEXPORT jboolean JNICALL
 JNI_AUDIO(nativeStartTx)(JNIEnv *env, jobject owner,
                           jint inputDeviceId, jint outputDeviceId, jboolean keepRxAlive,
-                          jboolean voiceCommunicationInput, jboolean voiceRecognitionInput) {
+                          jboolean voiceCommunicationInput, jboolean voiceRecognitionInput,
+                          jboolean usbMicCompatibility) {
     AudioEngineAccess access(env, owner);
     auto *engine = access.get();
     if (!engine) return JNI_FALSE;
@@ -638,7 +639,8 @@ JNI_AUDIO(nativeStartTx)(JNIEnv *env, jobject owner,
         outputDeviceId,
         keepRxAlive == JNI_TRUE,
         voiceCommunicationInput == JNI_TRUE,
-        voiceRecognitionInput == JNI_TRUE
+        voiceRecognitionInput == JNI_TRUE,
+        usbMicCompatibility == JNI_TRUE
     ) ? JNI_TRUE : JNI_FALSE;
 }
 

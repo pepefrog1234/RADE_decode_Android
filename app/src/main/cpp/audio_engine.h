@@ -99,10 +99,14 @@ public:
      * voiceRecognitionInput = an LC3 headset is connected but the TX mic is NOT
      * it (built-in/USB mic): use VOICE_RECOGNITION instead of Generic/Unprocessed
      * so the mic-open doesn't drag the headset's LC3 group into the failing
-     * "LIVE" reconfiguration (multi-second open stall + silence after TX). */
+     * "LIVE" reconfiguration (multi-second open stall + silence after TX).
+     * usbMicCompatibility = Kotlin verified built-in mic + USB output: after
+     * capture loss, retry with VoiceRecognition at 48 kHz. Initial capture and
+     * Bluetooth/network capture retain their existing configuration. */
     bool startTx(int inputDeviceId, int outputDeviceId, bool keepRxAlive = false,
                  bool voiceCommunicationInput = false,
-                 bool voiceRecognitionInput = false);
+                 bool voiceRecognitionInput = false,
+                 bool usbMicCompatibility = false);
     void stopTx(bool drainEoo = true);
     bool isTxRunning() const { return txRunning_.load(); }
     /** Poll on the serialized JNI control thread: 0 = healthy/waiting/inactive,

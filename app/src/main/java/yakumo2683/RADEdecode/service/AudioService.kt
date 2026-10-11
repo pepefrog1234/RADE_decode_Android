@@ -1429,19 +1429,31 @@ class AudioService : LifecycleService() {
         // VoiceRecognition instead, the same guard v1.5.48 applied to RX.
         val avoidBleMicTrigger = !bluetoothMicEngaged && hasBleAudioOutput()
 
+        // The reported USB TX failure repeatedly disconnected the built-in mic
+        // with Generic/default-rate capture. Allow a different capture profile
+        // on recovery, scoped by real device types: a pinned output id can also
+        // mean the phone speaker, and must not be treated as USB by itself.
+        val txInputDevice = bridge.getInputDevices().firstOrNull { it.id == effectiveInputDeviceId }
+        val txOutputDevice = bridge.getOutputDevices().firstOrNull { it.id == effectiveOutputDeviceId }
+        val usbMicCompatibility = !bluetoothMicEngaged && !bleCommMicCapture &&
+            txInputDevice?.type == AudioDeviceInfo.TYPE_BUILTIN_MIC && txOutputDevice?.isUsb == true
+
         Log.i(
             "AudioService",
             "startTx: inputDeviceId=$inputDeviceId effectiveInput=$effectiveInputDeviceId " +
                 "outputDeviceId=$outputDeviceId effectiveOutput=$effectiveOutputDeviceId " +
                 "useBluetoothMic=$useBluetoothMic bleCommMic=$bleCommMicCapture " +
-                "voiceRecMic=$avoidBleMicTrigger " +
-                "preferLeComm=$preferLeAudioCommunication leComm=$leAudioCommunicationSessionActive"
+                "voiceRecMic=$avoidBleMicTrigger usbMicCompatibility=$usbMicCompatibility " +
+                "inputType=${txInputDevice?.type} outputType=${txOutputDevice?.type} " +
+                "preferLeComm=$preferLeAudioCommunication leComm=$leAudioCommunicationSessionActive " +
+                "phone=${Build.MANUFACTURER}/${Build.MODEL} android=${Build.VERSION.RELEASE} sdk=${Build.VERSION.SDK_INT}"
         )
         if (!bridge.startTx(
                 effectiveInputDeviceId,
                 effectiveOutputDeviceId,
                 voiceCommunicationInput = bleCommMicCapture,
-                voiceRecognitionInput = avoidBleMicTrigger
+                voiceRecognitionInput = avoidBleMicTrigger,
+                usbMicCompatibility = usbMicCompatibility
         )) {
             Log.e(
                 "AudioService",

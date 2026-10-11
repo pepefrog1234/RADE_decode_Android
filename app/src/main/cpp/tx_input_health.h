@@ -36,11 +36,12 @@ public:
 
     enum class Action { None, Reopen, Failed };
 
-    void beginSession() {
+    void beginSession(bool usbMicCompatibility = false) {
         endSession();
         active_ = true;
         failed_ = false;
         reopens_ = 0;
+        compatibilityEligible_ = usbMicCompatibility;
     }
 
     void endSession() {
@@ -48,6 +49,7 @@ public:
         capture_.reset();
         active_ = false;
         failed_ = false;
+        compatibilityEligible_ = false;
         settleUntilNs_ = -1;
     }
 
@@ -71,6 +73,12 @@ public:
     }
 
     int reopenCount() const { return reopens_; }
+
+    // Keep the initial capture unchanged. An eligible USB-rig session switches
+    // profile only once a real capture failure has consumed a reopen attempt.
+    bool useCompatibilityCapture() const {
+        return active_ && compatibilityEligible_ && reopens_ > 0;
+    }
 
     Action poll(int64_t now) {
         if (!active_) return Action::None;
@@ -101,6 +109,7 @@ private:
     std::shared_ptr<Capture> capture_;
     bool active_ = false;
     bool failed_ = false;
+    bool compatibilityEligible_ = false;
     int reopens_ = 0;
     int64_t settleUntilNs_ = -1;
 };

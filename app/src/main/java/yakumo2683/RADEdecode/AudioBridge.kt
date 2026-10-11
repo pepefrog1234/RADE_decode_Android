@@ -238,17 +238,20 @@ class AudioBridge private constructor(
      *  VOICE_COMMUNICATION preset instead of a pinned device id. When
      *  [voiceRecognitionInput] is true (an LC3 headset is connected but is NOT
      *  the TX mic) the mic uses the VOICE_RECOGNITION preset so the mic-open
-     *  doesn't disturb the headset's LC3 group (multi-second stall / silence). */
+     *  doesn't disturb the headset's LC3 group (multi-second stall / silence).
+     *  [usbMicCompatibility] enables a 48 kHz VOICE_RECOGNITION retry after
+     *  capture loss, for a selected built-in mic transmitting to USB audio. */
     fun startTx(
         inputDeviceId: Int = -1,
         outputDeviceId: Int = -1,
         keepRxAlive: Boolean = false,
         voiceCommunicationInput: Boolean = false,
-        voiceRecognitionInput: Boolean = false
+        voiceRecognitionInput: Boolean = false,
+        usbMicCompatibility: Boolean = false
     ): Boolean =
         nativeStartTx(
             inputDeviceId, outputDeviceId, keepRxAlive,
-            voiceCommunicationInput, voiceRecognitionInput
+            voiceCommunicationInput, voiceRecognitionInput, usbMicCompatibility
         )
 
     /** Pause RX decoding (close the mic) but keep the RX output stream — and its
@@ -468,7 +471,8 @@ class AudioBridge private constructor(
         outputDeviceId: Int,
         keepRxAlive: Boolean,
         voiceCommunicationInput: Boolean,
-        voiceRecognitionInput: Boolean
+        voiceRecognitionInput: Boolean,
+        usbMicCompatibility: Boolean
     ): Boolean
     private external fun nativePauseRxInput(): Boolean
     private external fun nativeResumeRxInput(): Boolean

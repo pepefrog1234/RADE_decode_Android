@@ -15,7 +15,37 @@ stream and missing recovery; it does not establish why Android disconnected it.
 The USB output routing change preceding the failure is a possible trigger that
 still needs reproduction on the affected phone.
 
-## Repair
+## October 11 follow-up: recovery still loses capture
+
+The v1.6.30 recovery path is visible in the new log, but it has not restored usable
+TX. Two complete attempts repeat the same failure in about 1.2 seconds:
+
+| Event | First complete attempt | Second complete attempt |
+| --- | --- | --- |
+| Start TX audio | 22:17:34.995 | 22:17:42.405 |
+| First microphone frames | 22:17:35.144 | 22:17:42.552 |
+| Initial input disconnected | 22:17:35.270 | 22:17:42.698 |
+| First reopen / disconnected | 22:17:35.532 / 35.693 | 22:17:42.961 / 43.129 |
+| Second reopen / disconnected | 22:17:35.980 / 36.154 | 22:17:43.423 / 43.618 |
+| Recovery exhausted | 22:17:36.194 | 22:17:43.630 |
+| CAT PTT OFF acknowledged | 22:17:36.300 | 22:17:43.743 |
+
+The initial microphone briefly delivers frames. Each replacement disconnects
+161–195 ms after the reopen message, without first-mic frames (`micSeen=0`). All
+opens select device 15 and negotiate 16 kHz; Bluetooth capture is disabled. This
+is repeated `ErrorDisconnected`, **not the five-second no-first-callback timeout**.
+The unconditional SCO rate hint in the old log does not establish a Bluetooth
+route. The USB output remains matched to device 1746 and RX resumes at 48 kHz on
+USB input 1751 after the abort.
+
+Both RTS and CAT PTT are asserted in these attempts; this is not an isolated
+RTS-only comparison. CAT ON/OFF acknowledgements and a matched USB playback route
+do not establish why Android disconnects capture. The app log lacks the Android
+audio-policy/HAL events needed to identify that cause. Reopens fail even after
+USB playback is established, so changing startup order alone is insufficiently
+supported as a complete repair.
+
+## Recovery protection shipped in v1.6.30
 
 - Poll capture health every 100 ms on a service IO worker. A disconnected input,
   no first callback within 5 seconds, or no callback for 1.5 seconds after capture
@@ -40,6 +70,29 @@ Oboe documents that `onErrorAfterClose` runs after the underlying stream has bee
 stopped and closed; recovery therefore opens a new stream rather than restarting
 the closed one: [Oboe error callback reference](https://google.github.io/oboe/classoboe_1_1_audio_stream_error_callback.html).
 
+## Compatibility retry in v1.6.31
+
+For a selected **built-in microphone and USB output**, retain the original
+capture configuration until the watchdog detects a loss. Reopen using
+`VoiceRecognition`, an explicit 48 kHz sample rate, Shared mode and
+`PerformanceMode::None`. Keep this profile for the second allowed reopen, and
+retain it if a device-mismatch open needs the existing Exclusive-mode retry.
+This tests a different Android capture configuration instead of repeating the
+same Generic/default-rate path that negotiated 16 kHz in every failed attempt.
+The existing input filter converts 48 kHz to the encoder's 16 kHz.
+
+Eligibility uses Android device types, not merely positive device IDs: the Java
+output path can also target a phone speaker. Bluetooth microphones, network TX
+and local RX-keep-alive monitoring retain their existing policies. A new TX starts
+with the normal profile and a fresh bounded retry budget. Explicit microphone
+selection, stale-callback isolation and terminal PTT release remain in force.
+
+The input-open log now records API, preset, rate, performance/sharing mode and
+compatibility-profile selection. Service startup also records device types and
+phone/Android versions. Neither these changes nor host tests prove a particular
+phone's audio-policy/HAL will accept the alternative profile; hardware validation
+is still required.
+
 ## Verification
 
 Host regression tests in `app/src/test/cpp/tx_input_health_test.cpp` cover capture
@@ -57,8 +110,14 @@ integration cases were skipped because `RADE_TEST_RIGCTLD` was not configured.
 The six host watchdog scenarios passed with C++11 and warnings treated as errors.
 The arm64 Debug APK compiled successfully. No Android device was connected.
 
+Follow-up verification on 2026-10-12: all seven host watchdog scenarios passed,
+including compatibility escalation, session reset and noneligible-route isolation.
+JVM tests again reported 147 passed and the same 9 optional Hamlib cases skipped;
+the arm64 Debug APK compiled successfully. No Android device was connected.
+
 Hardware follow-up: repeat USB RX → TX on the affected phone; confirm a
-disconnect is followed by successful mic reopening and first-mic frames, and
+disconnect is followed by compatibility capture at 48 kHz with VoiceRecognition,
+successful mic reopening and sustained first-mic frames, and
 that spoken audio reaches another receiver. Also test microphone removal,
 Stop during recovery, and immediate PTT release/re-key. Persistent failure must
 produce the error banner and PTT OFF, without reopening RX after Stop. Host

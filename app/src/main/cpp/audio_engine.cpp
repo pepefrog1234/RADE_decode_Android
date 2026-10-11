@@ -1020,9 +1020,11 @@ void AudioEngine::releaseTxModem() {
 }
 
 bool AudioEngine::startTx(int inputDeviceId, int outputDeviceId, bool keepRxAlive,
-                          bool voiceCommunicationInput, bool voiceRecognitionInput) {
+                          bool voiceCommunicationInput, bool voiceRecognitionInput,
+                          bool usbMicCompatibility) {
     if (txRunning_.load()) return true;
-    txInputHealth_.beginSession();
+    txInputHealth_.beginSession(usbMicCompatibility && !keepRxAlive &&
+                               !voiceCommunicationInput && inputDeviceId > 0 && outputDeviceId > 0);
     txInputLevelDb_.store(-100.0f);
     txKeepRxAlive_ = keepRxAlive;
     txUseVoiceCommInput_ = voiceCommunicationInput;
@@ -1219,6 +1221,7 @@ void AudioEngine::designTxDecimFilter() {
 }
 
 bool AudioEngine::openTxInputStream() {
+    const bool compatibilityCapture = txInputHealth_.useCompatibilityCapture();
     txInputCb_ = std::make_shared<TxInputCallback>(this, txInputHealth_.beginCapture(nowNs()));
     oboe::AudioStreamBuilder builder;
     builder.setDirection(oboe::Direction::Input)
@@ -1257,6 +1260,16 @@ bool AudioEngine::openTxInputStream() {
                                                    : oboe::InputPreset::Unprocessed);
     }
 
+    if (compatibilityCapture) {
+        // For repeated Generic/default-rate disconnects while a USB AudioTrack
+        // is active, retry the same built-in mic with a different source/rate.
+        // The existing FIR decimates 48 kHz to 16 kHz.
+        builder.setInputPreset(oboe::InputPreset::VoiceRecognition)
+               ->setSampleRate(INPUT_SAMPLE_RATE)
+               ->setSharingMode(oboe::SharingMode::Shared)
+               ->setPerformanceMode(oboe::PerformanceMode::None);
+    }
+
     auto result = builder.openStream(txInputStream_);
     if (result != oboe::Result::OK) {
         LOGE("TX: failed to open input: %s", oboe::convertToText(result));
@@ -1286,11 +1299,16 @@ bool AudioEngine::openTxInputStream() {
              ->setSessionId(oboe::SessionId::Allocate)
              // Same LC3 guard on the retry — Unprocessed is the worst trigger
              // (it maps to the LE Audio LIVE context on Samsung).
-             ->setInputPreset(txUseVoiceRecInput_ ? oboe::InputPreset::VoiceRecognition
-                                                  : oboe::InputPreset::Unprocessed)
+             ->setInputPreset((compatibilityCapture || txUseVoiceRecInput_)
+                                  ? oboe::InputPreset::VoiceRecognition
+                                  : oboe::InputPreset::Unprocessed)
              ->setDeviceId(txInputDeviceId_)
              ->setDataCallback(std::static_pointer_cast<oboe::AudioStreamDataCallback>(txInputCb_))
              ->setErrorCallback(std::static_pointer_cast<oboe::AudioStreamErrorCallback>(txInputCb_));
+
+        // Retain the compatibility source/rate even when the routing fallback
+        // must ask for Exclusive mode to honor the explicitly selected mic.
+        if (compatibilityCapture) retry.setSampleRate(INPUT_SAMPLE_RATE);
 
         result = retry.openStream(txInputStream_);
         if (result != oboe::Result::OK) {
@@ -1318,12 +1336,23 @@ bool AudioEngine::openTxInputStream() {
     }
 
     txActualInputRate_ = txInputStream_->getSampleRate();
+    if (compatibilityCapture && (txActualInputRate_ < SPEECH_SAMPLE_RATE ||
+        txActualInputRate_ % SPEECH_SAMPLE_RATE != 0)) {
+        // The native FIR is an integer decimator. Do not accept an unexpected
+        // app-side rate such as 44.1 kHz and encode speech at the wrong speed.
+        LOGE("TX: compatibility input returned unsupported rate=%d (requested=%d)",
+             txActualInputRate_, INPUT_SAMPLE_RATE);
+        txInputHealth_.captureFailed();
+        closeTxInputStream();
+        return false;
+    }
     inputSessionId_ = txInputStream_->getSessionId();
-    // For the Bluetooth SCO mic, the negotiated input rate reveals the HFP codec:
-    // 16000 = wideband (mSBC / "HD Voice", ~7-8 kHz); 8000 = narrowband (CVSD,
-    // ~3.4 kHz, the "muffled" telephone bandwidth).
-    LOGI("TX: input rate=%d device=%d (wanted=%d) session=%d (SCO 16k=mSBC/WBS 8k=CVSD/NB)",
-         txActualInputRate_, txInputStream_->getDeviceId(), txInputDeviceId_, inputSessionId_);
+    LOGI("TX: input rate=%d device=%d (wanted=%d) session=%d api=%s preset=%s perf=%s sharing=%s compat=%d",
+         txActualInputRate_, txInputStream_->getDeviceId(), txInputDeviceId_, inputSessionId_,
+         oboe::convertToText(txInputStream_->getAudioApi()),
+         oboe::convertToText(txInputStream_->getInputPreset()),
+         oboe::convertToText(txInputStream_->getPerformanceMode()),
+         oboe::convertToText(txInputStream_->getSharingMode()), compatibilityCapture ? 1 : 0);
 
     // Intentionally left open but NOT started. The mic callback must not run
     // until startTx()/startNetTx() have designed the decimation filter and

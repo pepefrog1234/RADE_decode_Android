@@ -130,6 +130,63 @@ static void failedReopenConsumesTheSameBudget() {
     assert(health.poll(402 * MS) == Action::Failed);
 }
 
+static void compatibilityEscalatesOnlyForTheFailedUsbSession() {
+    TxInputHealth health;
+    health.beginSession(true);
+    auto initial = health.beginCapture(0);
+    assert(!health.useCompatibilityCapture());
+    initial->onFrames(10 * MS);
+    assert(health.poll(100 * MS) == Action::None);
+    assert(!health.useCompatibilityCapture());
+
+    initial->onError();
+    assert(health.poll(200 * MS) == Action::None);
+    assert(!health.useCompatibilityCapture()); // route-settling window
+    assert(health.poll(400 * MS) == Action::Reopen);
+    assert(health.useCompatibilityCapture());
+    auto recovered = health.beginCapture(400 * MS);
+    initial->onError(); // late old-stream error cannot spend another retry
+    recovered->onFrames(450 * MS);
+    assert(health.poll(450 * MS) == Action::None);
+    assert(health.reopenCount() == 1);
+    assert(health.useCompatibilityCapture());
+
+    recovered->onError();
+    assert(health.poll(500 * MS) == Action::None);
+    assert(health.poll(700 * MS) == Action::Reopen);
+    assert(health.useCompatibilityCapture()); // second retry retains profile
+    health.beginCapture(700 * MS)->onError();
+    assert(health.poll(701 * MS) == Action::Failed); // no extra retry budget
+    health.endSession();
+    assert(!health.useCompatibilityCapture());
+
+    // A new eligible over starts with the original profile again.
+    health.beginSession(true);
+    auto next = health.beginCapture(1000 * MS);
+    assert(!health.useCompatibilityCapture());
+    recovered->onError();
+    assert(health.poll(1001 * MS) == Action::None);
+    next->onError();
+    assert(health.poll(1100 * MS) == Action::None);
+    health.endSession(); // PTT released during the settling window
+    assert(health.poll(1300 * MS) == Action::None);
+
+    // A subsequent noneligible route (including network/BT) never inherits
+    // the USB profile, even when its own capture consumes the same two retries.
+    health.beginSession();
+    auto otherRoute = health.beginCapture(2000 * MS);
+    next->onError();
+    assert(health.poll(2001 * MS) == Action::None);
+    for (int attempt = 0; attempt < TxInputHealth::MAX_REOPENS; ++attempt) {
+        const int64_t failedAt = (2100 + attempt * 300) * MS;
+        otherRoute->onError();
+        assert(health.poll(failedAt) == Action::None);
+        assert(health.poll(failedAt + 200 * MS) == Action::Reopen);
+        assert(!health.useCompatibilityCapture());
+        otherRoute = health.beginCapture(failedAt + 200 * MS);
+    }
+}
+
 int main() {
     disconnectRecoveryIsBoundedPerOver();
     missingStartupAndRunningStalls();
@@ -137,5 +194,6 @@ int main() {
     resumedFramesCancelOnlyATimeout();
     retiredCallbacksAndNewSessionsAreIsolated();
     failedReopenConsumesTheSameBudget();
+    compatibilityEscalatesOnlyForTheFailedUsbSession();
     std::puts("TX input health regression tests passed");
 }
