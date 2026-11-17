@@ -34,9 +34,11 @@ set(OPUS_OSCE OFF CACHE BOOL "" FORCE)
 add_subdirectory(opus)
 
 # ─── RADE modem library ─────────────────────────────────────
-# Per-file compilation, matching upstream radae_nopy's own build (the old
-# rade_all.c unity build was an Xcode workaround; V1 and V2 sources have
-# colliding file-local statics, so a unity build would need rename hacks).
+# Vendored from https://github.com/freedv/rade_c (formerly radae_nopy) at
+# be66f39; radae/ is byte-identical to upstream src/ apart from CRLF→LF.
+# Per-file compilation, matching upstream's own build (the old rade_all.c
+# unity build was an Xcode workaround; V1 and V2 sources have colliding
+# file-local statics, so a unity build would need rename hacks).
 # With USE_LIBOPUS, rade_nnet.c is empty (nnet comes from libopus).
 add_library(rade STATIC
     # V1 waveform
@@ -73,6 +75,14 @@ target_compile_definitions(rade PRIVATE
     HAVE_CONFIG_H=1
     USE_LIBOPUS=1
 )
+
+# rade_c must not be built with fast math: rade_rx_v2.c #errors on
+# __FAST_MATH__, because fast math lets the compiler assume NaN/Inf never
+# occur and the receiver's non-finite input guard depends on them. Target
+# options follow CMAKE_C_FLAGS on the command line, so this cancels the global
+# -ffast-math for the modem only; opus (built with FLOAT_APPROX) and the app's
+# own DSP keep it.
+target_compile_options(rade PRIVATE -fno-fast-math)
 
 target_include_directories(rade PRIVATE
     ${CPP_DIR}/radae

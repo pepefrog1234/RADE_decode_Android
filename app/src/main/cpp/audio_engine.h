@@ -32,6 +32,14 @@ constexpr int INPUT_SAMPLE_RATE   = 48000;
 constexpr int MODEM_SAMPLE_RATE   = 8000;
 constexpr int SPEECH_SAMPLE_RATE  = 16000;
 
+// int16 → float scale for the modem's real-valued input (RADE_COMP with
+// imag = 0), as rade_api.h specifies for RADE_INT16_SCALE: taking Re{} halves
+// the positive-frequency component the modem tunes to, so the factor of 2
+// restores unit amplitude. V1 decodes identically at any input level; on V2
+// it places int16 audio in the middle of the receiver's ±20 dB input AGC
+// range, where a plain ÷32768 would sit 12 dB below it and lose quiet audio.
+constexpr float RADE_RX_REAL_SCALE = 2.0f / RADE_INT16_SCALE;
+
 // Attenuation applied to RS-BA1 network RX audio (Icom IC-705 over UDP 50003).
 // The radio sends near-full-scale digital audio — far hotter than the quiet
 // Android mic / USB line input the input-gain default targets — so without this

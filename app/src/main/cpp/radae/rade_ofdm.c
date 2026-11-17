@@ -410,7 +410,7 @@ float rade_ofdm_pilot_eq(const rade_ofdm *ofdm, RADE_COMP *rx_sym,
     }
     S2 += 1e-12f;  /* Avoid division by zero */
     float snr_est = S1 / (2.0f * S2) - 1.0f;
-    if (snr_est <= 0.0f) snr_est = 0.1f;
+    if (snr_est <= 0.1f) snr_est = 0.1f;
     float snrdB_est = 10.0f * log10f(snr_est);
 
     /* Correction based on average of straight line fit to AWGN/MPG/MPP */
@@ -426,7 +426,7 @@ float rade_ofdm_pilot_eq(const rade_ofdm *ofdm, RADE_COMP *rx_sym,
     /* Linearly interpolate channel estimate between pilots and equalize */
     for (int s = 0; s < Ns; s++) {
         /* Interpolation factor: pilot at 0, data at 1..Ns, pilot at Ns+1 */
-        float t = (float)(s) / (float)(Ns + 1);
+        float t = (float)(s + 1) / (float)(Ns + 1);
 
         for (int c = 0; c < Nc; c++) {
             /* Interpolated channel estimate */
@@ -544,9 +544,9 @@ int rade_ofdm_demod_eoo(const rade_ofdm *ofdm, float *z_hat, const RADE_COMP *rx
         RADE_COMP sum = rade_czero();
         sum = rade_cadd(sum, rade_cdiv(rx_sym[0][c], ofdm->P[c]));
         sum = rade_cadd(sum, rade_cdiv(rx_sym[1][c], ofdm->Pend[c]));
-        /* [RADE] local fix (commit 4c3d76b): the trailing Pend pilot is at
-           symbol Ns+1, not Ns (a data symbol) — using Ns corrupted the phase
-           estimate and prevented LDPC decode of iOS EOO callsigns. */
+        /* Second Pend is the last symbol, index Ns+1 (matches Python
+           receiver_one(), where its local Ns is self.Ns+1). Index Ns is a
+           data symbol and must not be used as a phase reference. */
         sum = rade_cadd(sum, rade_cdiv(rx_sym[Ns + 1][c], ofdm->Pend[c]));
         float phase_offset = rade_cangle(sum);
 
@@ -556,9 +556,9 @@ int rade_ofdm_demod_eoo(const rade_ofdm *ofdm, float *z_hat, const RADE_COMP *rx
         }
     }
 
-    /* Extract data symbols (symbols 2 to Ns, i.e., Ns-1 data symbols)
-       [RADE] local fix (commit 4c3d76b): loop must include symbol Ns
-       (s <= Ns) — upstream's s < Ns drops the last data symbol. */
+    /* Extract data symbols 2..Ns inclusive, i.e. Ns-1 symbols (Python:
+       rx_sym_pilots[:,:,2:Ns+1,:] in this module's Ns), filling all
+       (Ns-1)*Nc*2 = n_eoo_bits outputs */
     int out_idx = 0;
     for (int s = 2; s <= Ns; s++) {
         for (int c = 0; c < Nc; c++) {

@@ -664,7 +664,7 @@ void AudioEngine::processModemFrame() {
 
     std::vector<RADE_COMP> rxIn(nin);
     for (int i = 0; i < nin; i++) {
-        rxIn[i].real = (float)modemInputBuf_[i] / 32768.0f;
+        rxIn[i].real = (float)modemInputBuf_[i] * RADE_RX_REAL_SCALE;
         rxIn[i].imag = 0.0f;
     }
 
@@ -687,7 +687,11 @@ void AudioEngine::processModemFrame() {
     if (result > 0)
         synthesizeSpeech(features.data(), nFeat);
 
-    if (hasEoo) {
+    // The EOO callsign payload is V1 only. On V2 rade_n_eoo_bits() is 0 and
+    // has_eoo just marks end of over, so eooBits is an empty vector with a
+    // null data() — and the callsign decoder reads 56 symbols from its input
+    // unconditionally.
+    if (hasEoo && nEoo > 0) {
         char cs[32] = {0};
         if (eoo_callsign_decode(eooBits.data(), nEoo, cs, sizeof(cs) - 1)) {
             { std::lock_guard<std::mutex> lk(callsignMutex_); lastCallsign_ = cs; }

@@ -115,10 +115,10 @@ JNI_METHOD(nativeRx)(JNIEnv *env, jobject /* this */,
     jshort *inBuf = env->GetShortArrayElements(samplesIn, nullptr);
     if (inBuf == nullptr) return -1;
 
-    /* Convert Int16 to RADE_COMP (real = sample/32768, imag = 0) */
+    /* Convert Int16 to RADE_COMP (real = sample × RADE_RX_REAL_SCALE, imag = 0) */
     auto *rx_in = (RADE_COMP *)malloc(numSamples * sizeof(RADE_COMP));
     for (int i = 0; i < numSamples; i++) {
-        rx_in[i].real = (float)inBuf[i] / 32768.0f;
+        rx_in[i].real = (float)inBuf[i] * RADE_RX_REAL_SCALE;
         rx_in[i].imag = 0.0f;
     }
     env->ReleaseShortArrayElements(samplesIn, inBuf, JNI_ABORT);

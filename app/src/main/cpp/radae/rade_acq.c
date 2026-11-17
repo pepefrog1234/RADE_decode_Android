@@ -44,6 +44,7 @@
 
 void rade_acq_init(rade_acq *acq, const rade_ofdm *ofdm, float frange, float fstep) {
     memset(acq, 0, sizeof(rade_acq));
+    acq->rand_state = 1;
 
     acq->fs = RADE_FS;
     acq->m = RADE_M;
@@ -76,6 +77,8 @@ void rade_acq_init(rade_acq *acq, const rade_ofdm *ofdm, float frange, float fst
         for (int n = 0; n < RADE_M; n++) {
             RADE_COMP w_vec = rade_cexp(w * n);
             acq->p_w[f_idx][n] = rade_cmul(w_vec, acq->p[n]);
+            acq->p_w_re[n][f_idx] = acq->p_w[f_idx][n].real;
+            acq->p_w_im[n][f_idx] = acq->p_w[f_idx][n].imag;
         }
     }
 }
@@ -97,30 +100,50 @@ int rade_acq_detect_pilots(rade_acq *acq, const RADE_COMP *rx, int *tmax, float 
     int t_max = 0;
     float f_max = 0.0f;
 
-    /* Clear correlation grids */
-    memset(acq->Dt1, 0, sizeof(acq->Dt1));
-    memset(acq->Dt2, 0, sizeof(acq->Dt2));
+    /* Search over time and frequency.
 
-    /* Search over time and frequency */
+       For each time step, all frequency offsets are correlated together
+       (frequency is the inner loop over contiguous arrays) so the compiler can
+       vectorize it. Each offset's sum still runs over n = 0..M-1 in order with
+       the same arithmetic as rade_cmul()/rade_cadd(), so results are identical
+       to correlating one offset at a time. The noise-statistic sums are
+       accumulated in the same t/f order as before, re-using the magnitudes. */
+    float sum_abs_Dt1 = 0.0f;
+    float sum_abs_Dt2 = 0.0f;
+    int count = 0;
+
     for (int t = 0; t < Nmf; t++) {
+        float a1r[RADE_ACQ_NFREQ], a1i[RADE_ACQ_NFREQ];
+        float a2r[RADE_ACQ_NFREQ], a2i[RADE_ACQ_NFREQ];
         for (int f_idx = 0; f_idx < n_fcoarse; f_idx++) {
-            /* Correlate with frequency-shifted pilot at time t
-               Dt1 = sum(conj(rx[t:t+M]) * p_w[:][f_idx]) */
-            RADE_COMP Dt1 = rade_czero();
-            RADE_COMP Dt2 = rade_czero();
+            a1r[f_idx] = a1i[f_idx] = a2r[f_idx] = a2i[f_idx] = 0.0f;
+        }
 
-            for (int n = 0; n < M; n++) {
-                /* Note: Python uses np.conj(rx) first, then matmul
-                   So Dt1[t] = conj(rx[t:t+M]) . p_w */
-                Dt1 = rade_cadd(Dt1, rade_cmul(rade_cconj(rx[t + n]), acq->p_w[f_idx][n]));
-                Dt2 = rade_cadd(Dt2, rade_cmul(rade_cconj(rx[t + Nmf + n]), acq->p_w[f_idx][n]));
+        for (int n = 0; n < M; n++) {
+            /* Python uses np.conj(rx) first, then matmul:
+               Dt1[t] = conj(rx[t:t+M]) . p_w */
+            const float x1r = rx[t + n].real,       x1i = -rx[t + n].imag;
+            const float x2r = rx[t + Nmf + n].real, x2i = -rx[t + Nmf + n].imag;
+            const float *pr = acq->p_w_re[n];
+            const float *pi = acq->p_w_im[n];
+            for (int f_idx = 0; f_idx < n_fcoarse; f_idx++) {
+                a1r[f_idx] = a1r[f_idx] + (x1r * pr[f_idx] - x1i * pi[f_idx]);
+                a1i[f_idx] = a1i[f_idx] + (x1r * pi[f_idx] + x1i * pr[f_idx]);
+                a2r[f_idx] = a2r[f_idx] + (x2r * pr[f_idx] - x2i * pi[f_idx]);
+                a2i[f_idx] = a2i[f_idx] + (x2r * pi[f_idx] + x2i * pr[f_idx]);
             }
+        }
 
+        for (int f_idx = 0; f_idx < n_fcoarse; f_idx++) {
+            RADE_COMP Dt1 = {a1r[f_idx], a1i[f_idx]};
+            RADE_COMP Dt2 = {a2r[f_idx], a2i[f_idx]};
             acq->Dt1[t][f_idx] = Dt1;
             acq->Dt2[t][f_idx] = Dt2;
 
             /* Combined metric: |Dt1| + |Dt2| */
-            float Dt12 = rade_cabs(Dt1) + rade_cabs(Dt2);
+            float abs1 = rade_cabs(Dt1);
+            float abs2 = rade_cabs(Dt2);
+            float Dt12 = abs1 + abs2;
 
             if (Dt12 > Dtmax12) {
                 Dtmax12 = Dt12;
@@ -128,19 +151,10 @@ int rade_acq_detect_pilots(rade_acq *acq, const RADE_COMP *rx, int *tmax, float 
                 f_max = acq->fcoarse_range[f_idx];
                 t_max = t;
             }
-        }
-    }
 
-    /* Calculate threshold based on noise statistics
-       Ref: radae.pdf "Pilot Detection over Multiple Frames" */
-    float sum_abs_Dt1 = 0.0f;
-    float sum_abs_Dt2 = 0.0f;
-    int count = 0;
-
-    for (int t = 0; t < Nmf; t++) {
-        for (int f_idx = 0; f_idx < n_fcoarse; f_idx++) {
-            sum_abs_Dt1 += rade_cabs(acq->Dt1[t][f_idx]);
-            sum_abs_Dt2 += rade_cabs(acq->Dt2[t][f_idx]);
+            /* Noise statistics, ref: radae.pdf "Pilot Detection over Multiple Frames" */
+            sum_abs_Dt1 += abs1;
+            sum_abs_Dt2 += abs2;
             count++;
         }
     }
@@ -224,7 +238,10 @@ int rade_acq_check_pilots(rade_acq *acq, const RADE_COMP *rx,
     /* Update 5% of the correlation grid for noise estimation */
     int Nupdate = (int)(0.05f * Nmf);
     for (int i = 0; i < Nupdate; i++) {
-        int t = rand() % Nmf;
+        /* LCG (Numerical Recipes); state is per instance, so receivers in the
+           same process don't share or disturb each other's random numbers */
+        acq->rand_state = 1664525u * acq->rand_state + 1013904223u;
+        int t = (int)((acq->rand_state >> 8) % (uint32_t)Nmf);
 
         for (int f_idx = 0; f_idx < acq->n_fcoarse; f_idx++) {
             RADE_COMP Dt1 = rade_czero();

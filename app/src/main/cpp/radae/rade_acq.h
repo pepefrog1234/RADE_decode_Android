@@ -38,6 +38,7 @@
 
 #include "rade_dsp.h"
 #include "rade_ofdm.h"
+#include <stdint.h>
 
 #ifdef __cplusplus
 extern "C" {
@@ -61,6 +62,12 @@ typedef struct {
     /* Pre-computed frequency-shifted pilots: p_w[M][n_freq] */
     RADE_COMP p_w[RADE_ACQ_NFREQ][RADE_M];
 
+    /* Same pilots split into real/imag planes laid out [n][f], so the coarse
+       search can correlate all frequency offsets at once (vectorizable, and
+       bit-identical to the p_w form since each offset's sum keeps its order) */
+    float p_w_re[RADE_M][RADE_ACQ_NFREQ];
+    float p_w_im[RADE_M][RADE_ACQ_NFREQ];
+
     /* Pilot power for normalization */
     float sigma_p;
 
@@ -77,6 +84,7 @@ typedef struct {
     float Dtmax12;
     float Dtmax12_eoo;
     int f_ind_max;
+    uint32_t rand_state;                        /* per instance random numbers (not rand()) */
 
     /* Acquisition probabilities */
     float Pacq_error1;

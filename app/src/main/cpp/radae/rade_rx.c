@@ -233,8 +233,8 @@ int rade_rx_process(rade_rx_state *rx, float *features_out, float *eoo_out, cons
         rx->rx_phase = rx_phase;
 
         /* Normalize phase to prevent drift */
-        //float phase_mag = rade_cabs(rx->rx_phase);
-        //rx->rx_phase = rade_cscale(rx->rx_phase, 1.0f / phase_mag);
+        float phase_mag = rade_cabs(rx->rx_phase);
+        rx->rx_phase = rade_cscale(rx->rx_phase, 1.0f / phase_mag);
 
         /* Demodulate OFDM frame */
         float z_hat[RADE_NZMF * RADE_LATENT_DIM];
@@ -243,8 +243,10 @@ int rade_rx_process(rade_rx_state *rx, float *features_out, float *eoo_out, cons
         rade_ofdm_demod_frame(&rx->ofdm, z_hat, rx_corrected,
                               rx->time_offset, endofover, rx->coarse_mag, &snr_est);
 
-        /* Update SNR estimate with moving average */
-        rx->snrdB_3k_est = 0.9f * rx->snrdB_3k_est + 0.1f * snr_est;
+        /* Update SNR estimate with moving average.  The EOO frame has no
+           SNR estimate (snr_est stays 0), so skip it, as Python does. */
+        if (!endofover)
+            rx->snrdB_3k_est = 0.9f * rx->snrdB_3k_est + 0.1f * snr_est;
 
         valid_output = !endofover;
 

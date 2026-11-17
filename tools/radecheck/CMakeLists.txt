@@ -9,9 +9,13 @@
 #   cmake -B build -DCMAKE_BUILD_TYPE=Debug tools/radecheck
 #   cmake --build build -j8 && ./build/loopback
 #
-# Exit code 0 = both waveforms synced and decoded cleanly under ASAN.
+# Exit code 0 = both waveforms synced, decoded cleanly under ASAN, reported
+# exactly one end of over, and V1 recovered every EOO payload bit.
 # (v1.6.2 exists because this check did not: the V2 decoder aborted on
 # sync due to a missing opus-nnet patch, crashing the app on-air.)
+#
+# The modem is built without fast math here, as in the app: upstream rade_c
+# refuses to compile with -ffast-math (see app/src/main/cpp/CMakeLists.txt).
 cmake_minimum_required(VERSION 3.22)
 project(radecheck C CXX)
 

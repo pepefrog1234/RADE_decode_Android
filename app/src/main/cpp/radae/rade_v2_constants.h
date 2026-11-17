@@ -21,5 +21,7 @@
 
 #define RADE_V2_DEC_MAX_CONV_INPUTS 1792
 
+#define RADE_V2_DIR_BIAS 1.74f
+
 
 #endif /* RADE_V2_CONSTANTS_H */

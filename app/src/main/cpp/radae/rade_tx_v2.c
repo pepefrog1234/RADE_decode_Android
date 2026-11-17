@@ -37,7 +37,7 @@
 #include "rade_enc_v2_data.h"
 #include <string.h>
 
-int rade_tx_v2_init(rade_tx_v2_state *tx) {
+int rade_tx_v2_init(rade_tx_v2_state *tx, int bpf_en) {
     memset(tx, 0, sizeof(*tx));
 
     if (init_radeencv2(&tx->enc_model, radeencv2_arrays) != 0)
@@ -46,6 +46,14 @@ int rade_tx_v2_init(rade_tx_v2_state *tx) {
     memset(&tx->enc_state, 0, sizeof(tx->enc_state));
     rade_v2_ofdm_init(&tx->ofdm);
     tx->data_symbol = -1.0f;
+
+    tx->bpf_en = bpf_en;
+    if (bpf_en) {
+        float bandwidth = 2700.0f - 300.0f;
+        float centre    = (2700.0f + 300.0f) / 2.0f;
+        int   max_len   = RADE_V2_NEOO > RADE_V2_NMF ? RADE_V2_NEOO : RADE_V2_NMF;
+        rade_bpf_init(&tx->bpf, RADE_BPF_NTAP, (float)RADE_FS, bandwidth, centre, max_len);
+    }
 
     return 0;
 }
@@ -84,7 +92,13 @@ int rade_tx_v2_process(rade_tx_v2_state *tx, RADE_COMP *tx_out, const float *fea
     rade_core_encoder_v2(&tx->enc_state, &tx->enc_model, z, enc_features, arch);
 
     /* Modulate: z -> IQ samples */
-    return rade_v2_ofdm_mod_frame(&tx->ofdm, tx_out, z);
+    int n_out = rade_v2_ofdm_mod_frame(&tx->ofdm, tx_out, z);
+
+    if (tx->bpf_en) {
+        rade_bpf_process(&tx->bpf, tx_out, tx_out, n_out);
+    }
+
+    return n_out;
 }
 
 void rade_tx_v2_set_data_symbol(rade_tx_v2_state *tx, float symbol) {
@@ -95,5 +109,10 @@ int rade_tx_v2_eoo(rade_tx_v2_state *tx, RADE_COMP *tx_out) {
     int n_eoo;
     const RADE_COMP *eoo = rade_v2_ofdm_get_eoo(&tx->ofdm, &n_eoo);
     memcpy(tx_out, eoo, sizeof(RADE_COMP) * n_eoo);
+
+    if (tx->bpf_en) {
+        rade_bpf_process(&tx->bpf, tx_out, tx_out, n_eoo);
+    }
+
     return n_eoo;
 }

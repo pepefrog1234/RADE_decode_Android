@@ -34,7 +34,7 @@
 */
 
 #define VERSION       2  /* Bump on breaking API changes */
-#define VERSION_MINOR 1  /* Bump on non-breaking additions (e.g. new flags, new functions) */
+#define VERSION_MINOR 4  /* Bump on non-breaking additions (e.g. new flags, new functions) */
 
 #include <assert.h>
 #include <stdlib.h>
@@ -74,8 +74,9 @@ struct rade *rade_open(char model_file[], int flags) {
     fprintf(stderr, "rade_open: model_file=%s (ignored, using built-in weights)\n", model_file);
 
     if (flags & RADE_MODE_V2) {
-        /* Initialize V2 transmitter */
-        if (rade_tx_v2_init(&r->tx_v2) != 0) {
+        /* Initialize V2 transmitter (SSB BPF enabled by default) */
+        int tx_bpf_en = (flags & RADE_NO_TX_BPF) ? 0 : 1;
+        if (rade_tx_v2_init(&r->tx_v2, tx_bpf_en) != 0) {
             fprintf(stderr, "rade_open: failed to initialize V2 transmitter\n");
             free(r);
             return NULL;
@@ -219,12 +220,12 @@ int rade_rx(struct rade *r, float features_out[], int *has_eoo_out, float eoo_ou
 
     if (r->flags & RADE_MODE_V2) {
         int ret = rade_rx_v2_process(&r->rx_v2, features_out, rx_in);
-        *has_eoo_out = (ret & 0x2) ? 1 : 0;
+        if (has_eoo_out) *has_eoo_out = (ret & 0x2) ? 1 : 0;
         return (ret & 0x1) ? rade_rx_v2_n_features_out() : 0;
     }
 
     int ret = rade_rx_process(&r->rx, features_out, eoo_out, rx_in);
-    *has_eoo_out = (ret & 0x2) ? 1 : 0;
+    if (has_eoo_out) *has_eoo_out = (ret & 0x2) ? 1 : 0;
     return (ret & 0x1) ? rade_rx_n_features_out(&r->rx) : 0;
 }
 
@@ -246,10 +247,41 @@ float rade_snrdB_3k_est(struct rade *r) {
     return (float)rade_rx_snrdB_3k_est(&r->rx);
 }
 
+float rade_clock_offset_ppm(struct rade *r) {
+    assert(r != NULL);
+    if (r->flags & RADE_MODE_V2) return rade_rx_v2_clock_offset_ppm(&r->rx_v2);
+    return 0.0f;
+}
+
+int rade_mistune(struct rade *r) {
+    assert(r != NULL);
+    if (r->flags & RADE_MODE_V2) return rade_rx_v2_mistune(&r->rx_v2);
+    return 0;
+}
+
+void rade_get_stats(struct rade *r, struct rade_stats *stats) {
+    assert(r != NULL);
+    assert(stats != NULL);
+    memset(stats, 0, sizeof(*stats));
+    if (r->flags & RADE_MODE_V2) {
+        stats->sync         = (r->rx_v2.state == RADE_RX_V2_SYNC);
+        stats->delta_hat    = r->rx_v2.delta_hat;
+        stats->delta_hat_g  = r->rx_v2.delta_hat_g;
+        stats->freq_offset  = r->rx_v2.freq_offset;
+        stats->gain         = r->rx_v2.gain;
+        stats->snr_est      = r->rx_v2.snr_est_dB;
+    }
+}
+
 void rade_set_disable_unsync(struct rade *r, float seconds) {
     assert(r != NULL);
     if (r->flags & RADE_MODE_V2) return;  /* not supported in V2 */
     r->rx.disable_unsync = seconds;
+}
+
+void rade_rx_set_agc(struct rade *r, int enable) {
+    assert(r != NULL);
+    if (r->flags & RADE_MODE_V2) r->rx_v2.agc_en = enable;
 }
 
 void rade_tx_set_data_symbol(struct rade *r, float symbol) {

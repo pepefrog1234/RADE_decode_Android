@@ -39,8 +39,8 @@ USB/mic audio (48kHz) → Oboe capture → Polyphase FIR decimation (→8kHz) �
 - **Native C++ (`cpp/`):**
   - `audio_engine.cpp` — Oboe streams, decimation filter, modem frame dispatch, FARGAN synthesis, WAV recording
   - `rade_jni.cpp` — JNI bindings, callbacks to Kotlin (sync state, callsign decoded)
-  - `radae/` — RADE modem library (built as unity build via `rade_all.c`)
-  - `opus/` — Opus 1.9.0 with FARGAN/Deep PLC enabled
+  - `radae/` — RADE modem library (V1 + experimental V2), vendored from upstream rade_c and compiled per file
+  - `opus/` — vendored Opus snapshot with FARGAN/Deep PLC enabled
   - `eoo/` — EOO callsign codec
 - **Data:** `AppDatabase` uses raw SQLite (not Room) — stores ReceptionSessions, SignalSnapshots, SyncEvents, CallsignEvents.
 - **Network:** `FreeDVReporter` uploads spots via OkHttp. `LocationTracker` provides GPS/grid squares.
@@ -49,10 +49,23 @@ USB/mic audio (48kHz) → Oboe capture → Polyphase FIR decimation (→8kHz) �
 
 | Library | Source | Purpose |
 |---------|--------|---------|
-| rade | Local `radae/` | RADE modem DSP |
-| opus | FetchContent (Google, v1.9.0) | FARGAN vocoder + DNN |
+| rade | Vendored `radae/` ([freedv/rade_c](https://github.com/freedv/rade_c) `be66f39`) | RADE modem DSP |
+| opus | Vendored `opus/` | FARGAN vocoder + DNN |
 | oboe | FetchContent (Google, v1.9.0) | Low-latency audio I/O |
 | eoo | Local `eoo/` | Callsign encoding/decoding |
+
+### Updating the RADE modem (`cpp/radae/`)
+
+- Every file that also exists in upstream `src/` is an unmodified copy (only CRLF→LF). Keep it that way: update by copying upstream files over, and put app-side fixes in the app, not in `radae/`.
+- The modem must be compiled without `-ffast-math` (upstream `#error`s on it). `CMakeLists.txt` adds `-fno-fast-math` to the `rade` target only; opus and the app's own code keep the global flag.
+- Upstream's opus patches (`src/opus-nnet.c.diff`, `src/opus-nnet.h.diff`) must stay applied in `cpp/opus/dnn/`; the V2 decoder aborts on sync without the `nnet.c` one.
+- Real-valued modem input is scaled by `RADE_RX_REAL_SCALE` (`2 / RADE_INT16_SCALE`, see `rade_api.h`).
+- After any `radae/` or `opus/` update, run the host check before building an APK (exit code 0 = V1 and V2 sync, decode and end of over under ASAN):
+
+```bash
+cmake -B build -DCMAKE_BUILD_TYPE=Debug tools/radecheck
+cmake --build build -j8 && ./build/loopback
+```
 
 ### Key Constraints
 
