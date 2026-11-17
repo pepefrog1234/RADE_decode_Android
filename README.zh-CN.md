@@ -318,7 +318,7 @@ TX：麦克风（48 kHz）
 | ViewModel | `TransceiverViewModel` | 绑定服务，对外提供 `StateFlow<ServiceState>` |
 | 服务 | `service/AudioService` | 前台服务（麦克风 + 媒体播放类型）；接收记录生命周期、信号快照、录音 |
 | JNI 桥接 | `AudioBridge`、`RADEWrapper` | Oboe 引擎控制／RADE + FARGAN 处理 |
-| 原生层 | `app/src/main/cpp/` | `audio_engine.cpp`（Oboe 流、降采样、帧分发）、`rade_jni.cpp`、`radae/`（RADE 调制解调器，unity build）、`opus/`（FARGAN）、`eoo/`（呼号编解码） |
+| 原生层 | `app/src/main/cpp/` | `audio_engine.cpp`（Oboe 流、降采样、帧分发）、`rade_jni.cpp`、`radae/`（RADE 调制解调器，内含 [freedv/rade_c](https://github.com/freedv/rade_c) 的源码，逐文件编译）、`opus/`（FARGAN）、`eoo/`（呼号编解码） |
 | 电台控制 | `network/`、`usb/` | 内置 Hamlib 4.5.5 `rigctld`（arm64）+ 原生 USB 串口→pty 桥接；Kotlin 实现的 Icom RS-BA1 UDP 客户端与 openHPSDR（协议 1）客户端（Hermes-Lite 2，SSB 调制解调在 App 内完成） |
 | 数据 | `data/` | 原生 SQLite（不用 Room）：接收记录、信号快照、同步事件、呼号事件 |
 | Reporter | `network/FreeDVReporter` | 基于 OkHttp 的 Socket.IO v4 over WebSocket |
@@ -334,8 +334,9 @@ cd RADE_decode_Android
 
 - Android Studio（AGP 9.1／Kotlin 2.2.10）、JDK 17+
 - NDK 与 CMake 3.22.1 由 Gradle 自动驱动——不需要单独构建原生代码
-- 首次原生构建会通过 CMake FetchContent 下载 Opus 1.9.0 与 Oboe 1.9.0
-  （首次需要联网）
+- 首次原生构建只会通过 CMake FetchContent 下载 Oboe 1.9.0（首次需要联网）；
+  Opus 与 RADE 调制解调器的源码已包含在
+  `app/src/main/cpp/`（`opus/`、`radae/`），无需下载
 - 产物**仅含 arm64-v8a**——请用真机或 arm64 模拟器镜像测试
 
 ## 许可证与致谢
@@ -347,7 +348,7 @@ cd RADE_decode_Android
 
 | 项目 | 作者／来源 | 许可证 |
 |---|---|---|
-| [RADE modem](https://github.com/drowe67/radae) | David Rowe 与 FreeDV 项目 | BSD 2-Clause |
+| RADE modem：[rade_c](https://github.com/freedv/rade_c)（本 App 内含的 C 库）、[radae](https://github.com/drowe67/radae)（Python 参考实现） | David Rowe 与 FreeDV 项目 | BSD 2-Clause |
 | Opus / FARGAN 声码器 | Xiph.Org Foundation | BSD 3-Clause |
 | EOO 呼号编解码 | Codec2 / FreeDV | LGPL 2.1 |
 | [Hamlib](https://hamlib.github.io/)（`rigctld`） | The Hamlib Group | LGPL 2.1+ |

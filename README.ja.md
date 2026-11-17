@@ -364,7 +364,7 @@ TX：マイク（48 kHz）
 | ViewModel | `TransceiverViewModel` | サービスにバインドし `StateFlow<ServiceState>` を公開 |
 | サービス | `service/AudioService` | フォアグラウンドサービス（マイク + メディア再生タイプ）。セッション管理、信号スナップショット、録音 |
 | JNI ブリッジ | `AudioBridge`、`RADEWrapper` | Oboe エンジン制御／RADE + FARGAN 処理 |
-| ネイティブ | `app/src/main/cpp/` | `audio_engine.cpp`（Oboe ストリーム、デシメーション、フレーム分配）、`rade_jni.cpp`、`radae/`（RADE モデム、ユニティビルド）、`opus/`（FARGAN）、`eoo/`（コールサインコーデック） |
+| ネイティブ | `app/src/main/cpp/` | `audio_engine.cpp`（Oboe ストリーム、デシメーション、フレーム分配）、`rade_jni.cpp`、`radae/`（RADE モデム。[freedv/rade_c](https://github.com/freedv/rade_c) のソースを同梱し、ファイルごとにコンパイル）、`opus/`（FARGAN）、`eoo/`（コールサインコーデック） |
 | リグ制御 | `network/`、`usb/` | 内蔵 Hamlib 4.5.5 `rigctld`（arm64）+ ネイティブ USB シリアル→pty ブリッジ。Icom RS-BA1 UDP クライアントと openHPSDR プロトコル 1 クライアント（Hermes-Lite 2、アプリ内 SSB モデム付き）は Kotlin 実装 |
 | データ | `data/` | 生 SQLite（Room 不使用）：受信セッション、信号スナップショット、同期イベント、コールサインイベント |
 | Reporter | `network/FreeDVReporter` | OkHttp による Socket.IO v4 over WebSocket |
@@ -381,8 +381,9 @@ cd RADE_decode_Android
 - Android Studio（AGP 9.1／Kotlin 2.2.10）、JDK 17 以上
 - NDK と CMake 3.22.1 は Gradle ビルドが自動的に処理——ネイティブの個別ビルドは
   不要
-- 初回のネイティブビルド時に CMake FetchContent が Opus 1.9.0 と Oboe 1.9.0 を
-  ダウンロードします（初回のみネットワーク必須）
+- 初回のネイティブビルド時に CMake FetchContent がダウンロードするのは
+  Oboe 1.9.0 のみです（初回のみネットワーク必須）。Opus と RADE モデムのソースは
+  `app/src/main/cpp/`（`opus/`、`radae/`）に同梱しています
 - 成果物は **arm64-v8a のみ**——実機または arm64 エミュレーターイメージで
   テストしてください
 
@@ -395,7 +396,7 @@ cd RADE_decode_Android
 
 | プロジェクト | 作者／提供元 | ライセンス |
 |---|---|---|
-| [RADE modem](https://github.com/drowe67/radae) | David Rowe 氏と FreeDV プロジェクト | BSD 2-Clause |
+| RADE modem：[rade_c](https://github.com/freedv/rade_c)（本アプリに同梱の C ライブラリ）、[radae](https://github.com/drowe67/radae)（Python リファレンス実装） | David Rowe 氏と FreeDV プロジェクト | BSD 2-Clause |
 | Opus / FARGAN ボコーダー | Xiph.Org Foundation | BSD 3-Clause |
 | EOO コールサインコーデック | Codec2 / FreeDV | LGPL 2.1 |
 | [Hamlib](https://hamlib.github.io/)（`rigctld`） | The Hamlib Group | LGPL 2.1+ |

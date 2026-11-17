@@ -362,7 +362,7 @@ TX:  microphone (48 kHz)
 | ViewModel | `TransceiverViewModel` | Binds to the service, exposes `StateFlow<ServiceState>` |
 | Service | `service/AudioService` | Foreground service (mic + media playback types); session lifecycle, snapshots, recording |
 | JNI bridge | `AudioBridge`, `RADEWrapper` | Oboe engine control / RADE + FARGAN processing |
-| Native | `app/src/main/cpp/` | `audio_engine.cpp` (Oboe streams, decimation, frame dispatch), `rade_jni.cpp`, `radae/` (RADE modem, unity build), `opus/` (FARGAN), `eoo/` (callsign codec) |
+| Native | `app/src/main/cpp/` | `audio_engine.cpp` (Oboe streams, decimation, frame dispatch), `rade_jni.cpp`, `radae/` (RADE modem, vendored from [freedv/rade_c](https://github.com/freedv/rade_c), compiled per file), `opus/` (FARGAN), `eoo/` (callsign codec) |
 | Rig control | `network/`, `usb/` | Bundled Hamlib 4.5.5 `rigctld` (arm64) + native USB-serial→pty bridge; Icom RS-BA1 UDP client and openHPSDR protocol-1 client (Hermes-Lite 2, with in-app SSB modem) in Kotlin |
 | Data | `data/` | Raw SQLite (no Room): sessions, signal snapshots, sync events, callsign events |
 | Reporter | `network/FreeDVReporter` | Socket.IO v4 over WebSocket via OkHttp |
@@ -379,8 +379,9 @@ cd RADE_decode_Android
 - Android Studio with AGP 9.1 / Kotlin 2.2.10, JDK 17+
 - NDK + CMake 3.22.1 are driven automatically by the Gradle build — no separate
   native build step
-- First native build downloads Opus 1.9.0 and Oboe 1.9.0 via CMake FetchContent
-  (network required once)
+- First native build downloads only Oboe 1.9.0 via CMake FetchContent (network
+  required once); Opus and the RADE modem are vendored in `app/src/main/cpp/`
+  (`opus/`, `radae/`)
 - Output is **arm64-v8a only** — test on a real device or an arm64 emulator image
 
 ## License & acknowledgements
@@ -392,7 +393,7 @@ Standing on the shoulders of:
 
 | Project | Author / origin | License |
 |---|---|---|
-| [RADE modem](https://github.com/drowe67/radae) | David Rowe & the FreeDV project | BSD 2-Clause |
+| RADE modem: [rade_c](https://github.com/freedv/rade_c) (C library, vendored in this app) and [radae](https://github.com/drowe67/radae) (Python reference implementation) | David Rowe & the FreeDV project | BSD 2-Clause |
 | Opus / FARGAN vocoder | Xiph.Org Foundation | BSD 3-Clause |
 | EOO callsign codec | Codec2 / FreeDV | LGPL 2.1 |
 | [Hamlib](https://hamlib.github.io/) (`rigctld`) | The Hamlib Group | LGPL 2.1+ |
