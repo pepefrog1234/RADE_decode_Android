@@ -60,11 +60,11 @@ USB/mic audio (48kHz) → Oboe capture → Polyphase FIR decimation (→8kHz) �
 - The modem must be compiled without `-ffast-math` (upstream `#error`s on it). `CMakeLists.txt` adds `-fno-fast-math` to the `rade` target only; opus and the app's own code keep the global flag.
 - Upstream's opus patches (`src/opus-nnet.c.diff`, `src/opus-nnet.h.diff`) must stay applied in `cpp/opus/dnn/`; the V2 decoder aborts on sync without the `nnet.c` one.
 - Real-valued modem input is scaled by `RADE_RX_REAL_SCALE` (`2 / RADE_INT16_SCALE`, see `rade_api.h`).
-- After any `radae/` or `opus/` update, run the host check before building an APK (exit code 0 = V1 and V2 sync, decode and end of over under ASAN):
+- After any `radae/` or `opus/` update, run the host checks before building an APK. `loopback`: exit code 0 = V1 and V2 sync, decode and end of over under ASAN. `tunecheck`: exit code 0 = the V2 tuning indicator (`rade_mistune()`) and clock offset (`rade_clock_offset_ppm()`) still have the direction the receiver screen's "tune up / tune down" hint assumes:
 
 ```bash
 cmake -B build -DCMAKE_BUILD_TYPE=Debug tools/radecheck
-cmake --build build -j8 && ./build/loopback
+cmake --build build -j8 && ./build/loopback && ./build/tunecheck
 ```
 
 ### Key Constraints

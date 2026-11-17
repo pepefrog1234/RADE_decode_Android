@@ -599,9 +599,10 @@ void AudioEngine::processInputFrames(const float *data, int32_t numFrames, int32
     if (logCounter % 8 == 0) {
         float peakDb = 20.0f * log10f(peakSample + 1e-10f);
         float rmsDb = 10.0f * log10f(rmsSum / (float)numFrames + 1e-10f);
-        LOGI("RX: in=%d gain=%.1f peak=%.1fdB rms=%.1fdB sync=%d snr=%d foff=%.1f ring=%d",
+        LOGI("RX: in=%d gain=%.1f peak=%.1fdB rms=%.1fdB sync=%d snr=%d foff=%.1f mistune=%d clk=%.0fppm ring=%d",
              numFrames, gain, peakDb, rmsDb,
              syncState_.load(), snrEstimate_.load(), freqOffset_.load(),
+             mistune_.load(), clockOffsetPpm_.load(),
              playbackRing_.availableToRead());
     }
 }
@@ -680,6 +681,13 @@ void AudioEngine::processModemFrame() {
     int oldSync = syncState_.exchange(newSync);
     snrEstimate_.store((int)rade_snrdB_3k_est(rade_));  // API returns float since V2 merge
     freqOffset_.store(rade_freq_offset(rade_));
+    // V2 tuning indicator and clock offset (both 0 on V1). rade_mistune() is
+    // documented as 0 in sync, but the modem refreshes it before its state
+    // machine runs: on the rade_rx() call that acquires, it still carries the
+    // direction of the vetoed attempts while rade_sync() already reports
+    // sync. Report "no indication" for that call too.
+    mistune_.store(newSync ? 0 : rade_mistune(rade_));
+    clockOffsetPpm_.store(rade_clock_offset_ppm(rade_));
 
     if (newSync != oldSync && callback_)
         callback_->onSyncStateChanged(newSync);
@@ -963,6 +971,10 @@ bool AudioEngine::initModem() {
     if (!rade_) { LOGE("rade_open failed"); return false; }
     LOGI("RADE opened api=v%d waveform=%s", rade_version(),
          radeV2_.load() ? "V2 (experimental)" : "V1");
+    // A new modem has no tuning indication or clock estimate: do not let the
+    // previous one's last value stand until the first frame is processed.
+    mistune_.store(0);
+    clockOffsetPpm_.store(0.0f);
 
     fargan_ = (FARGANState *)calloc(1, sizeof(FARGANState));
     if (!fargan_) { rade_close(rade_); rade_ = nullptr; return false; }

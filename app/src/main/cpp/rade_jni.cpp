@@ -552,6 +552,25 @@ JNI_AUDIO(nativeGetFreqOffset)(JNIEnv *env, jobject owner) {
     return engine->getFreqOffset();
 }
 
+/** RADE V2 tuning indicator: +1 signal too high in audio frequency, -1 too
+ *  low, 0 no indication. Always 0 on V1. */
+JNIEXPORT jint JNICALL
+JNI_AUDIO(nativeGetMistune)(JNIEnv *env, jobject owner) {
+    AudioEngineAccess access(env, owner);
+    auto *engine = access.get();
+    if (!engine) return 0;
+    return engine->getMistune();
+}
+
+/** RADE V2 Tx/Rx sample clock offset in ppm. Always 0 on V1. */
+JNIEXPORT jfloat JNICALL
+JNI_AUDIO(nativeGetClockOffsetPpm)(JNIEnv *env, jobject owner) {
+    AudioEngineAccess access(env, owner);
+    auto *engine = access.get();
+    if (!engine) return 0.0f;
+    return engine->getClockOffsetPpm();
+}
+
 JNIEXPORT jboolean JNICALL
 JNI_AUDIO(nativeIsUnprocessedRejected)(JNIEnv *env, jobject owner) {
     AudioEngineAccess access(env, owner);

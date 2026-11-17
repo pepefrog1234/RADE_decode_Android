@@ -17,6 +17,8 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.ArrowDownward
+import androidx.compose.material.icons.filled.ArrowUpward
 import androidx.compose.material.icons.filled.FiberManualRecord
 import androidx.compose.material.icons.filled.GraphicEq
 import androidx.compose.material.icons.filled.Mic
@@ -137,6 +139,10 @@ internal fun TransceiverContent(
                 ) {
                     InfoCard(stringResource(R.string.label_snr), "${state.snrDb}", stringResource(R.string.unit_db), Modifier.weight(1f))
                     InfoCard(stringResource(R.string.label_freq), String.format("%.1f", state.freqOffsetHz), stringResource(R.string.unit_hz), Modifier.weight(1f))
+                }
+                // RADE V2 only: Tx/Rx sound-card clock offset, once the modem has an estimate.
+                if (state.showClockOffset) {
+                    ClockOffsetLine(state.clockOffsetPpm)
                 }
             }
 
@@ -308,6 +314,13 @@ private fun SyncHeader(state: TransceiverViewModel.UiState) {
             )
         }
 
+        // RADE V2: a signal is there but too far off frequency to sync on.
+        val tuneHint = state.tuneHint
+        if (tuneHint != TuneHint.NONE) {
+            Spacer(Modifier.height(8.dp))
+            TuneHintLine(tuneHint)
+        }
+
         if (state.lastCallsign.isNotEmpty()) {
             Spacer(Modifier.height(6.dp))
             // V1 carries the callsign in EOO, after this station stops speaking.
@@ -337,6 +350,77 @@ private fun SyncHeader(state: TransceiverViewModel.UiState) {
             )
         }
     }
+}
+
+/* ── RADE V2 tuning hint ─────────────────────────────────────── */
+
+/** Which way to retune for a V2 signal the receiver will not sync on because
+ *  it is off frequency. An arrow is drawn only when the radio's sideband is
+ *  known; otherwise the wording stays with the signal's audio frequency and
+ *  names the correction for each sideband. */
+@Composable
+private fun TuneHintLine(hint: TuneHint) {
+    val title: Int
+    val detail: Int
+    when (hint) {
+        TuneHint.TUNE_UP -> { title = R.string.tune_hint_up; detail = R.string.tune_hint_up_detail }
+        TuneHint.TUNE_DOWN -> { title = R.string.tune_hint_down; detail = R.string.tune_hint_down_detail }
+        TuneHint.SIGNAL_TOO_HIGH -> { title = R.string.tune_hint_signal_high; detail = R.string.tune_hint_signal_high_detail }
+        TuneHint.SIGNAL_TOO_LOW -> { title = R.string.tune_hint_signal_low; detail = R.string.tune_hint_signal_low_detail }
+        TuneHint.NONE -> return
+    }
+    val arrow = when (hint) {
+        TuneHint.TUNE_UP -> Icons.Default.ArrowUpward
+        TuneHint.TUNE_DOWN -> Icons.Default.ArrowDownward
+        else -> null
+    }
+
+    Column(
+        modifier = Modifier.testTag("tune_hint").padding(horizontal = 12.dp),
+        horizontalAlignment = Alignment.CenterHorizontally
+    ) {
+        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+            if (arrow != null) {
+                Icon(arrow, contentDescription = null, tint = Amber400, modifier = Modifier.size(18.dp))
+            }
+            Text(
+                text = stringResource(title),
+                color = Amber400,
+                fontSize = 14.sp,
+                lineHeight = 18.sp,
+                fontWeight = FontWeight.Bold,
+                letterSpacing = 1.sp,
+                textAlign = TextAlign.Center
+            )
+        }
+        Text(
+            text = stringResource(detail),
+            color = OnSurfaceDim,
+            fontSize = 11.sp,
+            lineHeight = 14.sp,
+            textAlign = TextAlign.Center
+        )
+    }
+}
+
+/* ── RADE V2 clock offset ────────────────────────────────────── */
+
+/** Tx/Rx sound-card clock offset estimated by the V2 receiver. Shown dim as
+ *  plain information; amber once it is outside what V2 is specified for. */
+@Composable
+private fun ClockOffsetLine(clockOffsetPpm: Float) {
+    val outOfSpec = clockOffsetOutOfSpec(clockOffsetPpm)
+    Text(
+        text = stringResource(
+            if (outOfSpec) R.string.clock_offset_out_of_spec else R.string.clock_offset,
+            formatClockOffsetPpm(clockOffsetPpm)
+        ),
+        color = if (outOfSpec) Amber400 else OnSurfaceDim,
+        fontSize = 11.sp,
+        lineHeight = 14.sp,
+        textAlign = TextAlign.Center,
+        modifier = Modifier.testTag("clock_offset").fillMaxWidth().padding(horizontal = 16.dp)
+    )
 }
 
 /* ── TX Header ───────────────────────────────────────────────── */

@@ -14,6 +14,12 @@
 # (v1.6.2 exists because this check did not: the V2 decoder aborted on
 # sync due to a missing opus-nnet patch, crashing the app on-air.)
 #
+# ./build/tunecheck covers what the receiver screen derives from the V2
+# modem: the tune up/down hint (rade_mistune) and the sound-card clock offset
+# (rade_clock_offset_ppm). Exit code 0 = a signal 45 Hz off never syncs and
+# is reported in the right direction, nothing is reported on frequency, on
+# noise or on V1, and the clock estimate has the documented sign.
+#
 # The modem is built without fast math here, as in the app: upstream rade_c
 # refuses to compile with -ffast-math (see app/src/main/cpp/CMakeLists.txt).
 cmake_minimum_required(VERSION 3.22)
@@ -76,6 +82,12 @@ target_link_libraries(rade PUBLIC opus)
 add_executable(loopback loopback.c)
 target_include_directories(loopback PRIVATE ${CPP_DIR}/radae)
 target_link_libraries(loopback PRIVATE rade m)
+
+# V2 tuning indicator + clock offset through the app's int16 conversion and
+# status reads (AudioEngine::processModemFrame); see the header comment.
+add_executable(tunecheck tunecheck.c)
+target_include_directories(tunecheck PRIVATE ${CPP_DIR}/radae)
+target_link_libraries(tunecheck PRIVATE rade m)
 
 # Full speech A/B: 16k wav → lpcnet features → rade tx/rx → FARGAN → wav,
 # for both waveforms, mirroring the app's TX pump and synthesizeSpeech

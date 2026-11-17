@@ -35,7 +35,8 @@ class TransceiverLayoutTest {
         val before = compose.onNodeWithTag("tx_control").fetchSemanticsNode().boundsInRoot
         compose.runOnIdle {
             state.value = state.value.copy(lastCallsign = "DJ4MO", analogMonitor = true,
-                unprocessedRejected = true, pttControlError = true, rxRestartError = true)
+                unprocessedRejected = true, pttControlError = true, rxRestartError = true,
+                radeV2Mode = true, mistune = 1, clockOffsetPpm = 180f)
         }
         compose.onNodeWithTag("tx_control").assertIsDisplayed().performClick()
         compose.onNodeWithTag("start_stop_control").assertIsDisplayed().performClick()

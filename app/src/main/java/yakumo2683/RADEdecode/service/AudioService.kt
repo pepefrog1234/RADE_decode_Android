@@ -124,6 +124,13 @@ class AudioService : LifecycleService() {
         val syncState: Int = 0,
         val snrDb: Int = 0,
         val freqOffsetHz: Float = 0f,
+        /** RADE V2 tuning indicator ([AudioBridge.mistune]): +1 = received
+         *  signal too high in audio frequency, -1 = too low, 0 = none.
+         *  Always 0 on V1. */
+        val mistune: Int = 0,
+        /** RADE V2 Tx/Rx sample clock offset in ppm
+         *  ([AudioBridge.clockOffsetPpm]); 0 on V1 and until the first sync. */
+        val clockOffsetPpm: Float = 0f,
         val inputLevelDb: Float = -100f,
         val outputLevelDb: Float = -100f,
         val txLevelDb: Float = -100f,
@@ -1966,6 +1973,8 @@ class AudioService : LifecycleService() {
                 // polling updates other fields without clobbering it
                 val snr = bridge.snrEstimate
                 val freq = bridge.freqOffset
+                val mistune = bridge.mistune
+                val clockPpm = bridge.clockOffsetPpm
                 val inLvl = bridge.inputLevel
                 val outLvl = if (rxAudioTrack != null) rxJavaOutputLevelDb else bridge.outputLevel
                 val cs = bridge.lastCallsign
@@ -1978,6 +1987,8 @@ class AudioService : LifecycleService() {
                 _state.update { it.copy(
                     snrDb = snr,
                     freqOffsetHz = freq,
+                    mistune = mistune,
+                    clockOffsetPpm = clockPpm,
                     inputLevelDb = inLvl,
                     outputLevelDb = outLvl,
                     // Display sticks until a NEW callsign decodes: a fresh

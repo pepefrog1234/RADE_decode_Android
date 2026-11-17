@@ -162,6 +162,20 @@ public:
     int getSyncState() const { return syncState_.load(); }
     int getSnrEstimate() const { return snrEstimate_.load(); }
     float getFreqOffset() const { return freqOffset_.load(); }
+    /** RADE V2 tuning indicator (rade_mistune): +1 = the received signal is
+     *  too high in audio frequency, -1 = too low, 0 = no indication (no signal,
+     *  in sync, not enough evidence yet). Non-zero only while the V2 receiver
+     *  refuses to sync on a signal about 31-94 Hz off frequency. Always 0 on
+     *  V1. On an SSB radio "too high" is corrected by tuning the receiver up
+     *  on USB and down on LSB. */
+    int getMistune() const { return mistune_.load(); }
+    /** RADE V2 Tx/Rx sample clock offset in ppm (rade_clock_offset_ppm), the
+     *  combined offset of both stations' sound cards; positive when the Rx
+     *  clock is the faster one. Updated while in sync (about 3/4 of the real
+     *  offset after 30 s, settled after about a minute), held after the over
+     *  and reset to 0 by the next acquisition. Beyond +/-125 ppm one station's
+     *  audio hardware is usually out of spec. Always 0 on V1. */
+    float getClockOffsetPpm() const { return clockOffsetPpm_.load(); }
     bool isUnprocessedRejected() const { return unprocessedRejected_.load(); }
 
     /** Select the RADE V2 waveform (experimental) for subsequent modem opens.
@@ -250,6 +264,8 @@ private:
     std::atomic<int> syncState_{0};
     std::atomic<int> snrEstimate_{0};
     std::atomic<float> freqOffset_{0.0f};
+    std::atomic<int> mistune_{0};              // V2 tuning indicator, see getMistune()
+    std::atomic<float> clockOffsetPpm_{0.0f};  // V2 clock offset, see getClockOffsetPpm()
     std::atomic<bool> unprocessedRejected_{false};
     std::atomic<bool> radeV2_{false};
     /* Analog SSB monitor: when set, feedModem routes the 8 kHz channel audio

@@ -29,6 +29,17 @@
     <string name="btn_analog_monitor">アナログ受信</string>
     <string name="btn_analog_monitor_on">アナログ受信中</string>
     <string name="analog_monitor_hint">受信音をそのまま再生中 — 送信前に周波数が使用中でないか確認できます。\nモニター中は RADE 復調音声は一時停止（同期表示は動作継続）。もう一度タップで RADE 復調に戻ります。</string>
+    <!-- RADE V2 のチューニング表示（rade_mistune）とクロックずれ。受信画面に表示 -->
+    <string name="tune_hint_up">周波数を上げる</string>
+    <string name="tune_hint_up_detail">信号の周波数がずれています。無線機のダイヤル周波数を上げてください。</string>
+    <string name="tune_hint_down">周波数を下げる</string>
+    <string name="tune_hint_down_detail">信号の周波数がずれています。無線機のダイヤル周波数を下げてください。</string>
+    <string name="tune_hint_signal_high">信号の周波数が高すぎます</string>
+    <string name="tune_hint_signal_high_detail">USB は周波数を上げ、LSB は下げてください。</string>
+    <string name="tune_hint_signal_low">信号の周波数が低すぎます</string>
+    <string name="tune_hint_signal_low_detail">USB は周波数を下げ、LSB は上げてください。</string>
+    <string name="clock_offset">送受信サウンドカードのクロックずれ：%1$s ppm</string>
+    <string name="clock_offset_out_of_spec">送受信サウンドカードのクロックずれ：%1$s ppm — ±125 ppm 超、どちらかの局のサウンドカードが規格外です</string>
     <string name="tx_hint_ready">マイクに向かって話し、送信をタップしてください。\nスマホの音量ボタンで送信音量を調整 — ALC はできるだけ振れないようにしてください。</string>
     <string name="tx_hint_active">送信中… もう一度タップすると受信に戻ります。\nALC はできるだけ振れないように — 振れている場合はスマホの音量を下げてください。</string>
     <string name="tx_hint_hold_ready">送信ボタンを押しながら話してください。離すと受信に戻ります。\nスマホの音量ボタンで送信音量を調整 — ALC はできるだけ振れないようにしてください。</string>

@@ -126,6 +126,22 @@ class AudioBridge private constructor(
     /** Current frequency offset in Hz. */
     val freqOffset: Float get() = nativeGetFreqOffset()
 
+    /** RADE V2 tuning indicator: +1 when the received signal is too high in
+     *  audio frequency, -1 when too low, 0 when there is no indication (no
+     *  signal, in sync, or not enough evidence yet). Non-zero only while the
+     *  V2 receiver refuses to sync on a signal about 31–94 Hz off frequency;
+     *  appears about 1.5 s after the signal starts and is held about 2 s
+     *  after it ends. Always 0 on V1. */
+    val mistune: Int get() = nativeGetMistune()
+
+    /** RADE V2 Tx/Rx sample clock offset in ppm — the combined offset of both
+     *  stations' sound cards, positive when the receiving side's clock is the
+     *  faster one. Updated while in sync (about 3/4 of the real offset after
+     *  30 s, settled after about a minute), held after the over ends, and 0
+     *  again from the next acquisition until the timing loop has moved.
+     *  Always 0 on V1. */
+    val clockOffsetPpm: Float get() = nativeGetClockOffsetPpm()
+
     /** True if the device did not honor the Unprocessed input preset. */
     val isUnprocessedRejected: Boolean get() = nativeIsUnprocessedRejected()
 
@@ -458,6 +474,8 @@ class AudioBridge private constructor(
     private external fun nativeGetSyncState(): Int
     private external fun nativeGetSnrEstimate(): Int
     private external fun nativeGetFreqOffset(): Float
+    private external fun nativeGetMistune(): Int
+    private external fun nativeGetClockOffsetPpm(): Float
     private external fun nativeIsUnprocessedRejected(): Boolean
     private external fun nativeGetInputSessionId(): Int
     private external fun nativeGetInputLevel(): Float

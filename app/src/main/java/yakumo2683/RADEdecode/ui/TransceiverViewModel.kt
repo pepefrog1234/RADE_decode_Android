@@ -109,6 +109,9 @@ class TransceiverViewModel(application: Application) : AndroidViewModel(applicat
         val syncState: Int = 0,
         val snrDb: Int = 0,
         val freqOffsetHz: Float = 0f,
+        val mistune: Int = 0,                // RADE V2 tuning indicator: +1 signal too high in audio frequency, -1 too low, 0 none
+        val clockOffsetPpm: Float = 0f,      // RADE V2 Tx/Rx sound-card clock offset in ppm (0 = no estimate; always 0 on V1)
+        val rxSideband: RxSideband = RxSideband.UNKNOWN, // receiver sideband (CAT mode / HL2), decides which way the tuning hint points
         val inputLevelDb: Float = -100f,
         val outputLevelDb: Float = -100f,
         val txLevelDb: Float = -100f,
@@ -138,6 +141,14 @@ class TransceiverViewModel(application: Application) : AndroidViewModel(applicat
         }
 
         val isSynced: Boolean get() = syncState == 2
+
+        /** RADE V2 "tune up / tune down" hint shown next to the sync indicator. */
+        val tuneHint: TuneHint
+            get() = tuneHintFor(radeV2Mode, isRunning && !isTx, isSynced, mistune, rxSideband)
+
+        /** True when the RADE V2 clock offset is worth showing (an estimate exists). */
+        val showClockOffset: Boolean
+            get() = shouldShowClockOffset(radeV2Mode, isRunning && !isTx, clockOffsetPpm)
     }
 
     private val _uiState = MutableStateFlow(UiState())
@@ -347,6 +358,20 @@ class TransceiverViewModel(application: Application) : AndroidViewModel(applicat
                     }
                 }
             }
+        }
+
+        // Receiver sideband → which way the RADE V2 tuning hint points. Known
+        // from the rig's CAT mode, or fixed for a directly connected HL2,
+        // whose I/Q the app itself demodulates as USB; unknown without CAT.
+        viewModelScope.launch {
+            rigController.state
+                .combine(hermesNetwork.state) { rs, hs ->
+                    rxSideband(hermesDirect = hs.connected, rigConnected = rs.connected, rigMode = rs.mode)
+                }
+                .distinctUntilChanged()
+                .collect { sideband ->
+                    _uiState.value = _uiState.value.copy(rxSideband = sideband)
+                }
         }
 
         // Hermes-Lite 2 state → forward frequency changes like the rigctld path.
@@ -1099,6 +1124,8 @@ class TransceiverViewModel(application: Application) : AndroidViewModel(applicat
             syncState = 0,
             snrDb = 0,
             freqOffsetHz = 0f,
+            mistune = 0,
+            clockOffsetPpm = 0f,
             inputLevelDb = -100f,
             outputLevelDb = -100f,
             txLevelDb = -100f,
@@ -2010,6 +2037,8 @@ class TransceiverViewModel(application: Application) : AndroidViewModel(applicat
                     syncState = svcState.syncState,
                     snrDb = svcState.snrDb,
                     freqOffsetHz = svcState.freqOffsetHz,
+                    mistune = svcState.mistune,
+                    clockOffsetPpm = svcState.clockOffsetPpm,
                     inputLevelDb = svcState.inputLevelDb,
                     outputLevelDb = svcState.outputLevelDb,
                     txLevelDb = svcState.txLevelDb,
