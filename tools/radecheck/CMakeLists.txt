@@ -84,3 +84,17 @@ target_link_libraries(loopback PRIVATE rade m)
 add_executable(audiocheck audiocheck.c)
 target_include_directories(audiocheck PRIVATE ${CPP_DIR}/radae ${CPP_DIR}/opus/dnn ${CPP_DIR}/opus/include ${CPP_DIR}/opus/celt)
 target_link_libraries(audiocheck PRIVATE rade m)
+
+# EOO callsign through the real V1 modem, decoded with the call the app makes
+# (sym_size = rade_n_eoo_bits() / 2); V2 must report its end of over and
+# decode nothing. ./build/eoocheck: exit code 0 = every callsign came back.
+# With arguments it measures the decode rate in noise; see eoocheck.cpp.
+add_library(eoo STATIC
+    ${CPP_DIR}/eoo/EooCallsignCodec.cpp
+    ${CPP_DIR}/eoo/eoo_callsign_codec_c.cpp
+)
+target_compile_features(eoo PRIVATE cxx_std_11)
+target_include_directories(eoo PUBLIC ${CPP_DIR}/eoo)
+add_executable(eoocheck eoocheck.cpp)
+target_include_directories(eoocheck PRIVATE ${CPP_DIR}/radae)
+target_link_libraries(eoocheck PRIVATE rade eoo m)

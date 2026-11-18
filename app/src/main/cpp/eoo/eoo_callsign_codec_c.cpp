@@ -16,6 +16,11 @@ extern "C" {
 int eoo_callsign_decode(const float *syms, int sym_size,
                         char *callsign, int max_len)
 {
+    // Entry guard: nothing below may read symbols the caller did not supply,
+    // or write a callsign the caller has no room for.
+    if (syms == nullptr || sym_size < EOO_CALLSIGN_MIN_SYMBOLS) return 0;
+    if (callsign == nullptr || max_len < EOO_CALLSIGN_BUF_SIZE) return 0;
+
     EooCallsignDecoder decoder;
     std::string result;
 

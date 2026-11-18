@@ -150,8 +150,12 @@ class RADEWrapper {
     /**
      * Decode EOO soft-decision bits into a callsign string.
      *
-     * @param syms EOO symbol soft-decisions from [rx]
-     * @return decoded callsign, or null if decode failed (BER too high / CRC fail)
+     * @param syms EOO symbol soft-decisions from [rx] ([RxResult.eooBits]):
+     *             interleaved I/Q floats, [numEooBits] of them. The callsign
+     *             is in the first 112 floats; a shorter array (RADE V2 has
+     *             none at all) cannot be decoded.
+     * @return decoded callsign, or null if decode failed (BER too high / CRC
+     *         fail / too few symbols)
      */
     fun eooCallsignDecode(syms: FloatArray): String? =
         nativeEooCallsignDecode(syms)

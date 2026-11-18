@@ -89,6 +89,10 @@ static const int kMaxColWeight     = 3;
 static const int kMaxIter          = 100;
 //static const int kDecType          = 0;   // uses phi0, not |LLR|
 
+// The codeword travels as QPSK, two bits per symbol: decode() reads this many
+// complex symbols (2 floats each) from its input.
+static const int kLdpcSymbols      = kCodeLength / 2;   // 56
+
 // ---------------------------------------------------------------------------
 // 3. phi0 lookup table  (codec2/src/phi0.c)
 //
@@ -639,6 +643,11 @@ static std::string eoo_ota_to_ascii(const char *ota, int maxLen)
 bool EooCallsignDecoder::decode(const float *syms, int symSize,
                                  std::string &callsign) const
 {
+    // Step 1 reads 56 symbols whatever symSize says, so the input has to hold
+    // them. RADE V2 has no EOO payload at all (rade_n_eoo_bits() == 0), and an
+    // empty buffer's pointer may be null.
+    if (syms == nullptr || symSize < kLdpcSymbols) return false;
+
     // --- Step 1: deinterleave the first 56 QPSK symbols ---
     EooComp pending[56];
     gp_deinterleave_56(pending, reinterpret_cast<const EooComp*>(syms));
@@ -646,7 +655,10 @@ bool EooCallsignDecoder::decode(const float *syms, int symSize,
     // --- Step 2: RMS over the 56 deinterleaved symbols --------------------
     //   The denominator is the full symSize (matches rade_text_rx behaviour:
     //   only the LDPC symbols contribute to the numerator, but the total
-    //   symbol count is used to normalise).
+    //   symbol count is used to normalise). The LLRs below scale with
+    //   1 / rms, so symSize has to be that count, rade_n_eoo_bits() / 2 = 90
+    //   on V1. The float count (180) puts even a noise-free symbol at
+    //   |LLR| 10.8, past the 10 where eoo_phi0() saturates (7.6 with 90).
     float rms = 0.0f;
     for (int i = 0; i < 56; i++)
         rms += pending[i].real * pending[i].real
@@ -700,7 +712,8 @@ void EooCallsignDecoder::encode(const std::string &callsign, float *syms,
     // --- Step 1: ASCII callsign → 6-bit OTA encoding ----------------------
     //   tmp[0]    = CRC-8 placeholder
     //   tmp[1..8] = OTA-encoded callsign characters
-    char tmp[9] = {};
+    //   tmp[9]    = terminator eoo_ascii_to_ota() writes after 8 characters
+    char tmp[10] = {};
     eoo_ascii_to_ota(callsign, tmp + 1, 8);
 
     // --- Step 2: CRC-8 over the OTA bytes ---------------------------------

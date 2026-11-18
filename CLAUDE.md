@@ -74,3 +74,19 @@ cmake --build build -j8 && ./build/loopback
 - **AGP 9.1.0** with Kotlin 2.2.10
 - Raw SQLite chosen over Room to avoid KSP/AGP 9.x annotation processor issues
 - Audio engine uses C++11 with `c++_shared` STL
+
+### EOO callsign codec (`cpp/eoo/`)
+
+- `eoo_callsign_decode()` takes the number of **complex symbols** (`rade_n_eoo_bits() / 2`), never the float count. The count is the bounds check (the first 56 symbols = 112 floats are read) and the divisor of the RMS that scales the decoder's LLRs; `audio_engine.cpp` and `rade_jni.cpp` both halve the float count.
+- The NDK compiles with `_FORTIFY_SOURCE=2`: an off-by-one that goes unnoticed in a plain host build aborts the arm64 one (an 8-character TX callsign did, until v1.6.34). After any change to `eoo/`, run the host tests — the first under a sanitizer — and the modem check (exit code 0 = callsigns up to the full 8 characters survive a V1 over, V2 decodes nothing):
+
+```bash
+c++ -std=c++11 -Wall -Wextra -g -fsanitize=address,undefined -Iapp/src/main/cpp/eoo \
+  app/src/test/cpp/eoo_callsign_codec_test.cpp app/src/main/cpp/eoo/*.cpp \
+  -o /tmp/rade-eoo-callsign-test && /tmp/rade-eoo-callsign-test
+c++ -std=c++11 -O2 -Wall -Wextra -Iapp/src/main/cpp/eoo \
+  app/src/test/cpp/eoo_callsign_snr_sweep.cpp app/src/main/cpp/eoo/*.cpp \
+  -o /tmp/rade-eoo-snr-sweep && /tmp/rade-eoo-snr-sweep
+cmake -B build -DCMAKE_BUILD_TYPE=Debug tools/radecheck
+cmake --build build -j8 && ./build/eoocheck
+```

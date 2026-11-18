@@ -689,11 +689,14 @@ void AudioEngine::processModemFrame() {
 
     // The EOO callsign payload is V1 only. On V2 rade_n_eoo_bits() is 0 and
     // has_eoo just marks end of over, so eooBits is an empty vector with a
-    // null data() — and the callsign decoder reads 56 symbols from its input
-    // unconditionally.
+    // null data(): there is nothing to decode (and the decoder refuses it).
     if (hasEoo && nEoo > 0) {
         char cs[32] = {0};
-        if (eoo_callsign_decode(eooBits.data(), nEoo, cs, sizeof(cs) - 1)) {
+        // eooBits holds nEoo floats, I and Q of nEoo / 2 symbols, and the
+        // decoder counts symbols. The count is also the divisor of the RMS it
+        // normalises them with: the float count scales the LLRs past the top
+        // of its lookup table and loses decodes at marginal SNR.
+        if (eoo_callsign_decode(eooBits.data(), nEoo / 2, cs, sizeof(cs) - 1)) {
             { std::lock_guard<std::mutex> lk(callsignMutex_); lastCallsign_ = cs; }
             if (callback_) callback_->onCallsignDecoded(cs);
             LOGI("Callsign: %s", cs);

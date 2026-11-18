@@ -45,6 +45,8 @@ public:
      * @param symSize   Number of complex symbols = rade_n_eoo_bits(dv) / 2.
      * @param callsign  Set to the decoded callsign string on success.
      * @return          true if the LDPC BER estimate is < 0.2 and CRC-8 passes.
+     *                  false, without reading syms, if syms is null or symSize
+     *                  is less than the 56 symbols the callsign occupies.
      */
     bool decode(const float *syms, int symSize, std::string &callsign) const;
 

@@ -261,19 +261,25 @@ JNI_METHOD(nativeFarganSynthesize)(JNIEnv *env, jobject /* this */,
 /*
  * nativeEooCallsignDecode: Decode EOO bits into a callsign string.
  *
- * @param syms float[] of EOO symbol soft-decisions
- * @return decoded callsign String, or null on failure
+ * @param syms float[] of EOO symbol soft-decisions as nativeRx fills eooOut:
+ *             interleaved I,Q pairs, two floats per complex symbol
+ * @return decoded callsign String, or null on failure (which includes an
+ *         array shorter than the callsign's 56 symbols = 112 floats)
  */
 JNIEXPORT jstring JNICALL
 JNI_METHOD(nativeEooCallsignDecode)(JNIEnv *env, jobject /* this */,
                                     jfloatArray syms) {
+    if (syms == nullptr) return nullptr;
+
+    /* The decoder counts complex symbols, the array counts floats. */
+    int symCount = env->GetArrayLength(syms) / 2;
     jfloat *symBuf = env->GetFloatArrayElements(syms, nullptr);
-    int symLen = env->GetArrayLength(syms);
+    if (symBuf == nullptr) return nullptr;
 
     char callsign[32];
     memset(callsign, 0, sizeof(callsign));
 
-    int ok = eoo_callsign_decode(symBuf, symLen, callsign, sizeof(callsign) - 1);
+    int ok = eoo_callsign_decode(symBuf, symCount, callsign, sizeof(callsign) - 1);
 
     env->ReleaseFloatArrayElements(syms, symBuf, JNI_ABORT);
 
