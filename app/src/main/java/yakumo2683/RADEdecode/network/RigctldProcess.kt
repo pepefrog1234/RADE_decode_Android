@@ -36,13 +36,6 @@ class RigctldProcess(private val context: Context) {
          *  "DIED: killed by SIGSEGV (11)", "DIED: exited code N", …). */
         @JvmStatic
         external fun nativeProcessExit(pid: Int): String
-
-        private val FAST_PTY_CAT_MODELS = setOf(
-            3076, // Xiegu X108G
-            3087, // Xiegu X6100
-            3088, // Xiegu G90
-            3089  // Xiegu X5105
-        )
     }
 
     private var process: Process? = null
@@ -74,7 +67,7 @@ class RigctldProcess(private val context: Context) {
      * @param model     Hamlib rig model number (e.g. 1=Dummy, 2=NET rigctl, 3014=IC-7300)
      * @param device    Serial device path (e.g. "/dev/ttyUSB0")
      * @param speed     Baud rate (e.g. 9600, 19200, 38400, 115200)
-     * @param port      TCP listen port (default 4532)
+     * @param port      TCP listen port on loopback (default 4532)
      * @param civAddr   Optional CI-V address for Icom rigs (hex string e.g. "94")
      */
     fun start(
@@ -91,25 +84,9 @@ class RigctldProcess(private val context: Context) {
 
         val binary = ensureBinary() ?: return false
 
-        val cmd = mutableListOf(
-            binary.absolutePath,
-            "-m", model.toString(),
-            "-t", port.toString()
+        return launchProcess(
+            rigctldCommand(binary.absolutePath, model, port, device, speed, civAddr)
         )
-
-        if (device.isNotEmpty()) {
-            cmd.addAll(listOf("-r", device))
-        }
-
-        if (speed > 0) {
-            cmd.addAll(listOf("-s", speed.toString()))
-        }
-
-        if (civAddr.isNotEmpty()) {
-            cmd.addAll(listOf("-c", civAddrArg(civAddr)))
-        }
-
-        return launchProcess(cmd)
     }
 
     /**
@@ -121,7 +98,7 @@ class RigctldProcess(private val context: Context) {
      * @param model     Hamlib rig model number
      * @param ptyPath   Pty slave path (e.g. "/dev/pts/3")
      * @param speed     Baud rate (rigctld will tcsetattr on the pty — this is fine)
-     * @param port      TCP listen port (default 4532)
+     * @param port      TCP listen port on loopback (default 4532)
      * @param civAddr   Optional CI-V address for Icom rigs
      */
     fun startWithPty(
@@ -139,50 +116,13 @@ class RigctldProcess(private val context: Context) {
 
         val binary = ensureBinary() ?: return false
 
-        val cmd = mutableListOf(
-            binary.absolutePath,
-            // NOTE: do NOT pass -vvvvv here. Max verbosity makes rigctld emit many
-            // stderr lines per command (piped through JNI to logcat); combined with
-            // the slow Xiegu G90 CI-V it contributed to multi-second PTT lag.
-            "-m", model.toString(),
-            "-t", port.toString(),
-            "-r", ptyPath
+        return launchProcess(
+            rigctldCommand(
+                binary.absolutePath, model, port, ptyPath, speed, civAddr,
+                pty = true, uncachedReadback = uncachedReadback
+            )
         )
-
-        if (speed > 0) {
-            cmd.addAll(listOf("-s", speed.toString()))
-        }
-
-        if (civAddr.isNotEmpty()) {
-            cmd.addAll(listOf("-c", civAddrArg(civAddr)))
-        }
-
-        if (uncachedReadback) {
-            // The owned Icom network daemon must query the radio after Set/OFF,
-            // not immediately echo the value that Hamlib cached on an ACK.
-            // Hamlib's background publisher overwrites the cache timeout with
-            // poll_interval on startup, even without a subscriber. We use
-            // RigController polling, so disable this unused publisher too.
-            cmd.add("--set-conf=poll_interval=0,cache_timeout=0")
-        }
-
-        if (model in FAST_PTY_CAT_MODELS) {
-            // Bound Xiegu CI-V/PTT readback stalls without applying the tight
-            // timeout to Icom RS-BA1/IC-705 network ptys. IC-705 Wi-Fi can exceed
-            // 200 ms and then fails get_freq, preventing FreeDV Reporter freq_change.
-            cmd.add("--set-conf=timeout=200,retry=1")
-        }
-
-        return launchProcess(cmd)
     }
-
-    /**
-     * Hamlib parses `--civaddr` as DECIMAL unless the value is 0x-prefixed
-     * (icom.c TOK_CIVADDR: atoi() vs strtol(.., 16)). The CI-V field in this
-     * app is hex ("94" means 0x94), so always pass the 0x form.
-     */
-    private fun civAddrArg(civAddr: String): String =
-        "0x" + civAddr.removePrefix("0x").removePrefix("0X")
 
     private fun launchProcess(cmd: List<String>): Boolean {
         Log.i(TAG, "Starting: ${cmd.joinToString(" ")}")
