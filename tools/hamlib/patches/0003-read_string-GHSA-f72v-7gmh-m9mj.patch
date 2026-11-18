@@ -1,0 +1,24 @@
+read_string: do not outgrow the caller's buffer (GHSA-f72v-7gmh-m9mj)
+
+Part of GHSA-f72v-7gmh-m9mj, fixed upstream in Hamlib 4.7.2: when the first
+byte read from the rig was a backslash, read_string_generic() raised rxmax to
+five times the size it had been given, and whatever is at the rig's end of
+the line (a serial device, or the peer of a network rig) could write past the
+caller's buffer.
+
+diff --git a/src/iofunc.c b/src/iofunc.c
+--- a/src/iofunc.c
++++ b/src/iofunc.c
+@@ -1377,8 +1377,10 @@ static int read_string_generic(hamlib_port_t *p,
+             return -RIG_EIO;
+         }
+ 
+-        // check to see if our string startis with \...if so we need more chars
+-        if (total_count == 0 && rxbuffer[total_count] == '\\') { rxmax = (rxmax - 1) * 5; }
++        /* [RADE] GHSA-f72v-7gmh-m9mj: a reply that started with a backslash
++         * used to raise rxmax to five times the size of the caller's buffer,
++         * and the rig's end of the line could then write past it (removed
++         * in Hamlib 4.7.2 as well). */
+ 
+         total_count += (int) rd_count;
+ 

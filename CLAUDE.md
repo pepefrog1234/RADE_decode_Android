@@ -70,6 +70,13 @@ cmake -B build -DCMAKE_BUILD_TYPE=Debug tools/radecheck
 cmake --build build -j8 && ./build/loopback
 ```
 
+### Updating the bundled rigctld (`tools/hamlib/`)
+
+- `app/src/main/jniLibs/arm64-v8a/librigctld.so` and its copy `app/src/main/assets/rigctld` are the output of `tools/hamlib/build-rigctld.sh`: the Hamlib 4.5.5 release tarball plus `tools/hamlib/patches/`, NDK r28c. Never replace them by hand: change the patches or the script, run it with `--install`, and commit both files with `tools/hamlib/librigctld.so.sha256`. The build is reproducible, so that hash identifies the committed binary.
+- rigctld has no login. Start it only with the command line from `rigctldCommand()` (`RigctldCommand.kt`), which binds it to `127.0.0.1`.
+- The binary is built with stack protector and `_FORTIFY_SOURCE`: an overflow in Hamlib now ends rigctld (`DIED: killed by SIGABRT` in the Rig tab) instead of going unnoticed.
+- After a change, run the `Hamlib*Test` classes against a host build of the same patched sources (see [tools/hamlib/README.md](tools/hamlib/README.md)), then connect a rig on a device.
+
 ### Key Constraints
 
 - **ABI:** arm64-v8a only (no x86/armeabi)

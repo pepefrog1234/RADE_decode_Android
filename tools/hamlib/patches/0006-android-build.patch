@@ -1,0 +1,65 @@
+android: build with configure and make
+
+Build fixes only, nothing rigctld uses on Android:
+
+- bionic has no pthread_cancel(), which the ARS rotator calls when closed;
+- before API 28 it has no glob(), which looks for microHAM devices under
+  /dev/serial (tools/hamlib/build-rigctld.sh tells configure that there is no
+  <glob.h>, and the search then finds nothing);
+- the Android sensor rotator is compiled by the ndk-build files only, but
+  registered whenever the target is Android.
+
+Current NDK compilers reject the first two as implicit declarations; the
+third does not link.
+
+diff --git a/rotators/ars/ars.c b/rotators/ars/ars.c
+--- a/rotators/ars/ars.c
++++ b/rotators/ars/ars.c
+@@ -220,7 +220,7 @@ ars_open(ROT *rot)
+ int
+ ars_close(ROT *rot)
+ {
+-#ifdef HAVE_PTHREAD
++#if defined(HAVE_PTHREAD) && !defined(__ANDROID__)  /* [RADE] bionic has no pthread_cancel */
+     struct ars_priv_data *priv = (struct ars_priv_data *)rot->state.priv;
+ 
+     pthread_cancel(priv->thread);
+diff --git a/src/microham.c b/src/microham.c
+--- a/src/microham.c
++++ b/src/microham.c
+@@ -214,6 +214,13 @@ static void close_microham()
+ /* static void finddevices() */
+ /* { */
+ /* } */
++#ifndef WIN32
++/* [RADE] Android has no glob() before API 28, and configure is told that
++ * there is no <glob.h>: nothing is searched for, so nothing is found. */
++static void finddevices()
++{
++}
++#endif
+ 
+ #else
+ 
+diff --git a/src/rot_reg.c b/src/rot_reg.c
+--- a/src/rot_reg.c
++++ b/src/rot_reg.c
+@@ -86,7 +86,8 @@ DEFINE_INITROT_BACKEND(radant);
+ #if HAVE_LIBINDI
+ DEFINE_INITROT_BACKEND(indi);
+ #endif
+-#if defined(ANDROID) || defined(__ANDROID__)
++/* [RADE] Only the ndk-build files (Android.mk) compile this backend. */
++#if (defined(ANDROID) || defined(__ANDROID__)) && defined(HAVE_ANDROIDSENSOR)
+ DEFINE_INITROT_BACKEND(androidsensor);
+ #endif
+ DEFINE_INITROT_BACKEND(grbltrk);
+@@ -134,7 +135,7 @@ static struct
+ #if HAVE_LIBINDI
+     { ROT_INDI, ROT_BACKEND_INDI, ROT_FUNCNAMA(indi) },
+ #endif
+-#if defined(ANDROID) || defined(__ANDROID__)
++#if (defined(ANDROID) || defined(__ANDROID__)) && defined(HAVE_ANDROIDSENSOR)
+     { ROT_ANDROIDSENSOR, ROT_BACKEND_ANDROIDSENSOR, ROT_FUNCNAMA(androidsensor) },
+ #endif
+     { ROT_GRBLTRK, ROT_BACKEND_GRBLTRK, ROT_FUNCNAMA(grbltrk) },
