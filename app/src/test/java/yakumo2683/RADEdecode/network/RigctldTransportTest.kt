@@ -932,6 +932,988 @@ class RigctldTransportTest {
         }
     }
 
+    /* ── Release confirmed by the rig's own status (RigController.confirmReleased) ──
+     * Scripts end, as above, on a command the test itself sends. Most begin
+     * with a key-on whose check reads "transmit": only a rig whose status has
+     * shown that is asked anything about a release. */
+
+    @Test fun acknowledgedReleaseIsRepeatedWhileTheRigReportsTransmit() = runBlocking {
+        FakeRig { input, output ->
+            input.expectConfirmedKeyOn(output)
+            input.expectKey(output, on = false) // Acknowledged, yet the rig did not unkey.
+            input.expectStatus(output, transmitting = true)
+            input.expectKey(output, on = false)
+            input.expectStatus(output, transmitting = false)
+            input.expectFrequency(output)
+        }.use { rig ->
+            val controller = RigController(pollingEnabled = false)
+            try {
+                controller.connect("127.0.0.1", rig.port)
+                controller.keyAndConfirm()
+                assertTrue(controller.setPtt(false))
+                assertEquals(true, controller.confirmReleased(settleMs = 10))
+                assertFalse(controller.state.value.ptt)
+                assertEquals("", controller.state.value.error)
+                assertEquals(7_100_000L, controller.readFrequency())
+                rig.checkFinished()
+            } finally { controller.destroy() }
+        }
+    }
+
+    @Test fun rigKnownToReturnToReceiveThatStaysInTransmitIsReportedAndLeftAlone() = runBlocking {
+        FakeRig { input, output ->
+            input.expectContradictedRelease(output)
+            input.expectFrequency(output) // No third repeat, and nothing else, follows.
+        }.use { rig ->
+            val controller = RigController(pollingEnabled = false)
+            try {
+                controller.connect("127.0.0.1", rig.port)
+                controller.releaseTheRigContradicts()
+                assertTrue(controller.state.value.ptt)
+                assertTrue(controller.state.value.error.startsWith("PTT OFF not confirmed"))
+                assertNull("Its two repeats are spent", controller.confirmReleased(settleMs = 10))
+                assertEquals(7_100_000L, controller.readFrequency())
+                rig.checkFinished()
+            } finally { controller.destroy() }
+        }
+    }
+
+    /** What the caller's retries meet after such a verdict. Hamlib answers a
+     *  status request made within 500 ms of an acknowledged OFF with that OFF. */
+    @Test fun releaseTheRigContradictedStaysUnconfirmedUntilItsStatusReadsReceive() = runBlocking {
+        FakeRig { input, output ->
+            input.expectContradictedRelease(output)
+            input.expectKey(output, on = false)              // Another OFF is acknowledged,
+            input.expectStatus(output, transmitting = false) // repeated back to a poll
+            input.expectStatus(output, transmitting = false) // and to a direct read,
+            assertEquals("+\\get_ptt", input.readLine())     // and then the rig cannot be read.
+            output.print("get_ptt:\nRPRT -5\n"); output.flush()
+            input.expectKey(output, on = false)
+            input.expectStatus(output, transmitting = false) // Read by the check: it has stopped.
+            input.expectStatus(output, transmitting = true)  // Later keyed at the rig itself,
+            input.expectStatus(output, transmitting = false) // and released there.
+            input.expectFrequency(output)
+        }.use { rig ->
+            val controller = RigController(pollingEnabled = false)
+            try {
+                controller.connect("127.0.0.1", rig.port)
+                controller.releaseTheRigContradicts()
+                assertFalse("An acknowledgement does not outweigh the rig's status", controller.setPtt(false))
+                assertTrue(controller.state.value.ptt)
+                assertTrue(controller.getPtt())
+                assertNull(controller.readPtt(expected = false))
+                assertTrue(controller.state.value.ptt)
+                assertTrue(controller.state.value.error.startsWith("PTT OFF not confirmed"))
+                assertEquals("No news is not good news about a rig last seen transmitting",
+                    false, controller.confirmReleased(settleMs = 10))
+                assertFalse(controller.setPtt(false))
+                assertEquals(true, controller.confirmReleased(settleMs = 10))
+                assertFalse(controller.state.value.ptt)
+                assertEquals("", controller.state.value.error)
+                assertTrue(controller.getPtt())
+                assertFalse("Polls are believed again", controller.getPtt())
+                assertEquals(7_100_000L, controller.readFrequency())
+                rig.checkFinished()
+            } finally { controller.destroy() }
+        }
+    }
+
+    @Test fun keyOnEndsWhatTheLastReleaseLeftUnconfirmed() = runBlocking {
+        FakeRig { input, output ->
+            input.expectContradictedRelease(output)
+            input.expectKey(output, on = true)
+            input.expectKey(output, on = false)
+            input.expectStatus(output, transmitting = false)
+            input.expectFrequency(output)
+        }.use { rig ->
+            val controller = RigController(pollingEnabled = false)
+            try {
+                controller.connect("127.0.0.1", rig.port)
+                controller.releaseTheRigContradicts()
+                assertTrue(controller.setPtt(true))
+                assertEquals("", controller.state.value.error)
+                assertTrue(controller.setPtt(false))
+                assertFalse("This over's release is a new question", controller.state.value.ptt)
+                assertFalse(controller.getPtt())
+                assertEquals(7_100_000L, controller.readFrequency())
+                rig.checkFinished()
+            } finally { controller.destroy() }
+        }
+    }
+
+    /** A status that stays on transmit, or follows the rig seconds late, says
+     *  nothing about a release. Without this every over would end in a
+     *  refusal to transmit again. */
+    @Test fun statusThatNeverReturnsToReceiveIsNotHeldAgainstTheRig() = runBlocking {
+        FakeRig { input, output ->
+            input.expectConfirmedKeyOn(output)
+            input.expectKey(output, on = false)
+            repeat(2) {
+                input.expectStatus(output, transmitting = true)
+                input.expectKey(output, on = false)
+            }
+            input.expectStatus(output, transmitting = true)
+            // Later overs: the status is still read, but no longer acted on.
+            repeat(2) {
+                input.expectConfirmedKeyOn(output)
+                input.expectKey(output, on = false)
+                input.expectStatus(output, transmitting = true)
+            }
+            input.expectFrequency(output)
+        }.use { rig ->
+            val controller = RigController(pollingEnabled = false)
+            try {
+                controller.connect("127.0.0.1", rig.port)
+                repeat(3) {
+                    controller.keyAndConfirm()
+                    assertTrue(controller.setPtt(false))
+                    assertNull("No verdict on a rig never seen to stop", controller.confirmReleased(settleMs = 10))
+                    assertFalse("The acknowledged release stands", controller.state.value.ptt)
+                    assertEquals("", controller.state.value.error)
+                }
+                assertEquals(7_100_000L, controller.readFrequency())
+                rig.checkFinished()
+            } finally { controller.destroy() }
+        }
+    }
+
+    @Test fun releaseStatusIsActedOnAgainOnceTheRigHasBeenSeenToStop() = runBlocking {
+        FakeRig { input, output ->
+            input.expectConfirmedKeyOn(output) // First over stays in transmit: status in doubt.
+            input.expectKey(output, on = false)
+            repeat(2) {
+                input.expectStatus(output, transmitting = true)
+                input.expectKey(output, on = false)
+            }
+            input.expectStatus(output, transmitting = true)
+            input.expectConfirmedKeyOn(output) // Second over stops: the status can be believed.
+            input.expectKey(output, on = false)
+            input.expectStatus(output, transmitting = false)
+            input.expectConfirmedKeyOn(output) // Third over: a missed release is repeated again.
+            input.expectKey(output, on = false)
+            input.expectStatus(output, transmitting = true)
+            input.expectKey(output, on = false)
+            input.expectStatus(output, transmitting = false)
+            input.expectFrequency(output)
+        }.use { rig ->
+            val controller = RigController(pollingEnabled = false)
+            try {
+                controller.connect("127.0.0.1", rig.port)
+                for (expected in listOf(null, true, true)) {
+                    controller.keyAndConfirm()
+                    assertTrue(controller.setPtt(false))
+                    assertEquals(expected, controller.confirmReleased(settleMs = 10))
+                }
+                assertEquals(7_100_000L, controller.readFrequency())
+                rig.checkFinished()
+            } finally { controller.destroy() }
+        }
+    }
+
+    /** Neither a status never checked after a key-on, nor one that stayed on
+     *  receive through one (uSDX), is asked about a release. */
+    @Test fun releaseOfARigWhoseStatusHasNotShownTransmitIsNotChecked() = runBlocking {
+        FakeRig { input, output ->
+            input.expectKey(output, on = true)
+            input.expectKey(output, on = false)
+            input.expectKey(output, on = true)
+            repeat(2) {
+                input.expectStatus(output, transmitting = false)
+                input.expectKey(output, on = true)
+            }
+            input.expectStatus(output, transmitting = false)
+            input.expectKey(output, on = false)
+            input.expectFrequency(output)
+        }.use { rig ->
+            val controller = RigController(pollingEnabled = false)
+            try {
+                controller.connect("127.0.0.1", rig.port)
+                assertTrue(controller.setPtt(true))
+                assertTrue(controller.setPtt(false))
+                assertNull(controller.confirmReleased(settleMs = 10))
+                assertTrue(controller.setPtt(true))
+                assertNull(controller.confirmKeyed(settleMs = 10))
+                assertTrue(controller.setPtt(false))
+                assertNull(controller.confirmReleased(settleMs = 10))
+                assertFalse(controller.state.value.ptt)
+                assertEquals(7_100_000L, controller.readFrequency())
+                rig.checkFinished()
+            } finally { controller.destroy() }
+        }
+    }
+
+    @Test fun unreadableStatusAfterAReleaseIsNotActedOn() = runBlocking {
+        FakeRig { input, output ->
+            input.expectConfirmedKeyOn(output)
+            input.expectKey(output, on = false)
+            assertEquals("+\\get_ptt", input.readLine())
+            output.print("get_ptt:\nRPRT -11\n"); output.flush()
+            input.expectFrequency(output)
+        }.use { rig ->
+            val controller = RigController(pollingEnabled = false)
+            try {
+                controller.connect("127.0.0.1", rig.port)
+                controller.keyAndConfirm()
+                assertTrue(controller.setPtt(false))
+                assertNull(controller.confirmReleased(settleMs = 10))
+                assertFalse("The acknowledged release stands", controller.state.value.ptt)
+                assertEquals("", controller.state.value.error)
+                assertEquals(7_100_000L, controller.readFrequency())
+                rig.checkFinished()
+            } finally { controller.destroy() }
+        }
+    }
+
+    @Test fun releaseCheckAsksNothingOnceAKeyOnHasBegun() = runBlocking {
+        FakeRig { input, output ->
+            input.expectConfirmedKeyOn(output)
+            input.expectKey(output, on = false)
+            input.expectKey(output, on = true) // The next over, with no status request before it.
+            input.expectFrequency(output)
+        }.use { rig ->
+            val controller = RigController(pollingEnabled = false)
+            try {
+                controller.connect("127.0.0.1", rig.port)
+                controller.keyAndConfirm()
+                assertTrue(controller.setPtt(false))
+                val check = async { controller.confirmReleased(settleMs = 1000) }
+                delay(100)
+                assertNull("The check above has this release, and is waiting to ask",
+                    controller.confirmReleased(settleMs = 1000))
+                assertTrue(controller.setPtt(true))
+                assertNull(check.await())
+                assertTrue(controller.state.value.ptt)
+                assertEquals(7_100_000L, controller.readFrequency())
+                rig.checkFinished()
+            } finally { controller.destroy() }
+        }
+    }
+
+    /** The rig is transmitting when it answers, because the next over has keyed
+     *  it: that is not the release failing, and must not be answered with OFF. */
+    @Test fun transmitStatusReadOnceAKeyOnHasBegunIsNotActedOn() = runBlocking {
+        val statusAsked = CompletableDeferred<Unit>()
+        FakeRig { input, output ->
+            input.expectConfirmedKeyOn(output)
+            input.expectKey(output, on = false)
+            assertEquals("+\\get_ptt", input.readLine())
+            statusAsked.complete(Unit)
+            // The key-on is written behind the status request still in flight.
+            assertEquals("+\\set_ptt 1", input.readLine())
+            output.print("get_ptt:\nPTT: 1\nRPRT 0\nset_ptt: 1\nRPRT 0\n"); output.flush()
+            input.expectFrequency(output)
+        }.use { rig ->
+            val controller = RigController(pollingEnabled = false)
+            try {
+                controller.connect("127.0.0.1", rig.port)
+                controller.keyAndConfirm()
+                assertTrue(controller.setPtt(false))
+                val check = async { controller.confirmReleased(settleMs = 10) }
+                withTimeout(2000) { statusAsked.await() }
+                assertTrue(controller.setPtt(true))
+                assertNull(check.await())
+                assertTrue(controller.state.value.ptt)
+                assertEquals("", controller.state.value.error)
+                assertEquals(7_100_000L, controller.readFrequency())
+                rig.checkFinished()
+            } finally { controller.destroy() }
+        }
+    }
+
+    /** The rig was still receiving when it was asked, but by the time the
+     *  answer arrives the key-on is the newest command: it says nothing about
+     *  a release that no longer stands, nor about what this rig's status does. */
+    @Test fun receiveStatusReadOnceAKeyOnHasBegunConfirmsNothing() = runBlocking {
+        val statusAsked = CompletableDeferred<Unit>()
+        FakeRig { input, output ->
+            input.expectConfirmedKeyOn(output)
+            input.expectKey(output, on = false)
+            assertEquals("+\\get_ptt", input.readLine())
+            statusAsked.complete(Unit)
+            assertEquals("+\\set_ptt 1", input.readLine())
+            output.print("get_ptt:\nPTT: 0\nRPRT 0\nset_ptt: 1\nRPRT 0\n"); output.flush()
+            // Had that reading counted as the status returning to receive,
+            // this over's release, which stays in transmit, would be reported.
+            input.expectStatus(output, transmitting = true)
+            input.expectKey(output, on = false)
+            repeat(2) {
+                input.expectStatus(output, transmitting = true)
+                input.expectKey(output, on = false)
+            }
+            input.expectStatus(output, transmitting = true)
+            input.expectFrequency(output)
+        }.use { rig ->
+            val controller = RigController(pollingEnabled = false)
+            try {
+                controller.connect("127.0.0.1", rig.port)
+                controller.keyAndConfirm()
+                assertTrue(controller.setPtt(false))
+                val check = async { controller.confirmReleased(settleMs = 10) }
+                withTimeout(2000) { statusAsked.await() }
+                assertTrue(controller.setPtt(true))
+                assertNull(check.await())
+                assertEquals(true, controller.confirmKeyed(settleMs = 10))
+                assertTrue(controller.setPtt(false))
+                assertNull(controller.confirmReleased(settleMs = 10))
+                assertEquals(7_100_000L, controller.readFrequency())
+                rig.checkFinished()
+            } finally { controller.destroy() }
+        }
+    }
+
+    /** The status check passes, and the key-on begins only then: the repeat's
+     *  own claim, made as it is written, is all that is left to stop it. */
+    @Test fun keyOnJustBeforeTheRepeatedReleaseIsWrittenStillPreventsIt() = runBlocking {
+        FakeRig { input, output ->
+            input.expectConfirmedKeyOn(output)
+            input.expectKey(output, on = false)
+            input.expectStatus(output, transmitting = true)
+            input.expectKey(output, on = true)
+            input.expectFrequency(output)
+        }.use { rig ->
+            lateinit var controller: RigController
+            controller = RigController(pollingEnabled = false,
+                beforeRepeatedRelease = { assertTrue(controller.setPtt(true)) })
+            try {
+                controller.connect("127.0.0.1", rig.port)
+                controller.keyAndConfirm()
+                assertTrue(controller.setPtt(false))
+                assertNull(controller.confirmReleased(settleMs = 10))
+                assertTrue(controller.state.value.ptt)
+                assertEquals(7_100_000L, controller.readFrequency())
+                rig.checkFinished()
+            } finally { controller.destroy() }
+        }
+    }
+
+    @Test fun releaseCheckWithoutAnAcknowledgedReleaseSendsNothing() = runBlocking {
+        FakeRig { input, output ->
+            input.expectConfirmedKeyOn(output)
+            assertEquals("+\\set_ptt 0", input.readLine())
+            output.print("set_ptt: 0\nRPRT -9\n"); output.flush()
+            input.expectFrequency(output)
+        }.use { rig ->
+            val controller = RigController(pollingEnabled = false)
+            try {
+                controller.connect("127.0.0.1", rig.port)
+                assertNull(controller.confirmReleased(settleMs = 10))
+                controller.keyAndConfirm()
+                assertNull("The newest PTT command is a key-on", controller.confirmReleased(settleMs = 10))
+                assertFalse(controller.setPtt(false))
+                assertNull("A refused release is the caller's to retry", controller.confirmReleased(settleMs = 10))
+                assertEquals(7_100_000L, controller.readFrequency())
+                rig.checkFinished()
+            } finally { controller.destroy() }
+        }
+    }
+
+    @Test fun oneReleaseIsCheckedByOneCallOnly() = runBlocking {
+        FakeRig { input, output ->
+            input.expectConfirmedKeyOn(output)
+            input.expectKey(output, on = false)
+            input.expectStatus(output, transmitting = false)
+            input.expectFrequency(output)
+        }.use { rig ->
+            val controller = RigController(pollingEnabled = false)
+            try {
+                controller.connect("127.0.0.1", rig.port)
+                controller.keyAndConfirm()
+                assertTrue(controller.setPtt(false))
+                assertEquals(true, controller.confirmReleased(settleMs = 10))
+                assertNull(controller.confirmReleased(settleMs = 10))
+                assertEquals(7_100_000L, controller.readFrequency())
+                rig.checkFinished()
+            } finally { controller.destroy() }
+        }
+    }
+
+    /** The Icom network daemon runs uncached, and setPtt reads its release
+     *  back as it makes it: there is nothing left to check afterwards. */
+    @Test fun releaseTheNetworkDaemonReadBackIsNotCheckedAgain() = runBlocking {
+        FakeRig { input, output ->
+            input.expectConfirmedKeyOn(output)
+            input.expectKey(output, on = false)
+            input.expectStatus(output, transmitting = false)
+            input.expectFrequency(output)
+        }.use { rig ->
+            val controller = RigController(pollingEnabled = false)
+            try {
+                controller.connect("127.0.0.1", rig.port, verifyPttOff = true)
+                controller.keyAndConfirm()
+                assertTrue(controller.setPtt(false))
+                assertNull(controller.confirmReleased(settleMs = 10))
+                assertEquals(7_100_000L, controller.readFrequency())
+                rig.checkFinished()
+            } finally { controller.destroy() }
+        }
+    }
+
+    @Test fun cancelledReleaseCheckSendsNothingMore() = runBlocking {
+        val statusAsked = CompletableDeferred<Unit>()
+        val answerStatus = CountDownLatch(1)
+        FakeRig { input, output ->
+            input.expectConfirmedKeyOn(output)
+            input.expectKey(output, on = false) // Cancelled while waiting to ask.
+            input.expectConfirmedKeyOn(output)
+            input.expectKey(output, on = false) // Cancelled with the question in flight.
+            assertEquals("+\\get_ptt", input.readLine())
+            statusAsked.complete(Unit)
+            assertTrue(answerStatus.await(2, TimeUnit.SECONDS))
+            output.print("get_ptt:\nPTT: 1\nRPRT 0\n"); output.flush()
+            input.expectFrequency(output)
+        }.use { rig ->
+            val controller = RigController(pollingEnabled = false)
+            try {
+                controller.connect("127.0.0.1", rig.port)
+                controller.keyAndConfirm()
+                assertTrue(controller.setPtt(false))
+                val waiting = async { controller.confirmReleased(settleMs = 10_000) }
+                delay(100)
+                waiting.cancelAndJoin()
+                controller.keyAndConfirm()
+                assertTrue(controller.setPtt(false))
+                val asking = async { controller.confirmReleased(settleMs = 10) }
+                withTimeout(2000) { statusAsked.await() }
+                asking.cancelAndJoin()
+                answerStatus.countDown()
+                val frequency = withTimeout(2000) {
+                    var read: Long? = null
+                    while (read == null) { delay(20); read = controller.readFrequency() }
+                    read
+                }
+                assertEquals(7_100_000L, frequency)
+                assertFalse("An abandoned check reports nothing", controller.state.value.ptt)
+                assertEquals("", controller.state.value.error)
+                rig.checkFinished()
+            } finally { controller.destroy() }
+        }
+    }
+
+    /** Asked again once that repeat is answered, Hamlib would say "receive"
+     *  whatever the rig is doing: its cache then holds the repeat itself. */
+    @Test fun unansweredRepeatedReleaseEndsTheCheckWithoutAVerdict() = runBlocking {
+        val answerRepeat = CountDownLatch(1)
+        FakeRig { input, output ->
+            input.expectConfirmedKeyOn(output)
+            input.expectKey(output, on = false)
+            input.expectStatus(output, transmitting = true)
+            assertEquals("+\\set_ptt 0", input.readLine())
+            assertTrue(answerRepeat.await(6, TimeUnit.SECONDS))
+            output.print("set_ptt: 0\nRPRT 0\n"); output.flush()
+            input.expectKey(output, on = true)
+        }.use { rig ->
+            val controller = RigController(pollingEnabled = false)
+            try {
+                controller.connect("127.0.0.1", rig.port)
+                controller.keyAndConfirm()
+                assertTrue(controller.setPtt(false))
+                // Waits out the production PTT deadline (2.5 s) on the repeat.
+                assertNull(controller.confirmReleased(settleMs = 10))
+                answerRepeat.countDown()
+                assertTrue(controller.setPtt(true))
+                rig.checkFinished()
+            } finally { controller.destroy() }
+        }
+    }
+
+    @Test fun reconnectingToTheSameRigctldKeepsWhatWasLearnedAboutReleases() = runBlocking {
+        val stoppingOver = { input: BufferedReader, output: PrintWriter ->
+            input.expectConfirmedKeyOn(output)
+            input.expectKey(output, on = false)
+            input.expectStatus(output, transmitting = false)
+        }
+        val stuckOver = { input: BufferedReader, output: PrintWriter ->
+            input.expectConfirmedKeyOn(output)
+            input.expectKey(output, on = false)
+            repeat(2) {
+                input.expectStatus(output, transmitting = true)
+                input.expectKey(output, on = false)
+            }
+            input.expectStatus(output, transmitting = true)
+        }
+        suspend fun over(controller: RigController): Boolean? {
+            controller.keyAndConfirm()
+            assertTrue(controller.setPtt(false))
+            return controller.confirmReleased(settleMs = 10)
+        }
+        val otherRig = { input: BufferedReader, output: PrintWriter ->
+            input.expectStatus(output, transmitting = false)
+            stuckOver(input, output)
+        }
+        FakeRig(stoppingOver).use { first -> FakeRig(stuckOver).use { same -> FakeRig(otherRig).use { other ->
+            val controller = RigController(pollingEnabled = false)
+            try {
+                controller.connect("127.0.0.1", first.port)
+                assertEquals(true, over(controller)) // Its status does return to receive.
+                controller.connect("127.0.0.1", same.port, verifyPttOff = false, sameRig = true)
+                assertEquals(false, over(controller))
+                controller.connect("127.0.0.1", other.port) // Possibly another rig.
+                assertEquals("", controller.state.value.error)
+                assertFalse("What the last rig left unconfirmed is not this one's", controller.getPtt())
+                assertNull(over(controller))
+                first.checkFinished()
+                same.checkFinished()
+                other.checkFinished()
+            } finally { controller.destroy() }
+        } } }
+    }
+
+    /** rigctld is still running and the app reconnects to it: that says
+     *  nothing about whether the rig behind it has stopped transmitting. */
+    @Test fun reconnectingDuringTheCheckDoesNotClearAReleaseTheRigContradicted() = runBlocking {
+        FakeRig { input, output ->
+            input.expectContradictedRelease(output)
+            input.expectKey(output, on = false)
+        }.use { rig -> FakeRig { input, output -> input.expectFrequency(output) }.use { again ->
+            val controller = RigController(pollingEnabled = false)
+            try {
+                controller.connect("127.0.0.1", rig.port)
+                controller.releaseTheRigContradicts()
+                assertFalse(controller.setPtt(false))
+                val check = async { controller.confirmReleased(settleMs = 1000) }
+                delay(50)
+                controller.connect("127.0.0.1", again.port, verifyPttOff = false, sameRig = true)
+                assertTrue(controller.state.value.error.startsWith("PTT OFF not confirmed"))
+                assertEquals(false, check.await())
+                assertEquals(7_100_000L, controller.readFrequency())
+                rig.checkFinished()
+                again.checkFinished()
+            } finally { controller.destroy() }
+        } }
+    }
+
+    /** The repeat was claimed and written first, so the key-on is written
+     *  behind it and is the last thing the rig is told. */
+    @Test fun keyOnAskedForWhileARepeatIsInFlightIsWrittenBehindIt() = runBlocking {
+        val repeatSeen = CompletableDeferred<Unit>()
+        FakeRig { input, output ->
+            input.expectConfirmedKeyOn(output)
+            input.expectKey(output, on = false)
+            input.expectStatus(output, transmitting = true)
+            assertEquals("+\\set_ptt 0", input.readLine())
+            repeatSeen.complete(Unit)
+            assertEquals("+\\set_ptt 1", input.readLine())
+            output.print("set_ptt: 0\nRPRT 0\nset_ptt: 1\nRPRT 0\n"); output.flush()
+            input.expectFrequency(output)
+        }.use { rig ->
+            val controller = RigController(pollingEnabled = false)
+            try {
+                controller.connect("127.0.0.1", rig.port)
+                controller.keyAndConfirm()
+                assertTrue(controller.setPtt(false))
+                val check = async { controller.confirmReleased(settleMs = 10) }
+                withTimeout(2000) { repeatSeen.await() }
+                assertTrue(controller.setPtt(true))
+                assertNull(check.await())
+                assertTrue(controller.state.value.ptt)
+                assertEquals("", controller.state.value.error)
+                assertEquals(7_100_000L, controller.readFrequency())
+                rig.checkFinished()
+            } finally { controller.destroy() }
+        }
+    }
+
+    @Test fun cancellingTheCheckWithItsRepeatInFlightSendsNothingMore() = runBlocking {
+        val repeatSeen = CompletableDeferred<Unit>()
+        val answerRepeat = CountDownLatch(1)
+        FakeRig { input, output ->
+            input.expectConfirmedKeyOn(output)
+            input.expectKey(output, on = false)
+            input.expectStatus(output, transmitting = true)
+            assertEquals("+\\set_ptt 0", input.readLine())
+            repeatSeen.complete(Unit)
+            assertTrue(answerRepeat.await(2, TimeUnit.SECONDS))
+            output.print("set_ptt: 0\nRPRT 0\n"); output.flush()
+            input.expectFrequency(output)
+        }.use { rig ->
+            val controller = RigController(pollingEnabled = false)
+            try {
+                controller.connect("127.0.0.1", rig.port)
+                controller.keyAndConfirm()
+                assertTrue(controller.setPtt(false))
+                val check = async { controller.confirmReleased(settleMs = 10) }
+                withTimeout(2000) { repeatSeen.await() }
+                check.cancelAndJoin()
+                answerRepeat.countDown()
+                val frequency = withTimeout(2000) {
+                    var read: Long? = null
+                    while (read == null) { delay(20); read = controller.readFrequency() }
+                    read
+                }
+                assertEquals(7_100_000L, frequency)
+                rig.checkFinished()
+            } finally { controller.destroy() }
+        }
+    }
+
+    /** The last thing a status known to return to receive said was
+     *  "transmit". That it then cannot be read is not the rig stopping. */
+    @Test fun transmitFollowedByNoNewsLeavesTheReleaseUnconfirmed() = runBlocking {
+        FakeRig { input, output ->
+            input.expectConfirmedKeyOn(output)
+            input.expectKey(output, on = false)
+            input.expectStatus(output, transmitting = false) // Its status does return to receive.
+            input.expectConfirmedKeyOn(output)
+            input.expectKey(output, on = false)
+            input.expectStatus(output, transmitting = true)
+            input.expectKey(output, on = false)
+            assertEquals("+\\get_ptt", input.readLine())
+            output.print("get_ptt:\nRPRT -5\n"); output.flush()
+            input.expectFrequency(output)
+        }.use { rig ->
+            val controller = RigController(pollingEnabled = false)
+            try {
+                controller.connect("127.0.0.1", rig.port)
+                controller.keyAndConfirm()
+                assertTrue(controller.setPtt(false))
+                assertEquals(true, controller.confirmReleased(settleMs = 10))
+                controller.keyAndConfirm()
+                assertTrue(controller.setPtt(false))
+                assertEquals(false, controller.confirmReleased(settleMs = 10))
+                assertTrue(controller.state.value.ptt)
+                assertTrue(controller.state.value.error.startsWith("PTT OFF not confirmed"))
+                assertEquals(7_100_000L, controller.readFrequency())
+                rig.checkFinished()
+            } finally { controller.destroy() }
+        }
+    }
+
+    @Test fun transmitFollowedByNoNewsIsNotHeldAgainstARigNeverSeenToStop() = runBlocking {
+        FakeRig { input, output ->
+            input.expectConfirmedKeyOn(output)
+            input.expectKey(output, on = false)
+            input.expectStatus(output, transmitting = true)
+            input.expectKey(output, on = false)
+            assertEquals("+\\get_ptt", input.readLine())
+            output.print("get_ptt:\nRPRT -5\n"); output.flush()
+            input.expectFrequency(output)
+        }.use { rig ->
+            val controller = RigController(pollingEnabled = false)
+            try {
+                controller.connect("127.0.0.1", rig.port)
+                controller.keyAndConfirm()
+                assertTrue(controller.setPtt(false))
+                assertNull(controller.confirmReleased(settleMs = 10))
+                assertFalse("The acknowledged release stands", controller.state.value.ptt)
+                assertEquals("", controller.state.value.error)
+                assertEquals(7_100_000L, controller.readFrequency())
+                rig.checkFinished()
+            } finally { controller.destroy() }
+        }
+    }
+
+    /** The check was dropped before it could say so, but the rig's status
+     *  had: the next release is not taken on rigctld's word either. */
+    @Test fun releaseAfterAnAbandonedCheckSawTransmitIsNotTakenOnItsAcknowledgement() = runBlocking {
+        val repeatSeen = CompletableDeferred<Unit>()
+        val answerRepeat = CountDownLatch(1)
+        FakeRig { input, output ->
+            input.expectConfirmedKeyOn(output)
+            input.expectKey(output, on = false)
+            input.expectStatus(output, transmitting = false) // Its status does return to receive.
+            input.expectConfirmedKeyOn(output)
+            input.expectKey(output, on = false)
+            input.expectStatus(output, transmitting = true)
+            assertEquals("+\\set_ptt 0", input.readLine())
+            repeatSeen.complete(Unit)
+            // The next release is asked for while this repeat is unanswered,
+            // and waits for the same answer instead of being written again.
+            assertTrue(answerRepeat.await(2, TimeUnit.SECONDS))
+            output.print("set_ptt: 0\nRPRT 0\n"); output.flush()
+            input.expectStatus(output, transmitting = false)
+            input.expectFrequency(output)
+        }.use { rig ->
+            val controller = RigController(pollingEnabled = false)
+            try {
+                controller.connect("127.0.0.1", rig.port)
+                controller.keyAndConfirm()
+                assertTrue(controller.setPtt(false))
+                assertEquals(true, controller.confirmReleased(settleMs = 10))
+                controller.keyAndConfirm()
+                assertTrue(controller.setPtt(false))
+                val check = async { controller.confirmReleased(settleMs = 10) }
+                withTimeout(2000) { repeatSeen.await() }
+                check.cancelAndJoin()
+                assertTrue("Its status said transmit", controller.state.value.ptt)
+                val release = async { controller.setPtt(false) }
+                delay(100)
+                answerRepeat.countDown()
+                assertFalse(release.await())
+                assertTrue(controller.state.value.error.startsWith("PTT OFF not confirmed"))
+                assertEquals(true, controller.confirmReleased(settleMs = 10))
+                assertEquals("", controller.state.value.error)
+                assertEquals(7_100_000L, controller.readFrequency())
+                rig.checkFinished()
+            } finally { controller.destroy() }
+        }
+    }
+
+    /** As [unansweredRepeatedReleaseEndsTheCheckWithoutAVerdict], but for a
+     *  rig whose "transmit" is believed: there is then a verdict to stand. */
+    @Test fun unansweredRepeatedReleaseOfARigKnownToStopLeavesItUnconfirmed() = runBlocking {
+        val answerRepeat = CountDownLatch(1)
+        FakeRig { input, output ->
+            input.expectConfirmedKeyOn(output)
+            input.expectKey(output, on = false)
+            input.expectStatus(output, transmitting = false)
+            input.expectConfirmedKeyOn(output)
+            input.expectKey(output, on = false)
+            input.expectStatus(output, transmitting = true)
+            assertEquals("+\\set_ptt 0", input.readLine())
+            assertTrue(answerRepeat.await(6, TimeUnit.SECONDS))
+            output.print("set_ptt: 0\nRPRT 0\n"); output.flush()
+            input.expectKey(output, on = true)
+        }.use { rig ->
+            val controller = RigController(pollingEnabled = false)
+            try {
+                controller.connect("127.0.0.1", rig.port)
+                controller.keyAndConfirm()
+                assertTrue(controller.setPtt(false))
+                assertEquals(true, controller.confirmReleased(settleMs = 10))
+                controller.keyAndConfirm()
+                assertTrue(controller.setPtt(false))
+                // Waits out the production PTT deadline (2.5 s) on the repeat.
+                assertEquals(false, controller.confirmReleased(settleMs = 10))
+                assertTrue(controller.state.value.error.startsWith("PTT OFF not confirmed"))
+                answerRepeat.countDown()
+                assertTrue(controller.setPtt(true))
+                rig.checkFinished()
+            } finally { controller.destroy() }
+        }
+    }
+
+    /** rigctld is reconnected just as the repeat is due, so it is never sent. */
+    @Test fun repeatedReleaseThatCannotBeSentLeavesTheReleaseUnconfirmed() = runBlocking {
+        FakeRig { input, output ->
+            input.expectConfirmedKeyOn(output)
+            input.expectKey(output, on = false)
+            input.expectStatus(output, transmitting = false)
+            input.expectConfirmedKeyOn(output)
+            input.expectKey(output, on = false)
+            input.expectStatus(output, transmitting = true)
+        }.use { rig -> FakeRig { input, output -> input.expectFrequency(output) }.use { again ->
+            lateinit var controller: RigController
+            controller = RigController(pollingEnabled = false, beforeRepeatedRelease = {
+                controller.connect("127.0.0.1", again.port, verifyPttOff = false, sameRig = true)
+            })
+            try {
+                controller.connect("127.0.0.1", rig.port)
+                controller.keyAndConfirm()
+                assertTrue(controller.setPtt(false))
+                assertEquals(true, controller.confirmReleased(settleMs = 10))
+                controller.keyAndConfirm()
+                assertTrue(controller.setPtt(false))
+                assertEquals(false, controller.confirmReleased(settleMs = 10))
+                assertTrue(controller.state.value.error.startsWith("PTT OFF not confirmed"))
+                assertEquals(7_100_000L, controller.readFrequency())
+                rig.checkFinished()
+                again.checkFinished()
+            } finally { controller.destroy() }
+        } }
+    }
+
+    @Test fun repeatedReleaseTheDaemonRefusesIsFollowedByAnotherLookAtTheRig() = runBlocking {
+        FakeRig { input, output ->
+            input.expectConfirmedKeyOn(output)
+            input.expectKey(output, on = false)
+            input.expectStatus(output, transmitting = true)
+            assertEquals("+\\set_ptt 0", input.readLine())
+            output.print("set_ptt: 0\nRPRT -9\n"); output.flush()
+            input.expectStatus(output, transmitting = false)
+            input.expectFrequency(output)
+        }.use { rig ->
+            val controller = RigController(pollingEnabled = false)
+            try {
+                controller.connect("127.0.0.1", rig.port)
+                controller.keyAndConfirm()
+                assertTrue(controller.setPtt(false))
+                assertEquals(true, controller.confirmReleased(settleMs = 10))
+                assertFalse(controller.state.value.ptt)
+                assertEquals(7_100_000L, controller.readFrequency())
+                rig.checkFinished()
+            } finally { controller.destroy() }
+        }
+    }
+
+    /** That the status leaves transmit is shown by "receive" after an over in
+     *  which it was on transmit, not by "receive" after any release. */
+    @Test fun receiveAfterAnOverNotSeenTransmittingShowsNothingAboutTheStatus() = runBlocking {
+        FakeRig { input, output ->
+            input.expectConfirmedKeyOn(output) // The status can show transmit.
+            input.expectKey(output, on = false)
+            input.expectKey(output, on = true) // An over whose key-on is not checked,
+            input.expectKey(output, on = false)
+            input.expectStatus(output, transmitting = false) // and "receive" after it.
+            input.expectConfirmedKeyOn(output) // Then one that stays in transmit.
+            input.expectKey(output, on = false)
+            repeat(2) {
+                input.expectStatus(output, transmitting = true)
+                input.expectKey(output, on = false)
+            }
+            input.expectStatus(output, transmitting = true)
+            input.expectFrequency(output)
+        }.use { rig ->
+            val controller = RigController(pollingEnabled = false)
+            try {
+                controller.connect("127.0.0.1", rig.port)
+                controller.keyAndConfirm()
+                assertTrue(controller.setPtt(false))
+                assertTrue(controller.setPtt(true))
+                assertTrue(controller.setPtt(false))
+                assertEquals(true, controller.confirmReleased(settleMs = 10))
+                controller.keyAndConfirm()
+                assertTrue(controller.setPtt(false))
+                assertNull("Not held against a status never seen to leave transmit",
+                    controller.confirmReleased(settleMs = 10))
+                assertEquals(7_100_000L, controller.readFrequency())
+                rig.checkFinished()
+            } finally { controller.destroy() }
+        }
+    }
+
+    /** With the app's poller asking in between, as it does in use. */
+    @Test fun missedReleaseIsRepeatedWhileThePollerRuns() = runBlocking {
+        val transmitting = AtomicBoolean(false)
+        val releasesToIgnore = AtomicInteger(1)
+        val releases = AtomicInteger()
+        FakeRig { input, output ->
+            while (true) {
+                val line = input.readLine() ?: break // The controller hung up.
+                when (line) {
+                    "+\\set_ptt 1" -> { transmitting.set(true); output.print("set_ptt: 1\nRPRT 0\n") }
+                    "+\\set_ptt 0" -> {
+                        releases.incrementAndGet()
+                        if (releasesToIgnore.getAndDecrement() <= 0) transmitting.set(false)
+                        output.print("set_ptt: 0\nRPRT 0\n")
+                    }
+                    "+\\get_ptt" -> output.print("get_ptt:\nPTT: ${if (transmitting.get()) 1 else 0}\nRPRT 0\n")
+                    "+\\get_freq" -> output.print("get_freq:\nFrequency: 7100000\nRPRT 0\n")
+                    "+\\get_mode" -> output.print("get_mode:\nMode: USB\nPassband: 2400\nRPRT 0\n")
+                    "+\\get_level STRENGTH" -> output.print("get_level: STRENGTH\n-20\nRPRT 0\n")
+                    else -> fail("The controller sent $line")
+                }
+                output.flush()
+            }
+        }.use { rig ->
+            val controller = RigController() // Polling on.
+            try {
+                controller.connect("127.0.0.1", rig.port)
+                assertTrue(controller.setPtt(true))
+                assertEquals(true, controller.confirmKeyed(settleMs = 10))
+                assertTrue(controller.setPtt(false))
+                assertTrue("The rig ignored that release", transmitting.get())
+                assertEquals(true, controller.confirmReleased(settleMs = 10))
+                assertFalse(transmitting.get())
+                assertEquals(2, releases.get())
+                assertFalse(controller.state.value.ptt)
+            } finally { controller.destroy() }
+            rig.checkFinished()
+        }
+    }
+
+    /* ── One attempt of the unkey retries (RigController.releaseAndConfirm) ── */
+
+    @Test fun retriedReleaseStandsOnItsAcknowledgementWhereTheStatusSaysNothing() = runBlocking {
+        FakeRig { input, output ->
+            input.expectKey(output, on = false) // Its status has not shown transmit: not asked.
+            input.expectConfirmedKeyOn(output)
+            input.expectKey(output, on = false)
+            assertEquals("+\\get_ptt", input.readLine()) // Asked, and unreadable.
+            output.print("get_ptt:\nRPRT -5\n"); output.flush()
+            input.expectFrequency(output)
+        }.use { rig ->
+            val controller = RigController(pollingEnabled = false)
+            try {
+                controller.connect("127.0.0.1", rig.port)
+                assertTrue(controller.releaseAndConfirm(settleMs = 10))
+                controller.keyAndConfirm()
+                assertTrue(controller.releaseAndConfirm(settleMs = 10))
+                assertFalse(controller.state.value.ptt)
+                assertEquals(7_100_000L, controller.readFrequency())
+                rig.checkFinished()
+            } finally { controller.destroy() }
+        }
+    }
+
+    @Test fun retriedReleaseWithoutAnAcknowledgementGoesByTheStatus() = runBlocking {
+        FakeRig { input, output ->
+            for (transmitting in listOf(true, false)) {
+                assertEquals("+\\set_ptt 0", input.readLine())
+                output.print("set_ptt: 0\nRPRT -5\n"); output.flush()
+                input.expectStatus(output, transmitting)
+            }
+            input.expectFrequency(output)
+        }.use { rig ->
+            val controller = RigController(pollingEnabled = false)
+            try {
+                controller.connect("127.0.0.1", rig.port)
+                assertFalse(controller.releaseAndConfirm(settleMs = 10))
+                assertTrue("Unkeyed after all", controller.releaseAndConfirm(settleMs = 10))
+                assertEquals("", controller.state.value.error)
+                assertEquals(7_100_000L, controller.readFrequency())
+                rig.checkFinished()
+            } finally { controller.destroy() }
+        }
+    }
+
+    /** A key-on has followed: the rig is meant to be transmitting, and what
+     *  rigctld said of the release before it is no reason to stop retrying
+     *  as if nothing were left to release. */
+    @Test fun retriedReleaseOvertakenByAKeyOnIsNotOne() = runBlocking {
+        FakeRig { input, output ->
+            input.expectConfirmedKeyOn(output)
+            input.expectKey(output, on = false)
+            input.expectKey(output, on = true)
+            input.expectFrequency(output)
+        }.use { rig ->
+            val controller = RigController(pollingEnabled = false)
+            try {
+                controller.connect("127.0.0.1", rig.port)
+                controller.keyAndConfirm()
+                val retry = async { controller.releaseAndConfirm(settleMs = 1000) }
+                delay(100)
+                assertNull("The retry has its release acknowledged, and is waiting to ask",
+                    controller.confirmReleased(settleMs = 1000))
+                assertTrue(controller.setPtt(true))
+                assertFalse(retry.await())
+                assertEquals(7_100_000L, controller.readFrequency())
+                rig.checkFinished()
+            } finally { controller.destroy() }
+        }
+    }
+
+    @Test fun retriedReleaseOfARigThatContradictedItWorksOnlyOnceItsStatusReadsReceive() = runBlocking {
+        FakeRig { input, output ->
+            input.expectContradictedRelease(output)
+            input.expectKey(output, on = false) // Acknowledged again, and still transmitting.
+            repeat(2) {
+                input.expectStatus(output, transmitting = true)
+                input.expectKey(output, on = false)
+            }
+            input.expectStatus(output, transmitting = true)
+            assertEquals("+\\set_ptt 0", input.readLine()) // Not acknowledged this time. The status
+            output.print("set_ptt: 0\nRPRT -5\n"); output.flush()
+            input.expectStatus(output, transmitting = false) // read next is not known to be the rig's own.
+            input.expectKey(output, on = false)
+            input.expectStatus(output, transmitting = false) // Read by the check: it has stopped.
+            input.expectFrequency(output)
+        }.use { rig ->
+            val controller = RigController(pollingEnabled = false)
+            try {
+                controller.connect("127.0.0.1", rig.port)
+                controller.releaseTheRigContradicts()
+                assertFalse(controller.releaseAndConfirm(settleMs = 10))
+                assertFalse(controller.releaseAndConfirm(settleMs = 10))
+                assertTrue(controller.state.value.ptt)
+                assertTrue(controller.releaseAndConfirm(settleMs = 10))
+                assertFalse(controller.state.value.ptt)
+                assertEquals("", controller.state.value.error)
+                assertEquals(7_100_000L, controller.readFrequency())
+                rig.checkFinished()
+            } finally { controller.destroy() }
+        }
+    }
+
     @Test fun guardDecidesWhetherACommandIsWritten() = runBlocking {
         FakeRig { input, output ->
             input.expectKey(output, on = false) // The refused key-on never arrives.
@@ -1040,6 +2022,41 @@ class RigctldTransportTest {
     private fun BufferedReader.expectFrequency(output: PrintWriter) {
         assertEquals("+\\get_freq", readLine())
         output.print("get_freq:\nFrequency: 7100000\nRPRT 0\n"); output.flush()
+    }
+
+    // A key-on whose check reads "transmit": this rig's status can show it.
+    private fun BufferedReader.expectConfirmedKeyOn(output: PrintWriter) {
+        expectKey(output, on = true)
+        expectStatus(output, transmitting = true)
+    }
+
+    private suspend fun RigController.keyAndConfirm() {
+        assertTrue(setPtt(true))
+        assertEquals(true, confirmKeyed(settleMs = 10))
+    }
+
+    // An over after which the status returns to receive, so that it is known
+    // to; then one after which it stays on transmit, through both repeats.
+    private fun BufferedReader.expectContradictedRelease(output: PrintWriter) {
+        expectConfirmedKeyOn(output)
+        expectKey(output, on = false)
+        expectStatus(output, transmitting = false)
+        expectConfirmedKeyOn(output)
+        expectKey(output, on = false)
+        repeat(2) {
+            expectStatus(output, transmitting = true)
+            expectKey(output, on = false)
+        }
+        expectStatus(output, transmitting = true)
+    }
+
+    private suspend fun RigController.releaseTheRigContradicts() {
+        keyAndConfirm()
+        assertTrue(setPtt(false))
+        assertEquals(true, confirmReleased(settleMs = 10))
+        keyAndConfirm()
+        assertTrue(setPtt(false))
+        assertEquals(false, confirmReleased(settleMs = 10))
     }
 
     private class FakeRig(script: (BufferedReader, PrintWriter) -> Unit) : Closeable {

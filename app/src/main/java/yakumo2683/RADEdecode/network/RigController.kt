@@ -22,7 +22,9 @@ class RigController internal constructor(
     private val catHealth: RigCatHealth = RigCatHealth(),
     /** For tests: runs just before [confirmKeyed] hands a repeated key-on to
      *  the transport, the last moment another PTT command can get in first. */
-    private val beforeRepeatedKeyOn: suspend () -> Unit = {}
+    private val beforeRepeatedKeyOn: suspend () -> Unit = {},
+    /** As [beforeRepeatedKeyOn], for the release [confirmReleased] repeats. */
+    private val beforeRepeatedRelease: suspend () -> Unit = {}
 ) {
 
     constructor() : this(pollingEnabled = true)
@@ -43,9 +45,12 @@ class RigController internal constructor(
         private const val PTT_TIMEOUT_MS = 2500L
         // Hamlib answers get_ptt from a 500 ms cache of the value it was last
         // told to set (and its Kenwood backend caches IF; for as long), so a
-        // readback any sooner after a key-on only echoes the command back.
+        // readback any sooner after a key-on or a release only echoes the
+        // command back.
         private const val PTT_VERIFY_SETTLE_MS = 600L
         private const val PTT_VERIFY_REKEYS = 2
+        private const val PTT_VERIFY_UNKEYS = 2
+        private const val RELEASE_UNCONFIRMED = "PTT OFF not confirmed: the rig still reports transmit"
         private const val DEFAULT_PORT = 4532
     }
 
@@ -87,6 +92,31 @@ class RigController internal constructor(
      *  rig is doing (uSDX-class firmware has a constant in that field), so a
      *  rig is held to that answer only after it has given the other one. */
     @Volatile private var txStatusTrusted: Boolean? = null
+    /** The [pttOperation] of the last release rigctld acknowledged, -1 until
+     *  one has been. [confirmReleased] acts only while that is still the
+     *  newest PTT command. */
+    @Volatile private var releaseOperation = -1L
+    /** The release [confirmReleased] has taken up, as [checkedKeyOn] is for
+     *  key-ons. Guarded by [lock]. */
+    private var checkedRelease = -1L
+    /** The key-on for which the status has read "transmit". Guarded by [lock]. */
+    private var transmittingKeyOn = -1L
+    /** Whether this rig's PTT status goes back to "receive" once it has
+     *  stopped transmitting, as learned on this connection: null until a
+     *  release has been checked, true once the status has gone from
+     *  "transmit" to "receive" across one, false after a release and its
+     *  repeats only ever read "transmit". [txStatusTrusted] says the status
+     *  can show transmit. One that then stays there, or follows the rig
+     *  seconds late, would have every release reported as failed, so a rig is
+     *  held to "transmit" only after its status has been seen to leave it. */
+    @Volatile private var rxStatusTrusted: Boolean? = null
+    /** The rig's own status contradicts the newest release: a status known
+     *  to return to receive ([rxStatusTrusted]) has read "transmit" after it.
+     *  Set by [confirmReleased]; ends when that status reads "receive", a
+     *  key-on is asked for, or another rig is connected. Until then neither a
+     *  further acknowledgement nor a poll, which Hamlib may answer by
+     *  repeating the last command back, counts as the rig having stopped. */
+    @Volatile private var releaseContradicted = false
     /** Stops the poller asking for an S-meter this rig fails to give.
      *  Guarded by [lock]. */
     private val sMeterPolls = MeterPollBackoff()
@@ -145,7 +175,8 @@ class RigController internal constructor(
         connect(host, port, verifyPttOff, sameRig = false)
 
     /** [sameRig]: this reconnects to the rigctld already in use, so what was
-     *  learned about its rig ([txStatusTrusted]) still holds. */
+     *  learned about its rig ([txStatusTrusted], [rxStatusTrusted]) still
+     *  holds, as does a release its status contradicts. */
     internal suspend fun connect(host: String, port: Int, verifyPttOff: Boolean, sameRig: Boolean) {
         disconnect()
         val generation = synchronized(lock) {
@@ -167,13 +198,16 @@ class RigController internal constructor(
                     requirePttOffReadback = verifyPttOff
                     if (!sameRig) {
                         txStatusTrusted = null
+                        rxStatusTrusted = null
+                        releaseContradicted = false
                         sMeterPolls.reset()
                     }
                     catHealth.reset()
                     recoveryJob?.cancel()
                     recoveryJob = null
                     consecutiveTimeouts = 0
-                    _state.update { it.copy(connected = true, host = host, port = port, error = "") }
+                    _state.update { it.copy(connected = true, host = host, port = port,
+                        error = if (releaseContradicted) RELEASE_UNCONFIRMED else "") }
                     lastConnectMs = System.currentTimeMillis()
                     Log.i(TAG, "Connected to rigctld at $host:$port (ordered ERP)")
                     transport.start()
@@ -497,8 +531,12 @@ class RigController internal constructor(
     suspend fun setPtt(on: Boolean): Boolean = withContext(Dispatchers.IO) {
         val (operation, session, verifyOff) = synchronized(lock) {
             val active = connection ?: return@withContext false
-            Triple(pttOperation.incrementAndGet(), active, requirePttOffReadback)
-                .also { if (on) keyOnOperation = it.first }
+            Triple(pttOperation.incrementAndGet(), active, requirePttOffReadback).also {
+                if (on) {
+                    keyOnOperation = it.first
+                    releaseContradicted = false // Whatever the last release did, this over is a new question.
+                }
+            }
         }
         val startedNs = System.nanoTime()
         Log.i(TAG, "setPtt($on) sending...")
@@ -524,6 +562,16 @@ class RigController internal constructor(
         synchronized(lock) {
             if (connection !== session || operation != pttOperation.get()) return@withContext false
             if (acknowledged) {
+                if (!on) {
+                    releaseOperation = operation
+                    // Once the rig's own status has said it is still
+                    // transmitting, one more acknowledgement is not what shows
+                    // that it has stopped: confirmReleased is.
+                    if (releaseContradicted) {
+                        _state.update { it.copy(ptt = true, error = RELEASE_UNCONFIRMED) }
+                        return@withContext false
+                    }
+                }
                 _state.update { it.copy(ptt = on, error = if (it.error.startsWith("PTT ")) "" else it.error) }
             } else if (isConnected) {
                 _state.update { it.copy(error = "PTT ${if (on) "ON" else "OFF"} not confirmed: ${result ?: "pending"}" +
@@ -579,6 +627,7 @@ class RigController internal constructor(
                 if (connection !== session || operation != pttOperation.get()) return@withContext null
                 if (reported == true) {
                     txStatusTrusted = true
+                    transmittingKeyOn = operation
                     _state.update { it.copy(ptt = true, error = if (it.error.startsWith("PTT ")) "" else it.error) }
                 }
                 txStatusTrusted
@@ -631,10 +680,172 @@ class RigController internal constructor(
         false
     }
 
+    /**
+     * Check, from the rig's own status, that the release rigctld has just
+     * acknowledged took effect, and release it again while it still reports
+     * transmit.
+     *
+     * rigctld's "RPRT 0" is not that check. For Kenwood-protocol rigs (QMX,
+     * TS-480, Elecraft, TX-500 …) Hamlib 4.5.5 writes "RX;", waits 350 ms and
+     * reports success without reading anything back — also when "RX;" never
+     * reached the rig, which then goes on transmitting with the app showing
+     * receive.
+     *
+     * Nothing is asked of a rig whose status is not known to show transmit
+     * ([txStatusTrusted]), and "transmit" is held against a rig only once its
+     * status has been seen to go from transmit back to receive across a
+     * release ([rxStatusTrusted]): before that the release is still repeated,
+     * but its outcome is not reported. The network daemon's releases are read
+     * back, uncached, as they are made ([setPtt]) and are not checked again
+     * here.
+     *
+     * A repeat is written only while that release is still the newest PTT
+     * command, so it can never follow a key-on onto the wire.
+     *
+     * @return true once the rig reports receive; false if a rig whose status
+     *   is known to return to receive has reported transmit after this
+     *   release and not receive since — through [repeats] repeats, or because
+     *   nothing more could be learned (it is left as it is, and [state] shows
+     *   the release as unconfirmed); null if nothing could be concluded — the
+     *   status was unreadable or not trusted, a newer PTT command took over,
+     *   or there is no acknowledged release left to check (none was, or an
+     *   earlier call took this one).
+     */
+    suspend fun confirmReleased(
+        settleMs: Long = PTT_VERIFY_SETTLE_MS,
+        repeats: Int = PTT_VERIFY_UNKEYS
+    ): Boolean? = withContext(Dispatchers.IO) {
+        val (release, session, keyedOverSeen) = synchronized(lock) {
+            val active = connection ?: return@withContext null
+            val newest = releaseOperation
+            if (newest != pttOperation.get() || newest == checkedRelease) return@withContext null
+            if (requirePttOffReadback || txStatusTrusted != true) return@withContext null
+            checkedRelease = newest
+            Triple(newest, active, transmittingKeyOn == keyOnOperation)
+        }
+        var operation = release
+        // Whether the status has read "transmit" in the over this release
+        // ends, or since: only then does "receive" show that it goes back.
+        var transmitted = keyedOverSeen
+        // What the check has to report where it stops: "still transmitting"
+        // if that is what the rig's status last said of this release, to this
+        // check or an earlier one — no news does not undo it — and nothing
+        // otherwise. A newer PTT command is its own caller's affair.
+        fun verdictSoFar(): Boolean? = synchronized(lock) {
+            if (!releaseContradicted || operation != pttOperation.get()) return@synchronized null
+            _state.update { it.copy(ptt = true, error = RELEASE_UNCONFIRMED) }
+            false
+        }
+        val startedNs = System.nanoTime()
+        var sent = 0
+        while (true) {
+            // From the answer to the release, or to the repeat below.
+            delay(settleMs)
+            // Once a key-on has begun the rig's status is that over's business.
+            if (operation != pttOperation.get()) return@withContext null
+            val reported = priority {
+                rigctldPtt(sendCommand("get_ptt", timeoutMs = PTT_TIMEOUT_MS, allowQueue = true,
+                    expectedConnection = session)?.value("PTT"))
+            }
+            ensureActive()
+            val returnsToReceive = synchronized(lock) {
+                if (connection !== session || operation != pttOperation.get()) return@withContext verdictSoFar()
+                when (reported) {
+                    false -> {
+                        if (transmitted) rxStatusTrusted = true
+                        releaseContradicted = false
+                        _state.update { it.copy(ptt = false, error = if (it.error.startsWith("PTT ")) "" else it.error) }
+                    }
+                    true -> {
+                        transmitted = true
+                        // From a status known to say when the rig has stopped,
+                        // this stands against the release whatever becomes of
+                        // the rest of the check.
+                        if (rxStatusTrusted == true) {
+                            releaseContradicted = true
+                            _state.update { it.copy(ptt = true) }
+                        }
+                    }
+                    null -> {}
+                }
+                rxStatusTrusted
+            }
+            Log.i(TAG, "confirmReleased: rig reports ${when (reported) { true -> "TX"; false -> "RX"; null -> "nothing usable" }}" +
+                " (repeats=$sent returnsToRx=$returnsToReceive unconfirmed=$releaseContradicted" +
+                " elapsedMs=${(System.nanoTime() - startedNs) / 1_000_000})")
+            if (reported == false) return@withContext true
+            if (reported == null) return@withContext verdictSoFar()
+            if (returnsToReceive == false) return@withContext null
+            if (sent == repeats) break
+            sent++
+            val next = operation + 1
+            var claimed = false
+            var superseded = false
+            beforeRepeatedRelease()
+            val answer = try {
+                priority {
+                    sendCommand("set_ptt", "0", PTT_TIMEOUT_MS, allowQueue = true, expectedConnection = session,
+                        guard = { pttOperation.compareAndSet(operation, next).also { claimed = it; superseded = !it } })
+                }
+            } finally {
+                // Also when cancelled while waiting for its answer: the log
+                // must show every release that was sent, and none that was not.
+                if (claimed) {
+                    Log.w(TAG, "PTT OFF was acknowledged but the rig reported TX — released again ($sent/$repeats)")
+                } else {
+                    Log.i(TAG, "confirmReleased: release not repeated — " +
+                        if (superseded) "a newer PTT command took over" else "it was not sent")
+                }
+            }
+            ensureActive()
+            if (!claimed) return@withContext verdictSoFar()
+            operation = next
+            synchronized(lock) {
+                if (pttOperation.get() == next) { releaseOperation = next; checkedRelease = next }
+            }
+            // Unanswered, the next status could be Hamlib repeating this
+            // command back rather than the rig's own.
+            if (answer == null) return@withContext verdictSoFar()
+        }
+        val verdict = synchronized(lock) {
+            if (connection === session && operation == pttOperation.get() && rxStatusTrusted != true) {
+                rxStatusTrusted = false
+                Log.w(TAG, "PTT status stayed TX through $sent repeat(s) of the release and has never returned to RX " +
+                    "after one on this connection — not reported, and not releasing again on it, until it has")
+                return@withContext null
+            }
+            verdictSoFar()
+        }
+        if (verdict == false) Log.e(TAG, "PTT OFF was acknowledged but the rig still reports TX after $sent repeat(s)")
+        verdict
+    }
+
+    /**
+     * One attempt at a release that has to be known to have worked, for a
+     * caller that goes on trying until it has: OFF, then the rig's own word
+     * for it where that can be had ([confirmReleased]). Where it cannot, the
+     * acknowledgement stands; and where rigctld did not acknowledge, a status
+     * that reads receive will do. None of it counts once a key-on has followed:
+     * the rig is then meant to be transmitting.
+     */
+    suspend fun releaseAndConfirm(settleMs: Long = PTT_VERIFY_SETTLE_MS): Boolean {
+        val before = pttOperation.get()
+        val acknowledged = setPtt(false)
+        confirmReleased(settleMs)?.let { return it }
+        if (keyOnOperation > before) return false
+        return acknowledged || readPtt(expected = false) == false
+    }
+
     suspend fun getPtt(): Boolean = withContext(Dispatchers.IO) {
         val operation = pttOperation.get()
         val ptt = rigctldPtt(sendCommand("get_ptt")?.value("PTT"))
-        if (ptt != null && operation == pttOperation.get()) _state.update { it.copy(ptt = ptt) }
+        synchronized(lock) {
+            // After a release its status contradicts, "receive" is for
+            // confirmReleased to report: this one may be Hamlib's cache.
+            if (ptt != null && operation == pttOperation.get() && (ptt || !releaseContradicted)) {
+                _state.update { it.copy(ptt = ptt) }
+            }
+        }
         _state.value.ptt
     }
 
@@ -648,8 +859,13 @@ class RigController internal constructor(
         }
         if (operation != pttOperation.get()) return@withContext null
         Log.i(TAG, "readPtt → $ptt (expected=$expected)")
-        if (ptt != null) {
-            _state.update { it.copy(ptt = ptt, error = if (ptt == expected && it.error.startsWith("PTT ")) "" else it.error) }
+        synchronized(lock) {
+            // As in getPtt: only confirmReleased, which waits out Hamlib's
+            // cache of the last command, may say that such a rig has stopped.
+            if (ptt == false && releaseContradicted) return@withContext null
+            if (ptt != null) {
+                _state.update { it.copy(ptt = ptt, error = if (ptt == expected && it.error.startsWith("PTT ")) "" else it.error) }
+            }
         }
         ptt
     }

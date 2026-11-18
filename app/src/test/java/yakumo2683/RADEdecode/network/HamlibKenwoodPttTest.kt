@@ -50,6 +50,103 @@ class HamlibKenwoodPttTest {
         assertTrue(controller.setPtt(false))
     }
 
+    @Test fun releaseThatReachesTheRadioIsConfirmedWithoutARepeat() = exercise { radio, controller ->
+        keyAndConfirm(radio, controller)
+        assertTrue(controller.setPtt(false))
+        assertFalse(radio.transmitting)
+        assertEquals(true, controller.confirmReleased())
+        assertEquals(1, radio.releases.get())
+    }
+
+    /** Hamlib sends "RX;", waits, and reads nothing back at all. */
+    @Test fun releaseLostOnItsWayIsAcknowledgedByHamlibAndRepeatedByTheCheck() = exercise { radio, controller ->
+        keyAndConfirm(radio, controller)
+        radio.releasesToLose = 1
+        assertTrue("Hamlib acknowledged a release the radio never received", controller.setPtt(false))
+        assertTrue(radio.transmitting)
+        assertEquals(true, controller.confirmReleased())
+        assertFalse(radio.transmitting)
+        assertEquals(2, radio.releases.get())
+        assertEquals("", controller.state.value.error)
+    }
+
+    @Test fun releaseRefusedByTheRadioIsAcknowledgedByHamlibAndRepeatedByTheCheck() = exercise { radio, controller ->
+        keyAndConfirm(radio, controller)
+        radio.releasesToRefuse = 1
+        assertTrue("Hamlib acknowledged a release the radio refused", controller.setPtt(false))
+        assertTrue(radio.transmitting)
+        assertEquals(true, controller.confirmReleased())
+        assertFalse(radio.transmitting)
+    }
+
+    /** Why the check waits before it asks: for 500 ms after a release Hamlib
+     *  answers a status request with the release itself, and the radio is not
+     *  asked at all. */
+    @Test fun statusAskedRightAfterAReleaseIsHamlibRepeatingItBack() = exercise { radio, controller ->
+        keyAndConfirm(radio, controller)
+        radio.releasesToLose = 1
+        val asked = radio.statusReads.get()
+        assertTrue(controller.setPtt(false))
+        assertEquals("Hamlib reported receive", false, controller.readPtt())
+        assertTrue(radio.transmitting)
+        assertEquals("The radio was not asked", asked, radio.statusReads.get())
+        delay(600)
+        assertEquals("Asked once the cache had expired, the radio says it is transmitting",
+            true, controller.readPtt())
+        assertEquals(asked + 1, radio.statusReads.get())
+        assertTrue(controller.setPtt(false))
+        assertFalse(radio.transmitting)
+    }
+
+    @Test fun radioThatStaysInTransmitIsReportedAndClearedByItsOwnStatus() = exercise { radio, controller ->
+        keyAndConfirm(radio, controller)
+        assertTrue(controller.setPtt(false))
+        assertEquals("Its status is seen to return to receive", true, controller.confirmReleased())
+        keyAndConfirm(radio, controller)
+        radio.ignoresRelease = true
+        val releases = radio.releases.get()
+        assertTrue(controller.setPtt(false))
+        assertEquals(false, controller.confirmReleased())
+        assertEquals("The release and its two repeats", releases + 3, radio.releases.get())
+        assertTrue(radio.transmitting)
+        assertTrue(controller.state.value.ptt)
+        assertTrue(controller.state.value.error.startsWith("PTT OFF not confirmed"))
+        // The app's unkey retries from here: Hamlib goes on acknowledging.
+        assertFalse(controller.releaseAndConfirm())
+        assertTrue(controller.state.value.ptt)
+        radio.ignoresRelease = false
+        assertTrue(controller.releaseAndConfirm())
+        assertFalse(radio.transmitting)
+        assertFalse(controller.state.value.ptt)
+        assertEquals("", controller.state.value.error)
+    }
+
+    /** As the app runs it: the poller asks for frequency, PTT, S-meter and mode
+     *  in between. A release that reached the radio must not be doubted, or
+     *  repeated, because of what those leave in Hamlib's caches. */
+    @Test fun releasesAreJudgedTheSameWhileThePollerRuns() = exercise(polling = true) { radio, controller ->
+        repeat(6) { over ->
+            keyAndConfirm(radio, controller)
+            delay(170L * over) // End the over at different points of the poll cycle.
+            assertTrue(controller.setPtt(false))
+            assertEquals(true, controller.confirmReleased())
+        }
+        assertEquals("No release was repeated", 6, radio.releases.get())
+        keyAndConfirm(radio, controller)
+        radio.releasesToLose = 1
+        assertTrue(controller.setPtt(false))
+        assertEquals(true, controller.confirmReleased())
+        assertFalse(radio.transmitting)
+        assertEquals("The lost one was, once", 8, radio.releases.get())
+        assertEquals("", controller.state.value.error)
+    }
+
+    private suspend fun keyAndConfirm(radio: Radio, controller: RigController) {
+        assertTrue(controller.setPtt(true))
+        assertEquals(true, controller.confirmKeyed())
+        assertTrue(radio.transmitting)
+    }
+
     /**
      * An S-meter answer Hamlib cannot parse makes rigctld close and reopen the
      * rig, about a second during which a key-on just waits. Polling it on every
@@ -151,7 +248,12 @@ class HamlibKenwoodPttTest {
         @Volatile var keyOnsToLose = 0
         @Volatile var keyOnsToRefuse = 0
         @Volatile var keyedAtNs = 0L
+        @Volatile var releasesToLose = 0
+        @Volatile var releasesToRefuse = 0
+        @Volatile var ignoresRelease = false
         val keyOns = AtomicInteger()
+        val releases = AtomicInteger()
+        val statusReads = AtomicInteger()
         val sMeterReads = AtomicInteger()
         private var sMeterPolls = 0
         private var lastSMeterReadNs = 0L
@@ -182,11 +284,22 @@ class HamlibKenwoodPttTest {
                     else -> { transmitting = true; keyedAtNs = System.nanoTime(); "" }
                 }
             }
-            "RX", "TQ0" -> { transmitting = false; "" }
+            "RX", "TQ0" -> {
+                releases.incrementAndGet()
+                when {
+                    ignoresRelease -> ""
+                    releasesToLose > 0 -> { releasesToLose--; "" }
+                    releasesToRefuse > 0 -> { releasesToRefuse--; "?;" }
+                    else -> { transmitting = false; "" }
+                }
+            }
             "ID" -> "ID020;"
             // Frequency, 5 spaces, RIT, RIT/XIT/bank, channel, transmit flag,
             // mode, VFO/scan/split/tone, tone number, space.
-            "IF" -> "IF00007074000     +000000000${if (transmitting) 1 else 0}2000000 ;"
+            "IF" -> {
+                statusReads.incrementAndGet()
+                "IF00007074000     +000000000${if (transmitting) 1 else 0}2000000 ;"
+            }
             "FA" -> "FA00007074000;"
             "FB" -> "FB00007074000;"
             "MD" -> "MD2;"

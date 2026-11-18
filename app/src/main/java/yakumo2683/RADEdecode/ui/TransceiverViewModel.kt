@@ -178,6 +178,10 @@ class TransceiverViewModel(application: Application) : AndroidViewModel(applicat
      *  auto-reconnect — until rigctld acknowledges "T 0" or the operator
      *  disconnects. A lossy LTE/VPN link must never leave the rig in TX. */
     private var pttUnkeyJob: Job? = null
+    /** Asks the rig itself, in the background, whether a release rigctld
+     *  acknowledged took effect ([confirmRigReleased]). Ended by the next
+     *  over, the next release, or Disconnect. */
+    private var pttReleaseCheckJob: Job? = null
 
     /** True while the app has keyed the rig by asserting the serial RTS line
      *  (CAT-less interfaces, Rig tab "RTS PTT" option). */
@@ -734,6 +738,13 @@ class TransceiverViewModel(application: Application) : AndroidViewModel(applicat
         var audioSetupFailed = false
         var keyOutcome: Deferred<PttKeyOutcome>? = null
         clearAnalogMonitor()
+        // From here the rig belongs to this over, not to the release before
+        // it. RigController writes no repeated OFF behind a key-on by itself;
+        // this keeps a late verdict on that release from starting unkey
+        // retries, and ends any retries that overlapping releases left running
+        // with nothing pending: they would take this over's key-on for their cue.
+        pttReleaseCheckJob?.cancel()
+        pttUnkeyJob?.cancel()
         // Auto-PTT via rigctld (both paths)
         if (rigController.isConnected) {
             pttKeyedByApp = true
@@ -1036,9 +1047,11 @@ class TransceiverViewModel(application: Application) : AndroidViewModel(applicat
             // stuck in TX.
             pttKeyJob?.let { it.cancel(); it.join() }
             pttKeyJob = null
-            // An unkey retry still running from an earlier over yields to this one.
+            // An unkey retry still running from an earlier over yields to this
+            // one, as does a status check of that over's release.
             pttUnkeyJob?.cancel()
             pttUnkeyJob = null
+            pttReleaseCheckJob?.cancel()
             if (!skipTail) delay(pttTailMs())
             if (hermesNetwork.isConnected && !rigController.isConnected) {
                 // HL2 direct: MOX=0 rides every subsequent C&C frame — no ack
@@ -1064,6 +1077,44 @@ class TransceiverViewModel(application: Application) : AndroidViewModel(applicat
                 // readback attempts must not hold the receiver silent for 5+ s.
                 Log.w("TransceiverVM", "PTT release pending — resuming RX with background OFF recovery")
                 startPersistentUnkey()
+            } else {
+                confirmRigReleased()
+            }
+        }
+    }
+
+    /**
+     * rigctld acknowledging a release does not mean the rig has stopped
+     * transmitting (see [RigController.confirmReleased]), so have the rig's own
+     * status confirm it, and the command repeated while it reports transmit.
+     * This runs behind the release: RX resumes, and the next over can start,
+     * without waiting for it. Only a rig whose status contradicts the release
+     * (still transmit after the repeats, or transmit and then nothing more to
+     * go by) is treated as not released, exactly as when rigctld did not
+     * acknowledge: the banner, no new TX, and unkey retries until it has.
+     */
+    private fun confirmRigReleased() {
+        pttReleaseCheckJob?.cancel()
+        pttReleaseCheckJob = viewModelScope.launch(Dispatchers.IO) {
+            val released = try {
+                rigController.confirmReleased()
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                Log.w("TransceiverVM", "PTT release status check failed", e)
+                null
+            }
+            if (released != false) return@launch
+            withContext(Dispatchers.Main.immediate) {
+                // A new over, a newer release and Disconnect all cancel this
+                // check on the main thread, so none of them can be under way
+                // here without having done so.
+                ensureActive()
+                if (pttKeyedByApp) return@withContext // Already held, and being retried, by its owner.
+                Log.e("TransceiverVM", "PTT release was acknowledged but the rig still reports transmit — " +
+                    "holding it as not released and retrying OFF")
+                pttKeyedByApp = true
+                startPersistentUnkey()
             }
         }
     }
@@ -1077,12 +1128,13 @@ class TransceiverViewModel(application: Application) : AndroidViewModel(applicat
         else TX_PTT_TAIL_MS
 
     /**
-     * Keep releasing PTT until rigctld acknowledges it. After the first bounded
+     * Keep releasing PTT until rigctld acknowledges it and the rig's own status,
+     * where that is checked, does not say otherwise. After the first bounded
      * attempt RX may resume with a PTT warning; an LTE stall or a VPN re-key can
      * last much longer, and giving up left the IC-7300MK2 transmitting until
      * its own TX time-out (reported). While the Icom transport is down this waits
      * for the automatic reconnect (handleIcomLinkLost) to bring rigctld back, then
-     * unkeys. Ends when acknowledged or when the operator disconnects the rig.
+     * unkeys. Ends when released or when the operator disconnects the rig.
      */
     private fun startPersistentUnkey() {
         pttReleasePending.value = true
@@ -1093,20 +1145,30 @@ class TransceiverViewModel(application: Application) : AndroidViewModel(applicat
                 attempt++
                 if (rigController.isConnected) {
                     val ok = try {
-                        rigController.setPtt(false) ||
-                            rigController.readPtt(expected = false) == false   // unkeyed after all
+                        // OFF again. An acknowledgement stands unless the
+                        // rig's own status contradicts it (confirmRigReleased);
+                        // without one, a status that reads receive will do.
+                        rigController.releaseAndConfirm()
                     } catch (e: CancellationException) {
                         throw e
                     } catch (_: Exception) {
                         false
                     }
                     if (ok) {
-                        pttKeyedByApp = false
-                        pttReleasePending.value = false
+                        // Recorded on the main thread, where a new over, a
+                        // newer release and Disconnect cancel this job before
+                        // they act: what they then find is not this job's to
+                        // overwrite.
+                        withContext(Dispatchers.Main.immediate) {
+                            ensureActive()
+                            pttKeyedByApp = false
+                            pttReleasePending.value = false
+                        }
                         Log.i("TransceiverVM", "PTT unkey acknowledged on background attempt $attempt")
                         break
                     }
-                    Log.w("TransceiverVM", "PTT unkey background attempt $attempt not acknowledged")
+                    Log.w("TransceiverVM", "PTT unkey background attempt $attempt not acknowledged, " +
+                        "or the rig still reports transmit")
                 } else if (attempt % 5 == 1) {
                     Log.w("TransceiverVM", "PTT unkey pending: rig link down (attempt $attempt) — waiting for reconnect")
                 }
@@ -1453,6 +1515,8 @@ class TransceiverViewModel(application: Application) : AndroidViewModel(applicat
         // down; the radio's own TX time-out is the fallback. Don't leave TX blocked.
         pttUnkeyJob?.cancel()
         pttUnkeyJob = null
+        pttReleaseCheckJob?.cancel()
+        pttReleaseCheckJob = null
         pttKeyedByApp = false
         pttReleasePending.value = false
         icomNetwork.abortConnect()   // also stops a connect() retry loop in flight
