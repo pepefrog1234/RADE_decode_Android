@@ -199,8 +199,16 @@ static void *usb_write_thread(void *arg) {
             LOGE("usb_write: bulkTransfer exception");
             break;
         }
-        if (sent < 0) {
-            LOGE("usb_write: bulkTransfer returned %d", sent);
+        if (sent < n) {
+            /* Not retried: whatever was not sent is lost to the rig. Log its
+             * first bytes, so a CAT log shows whether a command that is never
+             * answered, such as PTT, was among them. */
+            char hex[3 * 16 + 1] = "";
+            int shown = sent > 0 ? sent : 0;
+            for (int i = 0; shown + i < n && i < 16; i++) {
+                snprintf(hex + 3 * i, 4, "%02x ", (unsigned char)tmp[shown + i]);
+            }
+            LOGE("usb_write: bulkTransfer returned %d of %d byte(s); not sent: %s", sent, n, hex);
         }
     }
 

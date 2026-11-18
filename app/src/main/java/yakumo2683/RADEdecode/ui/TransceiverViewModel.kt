@@ -103,6 +103,9 @@ class TransceiverViewModel(application: Application) : AndroidViewModel(applicat
          *  to the Start screen for that second. */
         val txSwitching: Boolean = false,
         val pttControlError: Boolean = false,
+        /** The rig acknowledged the key-on over CAT but its own status stayed
+         *  on receive, also after the command was repeated. */
+        val pttStillReceiving: Boolean = false,
         val txStartError: Boolean = false,
         val txInputError: Boolean = false,
         val rxRestartError: Boolean = false,
@@ -160,8 +163,10 @@ class TransceiverViewModel(application: Application) : AndroidViewModel(applicat
     @Volatile private var pttKeyedByApp = false
     private val pttReleasePending = MutableStateFlow(false)
     /** Submit CAT immediately, even while the main thread is opening audio.
-     *  Join before unkeying so a slow T 1 cannot arrive after T 0. */
-    private var pttKeyJob: Deferred<PttKeyOutcome>? = null
+     *  Join before unkeying so a slow T 1 cannot arrive after T 0. Runs the
+     *  key-on attempts and then the check that the rig really went to transmit
+     *  ([confirmRigKeyed]), which may key it again. */
+    private var pttKeyJob: Job? = null
 
     /** Result of the CAT key-on request. Only REFUSED (the rig itself reports
      *  PTT still off) aborts the over: a missing or late acknowledgement is no
@@ -478,7 +483,9 @@ class TransceiverViewModel(application: Application) : AndroidViewModel(applicat
 
     fun startReceiving() {
         val session = rxRecovery.snapshot()
-        _uiState.value = _uiState.value.copy(txStartError = false, txInputError = false, rxRestartError = false)
+        _uiState.value = _uiState.value.copy(
+            txStartError = false, txInputError = false, rxRestartError = false, pttStillReceiving = false
+        )
         val app = getApplication<Application>()
         val intent = Intent(app, AudioService::class.java)
         var requestedForegroundStart = false
@@ -720,8 +727,12 @@ class TransceiverViewModel(application: Application) : AndroidViewModel(applicat
         val session = rxRecovery.snapshot()
         val service = audioService ?: return
         txInputRecoverySession = session
-        _uiState.value = _uiState.value.copy(txSwitching = true, txStartError = false, txInputError = false, rxRestartError = false)
+        _uiState.value = _uiState.value.copy(
+            txSwitching = true, txStartError = false, txInputError = false, rxRestartError = false,
+            pttStillReceiving = false
+        )
         var audioSetupFailed = false
+        var keyOutcome: Deferred<PttKeyOutcome>? = null
         clearAnalogMonitor()
         // Auto-PTT via rigctld (both paths)
         if (rigController.isConnected) {
@@ -729,35 +740,18 @@ class TransceiverViewModel(application: Application) : AndroidViewModel(applicat
             // Preserve the LTE/VPN key-on retries added in v1.6.12. A release
             // cancels this request, and OFF joins the job before unkeying.
             pttKeyJob?.cancel()
-            pttKeyJob = viewModelScope.async(Dispatchers.IO) {
-                var lastReadback: Boolean? = null
-                for (attempt in 1..3) {
-                    ensureActive()
-                    if (!pttKeyedByApp || requestId != txRequestId) return@async PttKeyOutcome.REFUSED
-                    try {
-                        if (rigController.setPtt(true)) return@async PttKeyOutcome.ACKED
-                        // No usable acknowledgement (timeout, "RPRT -5" from a
-                        // slow CAT link, a lost reply). Ask the rig what it did
-                        // before repeating the command: a slow rig has usually
-                        // keyed by now.
-                        lastReadback = rigController.readPtt(expected = true)
-                        if (lastReadback == true) {
-                            Log.i("TransceiverVM", "PTT ON confirmed by readback after attempt $attempt")
-                            return@async PttKeyOutcome.CONFIRMED
-                        }
-                    } catch (e: CancellationException) {
-                        throw e
-                    } catch (e: Exception) {
-                        Log.w("TransceiverVM", "PTT key attempt $attempt failed", e)
+            val keyed = CompletableDeferred<PttKeyOutcome>()
+            keyOutcome = keyed
+            pttKeyJob = viewModelScope.launch(Dispatchers.IO) {
+                try {
+                    val outcome = keyRigForTx(requestId)
+                    // Before the status check: TX start must not wait for it.
+                    keyed.complete(outcome)
+                    if (outcome == PttKeyOutcome.ACKED || outcome == PttKeyOutcome.CONFIRMED) {
+                        confirmRigKeyed(requestId)
                     }
-                    if (attempt < 3) delay(250L * attempt)
-                }
-                if (lastReadback == false) {
-                    Log.e("TransceiverVM", "PTT key REFUSED: rig reports PTT off after retries")
-                    PttKeyOutcome.REFUSED
-                } else {
-                    Log.e("TransceiverVM", "PTT key unconfirmed after retries (no CAT reply) — keeping TX; operator can see the rig")
-                    PttKeyOutcome.UNKNOWN
+                } finally {
+                    keyed.cancel() // Cancelled before an outcome; no effect after one.
                 }
             }
         } else if (hermesNetwork.isConnected) {
@@ -823,7 +817,7 @@ class TransceiverViewModel(application: Application) : AndroidViewModel(applicat
                 // A failed audio open must cancel ON and release PTT immediately,
                 // rather than waiting for all CAT retries before recovering RX.
                 val audioOpened = !audioSetupFailed && service.state.value.isTx
-                val outcome = if (audioOpened) keyJob?.await() ?: PttKeyOutcome.ACKED
+                val outcome = if (audioOpened) keyOutcome?.await() ?: PttKeyOutcome.ACKED
                               else PttKeyOutcome.REFUSED
                 if (requestId != txRequestId || !rxRecovery.isCurrent(session) ||
                     audioService !== service || pttKeyJob !== keyJob || txStopJob?.isActive == true) return@launch
@@ -841,6 +835,63 @@ class TransceiverViewModel(application: Application) : AndroidViewModel(applicat
             // Failed setup retains the active screen until recovery starts.
             if (!audioSetupFailed && service.state.value.isTx && txStopJob?.isActive != true) {
                 _uiState.value = _uiState.value.copy(txSwitching = false)
+            }
+        }
+    }
+
+    /** Key the rig over CAT for the over [requestId] started; see [PttKeyOutcome]. */
+    private suspend fun keyRigForTx(requestId: Long): PttKeyOutcome {
+        var lastReadback: Boolean? = null
+        for (attempt in 1..3) {
+            currentCoroutineContext().ensureActive()
+            if (!pttKeyedByApp || requestId != txRequestId) return PttKeyOutcome.REFUSED
+            try {
+                if (rigController.setPtt(true)) return PttKeyOutcome.ACKED
+                // No usable acknowledgement (timeout, "RPRT -5" from a
+                // slow CAT link, a lost reply). Ask the rig what it did
+                // before repeating the command: a slow rig has usually
+                // keyed by now.
+                lastReadback = rigController.readPtt(expected = true)
+                if (lastReadback == true) {
+                    Log.i("TransceiverVM", "PTT ON confirmed by readback after attempt $attempt")
+                    return PttKeyOutcome.CONFIRMED
+                }
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                Log.w("TransceiverVM", "PTT key attempt $attempt failed", e)
+            }
+            if (attempt < 3) delay(250L * attempt)
+        }
+        return if (lastReadback == false) {
+            Log.e("TransceiverVM", "PTT key REFUSED: rig reports PTT off after retries")
+            PttKeyOutcome.REFUSED
+        } else {
+            Log.e("TransceiverVM", "PTT key unconfirmed after retries (no CAT reply) — keeping TX; operator can see the rig")
+            PttKeyOutcome.UNKNOWN
+        }
+    }
+
+    /**
+     * rigctld acknowledging a key-on does not mean the rig is transmitting
+     * (see [RigController.confirmKeyed]), so have the rig's own status confirm
+     * it and repeat the command while it reports receive. A rig that stays in
+     * receive is shown on screen and left alone: this acts on one status
+     * reading, and ending the over is the operator's call.
+     */
+    private suspend fun confirmRigKeyed(requestId: Long) {
+        val keyed = try {
+            rigController.confirmKeyed()
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            Log.w("TransceiverVM", "PTT status check failed", e)
+            null
+        }
+        if (keyed != false) return
+        withContext(Dispatchers.Main.immediate) {
+            if (pttKeyedByApp && requestId == txRequestId) {
+                _uiState.value = _uiState.value.copy(pttStillReceiving = true)
             }
         }
     }
@@ -1103,6 +1154,7 @@ class TransceiverViewModel(application: Application) : AndroidViewModel(applicat
             outputLevelDb = -100f,
             txLevelDb = -100f,
             analogMonitor = false,
+            pttStillReceiving = false,
             txStartError = false,
             txInputError = false,
             rxRestartError = false

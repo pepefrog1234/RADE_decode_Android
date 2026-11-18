@@ -118,11 +118,18 @@ internal class RigctldTransport(
         return null
     }
 
+    /**
+     * [guard] runs under the write lock, immediately before the command would
+     * be queued; returning false sends nothing. A caller whose command is only
+     * valid while some state still holds can test and claim that state there:
+     * whatever changes it afterwards is necessarily written after this command.
+     */
     suspend fun command(
         name: String,
         args: String = "",
         timeoutMs: Long,
-        allowQueue: Boolean = false
+        allowQueue: Boolean = false,
+        guard: (() -> Boolean)? = null
     ): RigctldResponse? {
         require(name.matches(Regex("[a-z_]+")) && '\n' !in args && '\r' !in args)
         val context = currentCoroutineContext()
@@ -132,17 +139,18 @@ internal class RigctldTransport(
                 if (closed || (!allowQueue && pending.isNotEmpty())) return null
                 // Repeated OFF while its previous response is still outstanding
                 // waits for the same transaction instead of flooding rigctld.
-                val tail = pending.peekLast()
-                if (tail?.name == name && tail.args == args) tail else {
-                    // Reserve the last slot for OFF, even during a burst of
-                    // user frequency/mode changes against a slow daemon.
-                    val limit = if (name == "set_ptt" && args == "0") 8 else 7
-                    if (pending.size >= limit) return null
-                    Pending(name, args).also {
-                        pending.addLast(it)
-                        writer.write("+\\$name${if (args.isEmpty()) "" else " $args"}\n")
-                        writer.flush()
-                    }
+                val repeated = pending.peekLast()?.takeIf { it.name == name && it.args == args }
+                // Reserve the last slot for OFF, even during a burst of
+                // user frequency/mode changes against a slow daemon.
+                val limit = if (name == "set_ptt" && args == "0") 8 else 7
+                if (repeated == null && pending.size >= limit) return null
+                // Last, so a guard that claims state never does so for a
+                // command this call then declines to send.
+                if (guard != null && !guard()) return null
+                repeated ?: Pending(name, args).also {
+                    pending.addLast(it)
+                    writer.write("+\\$name${if (args.isEmpty()) "" else " $args"}\n")
+                    writer.flush()
                 }
             }
         } catch (e: CancellationException) {

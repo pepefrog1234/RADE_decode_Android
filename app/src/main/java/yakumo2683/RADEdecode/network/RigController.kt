@@ -38,6 +38,11 @@ class RigController internal constructor(
         // "set_ptt: 1;RPRT 0" is still the real answer. 1000 ms cut those off
         // and made every PTT look unacknowledged.
         private const val PTT_TIMEOUT_MS = 2500L
+        // Hamlib answers get_ptt from a 500 ms cache of the value it was last
+        // told to set (and its Kenwood backend caches IF; for as long), so a
+        // readback any sooner after a key-on only echoes the command back.
+        private const val PTT_VERIFY_SETTLE_MS = 600L
+        private const val PTT_VERIFY_REKEYS = 2
         private const val DEFAULT_PORT = 4532
     }
 
@@ -66,6 +71,16 @@ class RigController internal constructor(
     private var unconfirmedFrequencyHz: Long? = null
     private val frequencyMutex = kotlinx.coroutines.sync.Mutex()
     private val pttOperation = java.util.concurrent.atomic.AtomicLong()
+    /** The [pttOperation] that last asked for transmit. [confirmKeyed] acts
+     *  only while that is still the newest PTT command. */
+    @Volatile private var keyOnOperation = 0L
+    /** Whether this rig's PTT status tells transmit from receive, as learned on
+     *  this connection: null until a key-on has been checked, true once the
+     *  status has read "transmit", false after a key-on and its repeats only
+     *  ever read "receive". Some CAT emulations answer "receive" whatever the
+     *  rig is doing (uSDX-class firmware has a constant in that field), so a
+     *  rig is held to that answer only after it has given the other one. */
+    @Volatile private var txStatusTrusted: Boolean? = null
     /** Installed only for the Icom network tunnel. */
     var onCatUnresponsive: (() -> Unit)? = null
     /** True while audio TX or its transition is active. This must exclude an
@@ -136,6 +151,7 @@ class RigController internal constructor(
                     val transport = RigctldTransport(socket, ::transportFailed, onResponse = ::recordCatResponse)
                     connection = transport
                     requirePttOffReadback = verifyPttOff
+                    txStatusTrusted = null
                     catHealth.reset()
                     recoveryJob?.cancel()
                     recoveryJob = null
@@ -234,7 +250,8 @@ class RigController internal constructor(
         args: String = "",
         timeoutMs: Long = READ_TIMEOUT_MS,
         allowQueue: Boolean = false,
-        expectedConnection: RigctldTransport? = null
+        expectedConnection: RigctldTransport? = null,
+        guard: (() -> Boolean)? = null
     ): RigctldResponse? {
         val transport = connection ?: return null
         if (expectedConnection != null && transport !== expectedConnection) return null
@@ -242,7 +259,7 @@ class RigController internal constructor(
         // continues draining independently, and PTT can still queue an OFF.
         if (!allowQueue && (transport.hasPending || userCmdPending.get() > 0)) return null
         lastCommand = "$name $args".trim()
-        val response = transport.command(name, args, timeoutMs, allowQueue)
+        val response = transport.command(name, args, timeoutMs, allowQueue, guard)
         if (connection !== transport) return null
         if (response == null) {
             consecutiveTimeouts++
@@ -448,6 +465,7 @@ class RigController internal constructor(
         val (operation, session, verifyOff) = synchronized(lock) {
             val active = connection ?: return@withContext false
             Triple(pttOperation.incrementAndGet(), active, requirePttOffReadback)
+                .also { if (on) keyOnOperation = it.first }
         }
         val startedNs = System.nanoTime()
         Log.i(TAG, "setPtt($on) sending...")
@@ -480,6 +498,87 @@ class RigController internal constructor(
             }
         }
         acknowledged
+    }
+
+    /**
+     * Check, from the rig's own status, that the key-on it has just answered
+     * took effect, and key it again while it still reports receive.
+     *
+     * rigctld's "RPRT 0" is not that check. For Kenwood-protocol rigs (QMX,
+     * TS-480, Elecraft, TX-500 …) Hamlib 4.5.5 sends "TX;" followed by "ID;"
+     * and takes the ID reply as success — also when "TX;" never reached the
+     * rig, or the rig answered it with "?;". The app then transmits into a rig
+     * that is still receiving.
+     *
+     * A repeat is written only while that key-on is still the newest PTT
+     * command, so it can never follow a release onto the wire.
+     *
+     * @return true once the rig reports transmit; false if a rig known to
+     *   report transmit still reports receive after [rekeys] repeats (it is
+     *   left as it is); null if nothing could be concluded — the status was
+     *   unreadable or not yet [txStatusTrusted], a repeat went unanswered, or a
+     *   newer PTT command or connection took over.
+     */
+    suspend fun confirmKeyed(
+        settleMs: Long = PTT_VERIFY_SETTLE_MS,
+        rekeys: Int = PTT_VERIFY_REKEYS
+    ): Boolean? = withContext(Dispatchers.IO) {
+        val (keyOn, session) = synchronized(lock) {
+            val active = connection ?: return@withContext null
+            if (keyOnOperation != pttOperation.get()) return@withContext null
+            keyOnOperation to active
+        }
+        var operation = keyOn
+        val startedNs = System.nanoTime()
+        var repeats = 0
+        while (true) {
+            // From the answer to the key-on, or to the repeat below.
+            delay(settleMs)
+            val reported = priority {
+                rigctldPtt(sendCommand("get_ptt", timeoutMs = PTT_TIMEOUT_MS, allowQueue = true,
+                    expectedConnection = session)?.value("PTT"))
+            }
+            ensureActive()
+            val trusted = synchronized(lock) {
+                if (connection !== session || operation != pttOperation.get()) return@withContext null
+                if (reported == true) {
+                    txStatusTrusted = true
+                    _state.update { it.copy(ptt = true, error = if (it.error.startsWith("PTT ")) "" else it.error) }
+                }
+                txStatusTrusted
+            }
+            Log.i(TAG, "confirmKeyed: rig reports ${when (reported) { true -> "TX"; false -> "RX"; null -> "nothing usable" }}" +
+                " (repeats=$repeats statusTrusted=$trusted elapsedMs=${(System.nanoTime() - startedNs) / 1_000_000})")
+            if (reported != false) return@withContext reported
+            if (trusted == false) return@withContext null
+            if (repeats == rekeys) break
+            repeats++
+            Log.w(TAG, "PTT ON was acknowledged but the rig reports RX — keying again ($repeats/$rekeys)")
+            val next = operation + 1
+            var claimed = false
+            val answer = priority {
+                sendCommand("set_ptt", "1", PTT_TIMEOUT_MS, allowQueue = true, expectedConnection = session,
+                    guard = { pttOperation.compareAndSet(operation, next).also { claimed = it } })
+            }
+            ensureActive()
+            if (!claimed) return@withContext null
+            synchronized(lock) { if (pttOperation.get() == next) keyOnOperation = next }
+            // Unanswered, the next status could be Hamlib repeating this
+            // command back rather than the rig's own.
+            if (answer == null) return@withContext null
+            operation = next
+        }
+        synchronized(lock) {
+            if (connection !== session || operation != pttOperation.get()) return@withContext null
+            if (txStatusTrusted != true) {
+                txStatusTrusted = false
+                Log.w(TAG, "PTT status stayed RX through $repeats repeat(s) and has never shown TX on this " +
+                    "connection — not keying again on it until it has")
+                return@withContext null
+            }
+        }
+        Log.e(TAG, "PTT ON was acknowledged but the rig still reports RX after $repeats repeat(s)")
+        false
     }
 
     suspend fun getPtt(): Boolean = withContext(Dispatchers.IO) {
