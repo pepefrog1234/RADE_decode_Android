@@ -20,43 +20,48 @@ class TransceiverTuneHintTest {
     @get:Rule val compose = createComposeRule()
 
     private val state = mutableStateOf(TransceiverViewModel.UiState(isRunning = true, radeV2Mode = true))
+    private val sideband = mutableStateOf(RxSideband.UPPER)
+
     private fun text(id: Int, vararg args: Any): String {
         val context = InstrumentationRegistry.getInstrumentation().targetContext
         return if (args.isEmpty()) context.getString(id) else context.getString(id, *args)
     }
 
     private fun showReceiver() = compose.setContent {
-        MaterialTheme { TransceiverContent(state.value, {}, {}, {}, {}, {}) }
+        MaterialTheme { TransceiverContent(state.value, {}, {}, {}, {}, {}, rxSideband = sideband.value) }
     }
 
     private fun update(change: TransceiverViewModel.UiState.() -> TransceiverViewModel.UiState) =
         compose.runOnIdle { state.value = state.value.change() }
+
+    private fun radioOn(newSideband: RxSideband) = compose.runOnIdle { sideband.value = newSideband }
 
     @Test fun hintNamesTheDialDirectionForTheRadiosSideband() {
         showReceiver()
         compose.onNodeWithTag("tune_hint").assertDoesNotExist()
 
         // Signal too high in audio frequency: up on USB, down on LSB.
-        update { copy(mistune = 1, rxSideband = RxSideband.UPPER) }
+        update { copy(mistune = 1) }
         compose.onNodeWithTag("tune_hint").assertIsDisplayed()
         compose.onNodeWithText(text(R.string.tune_hint_up)).assertIsDisplayed()
         compose.onNodeWithText(text(R.string.tune_hint_up_detail)).assertIsDisplayed()
         compose.onNodeWithText(text(R.string.sync_search)).assertIsDisplayed()
 
-        update { copy(rxSideband = RxSideband.LOWER) }
+        radioOn(RxSideband.LOWER)
         compose.onNodeWithText(text(R.string.tune_hint_down)).assertIsDisplayed()
         compose.onNodeWithText(text(R.string.tune_hint_up)).assertDoesNotExist()
 
         // Signal too low: the other way round.
         update { copy(mistune = -1) }
         compose.onNodeWithText(text(R.string.tune_hint_up)).assertIsDisplayed()
-        update { copy(rxSideband = RxSideband.UPPER) }
+        radioOn(RxSideband.UPPER)
         compose.onNodeWithText(text(R.string.tune_hint_down)).assertIsDisplayed()
         compose.onNodeWithText(text(R.string.tune_hint_down_detail)).assertIsDisplayed()
     }
 
     @Test fun unknownSidebandIsWordedAsAudioFrequencyNotAsADialDirection() {
-        state.value = state.value.copy(mistune = 1, rxSideband = RxSideband.UNKNOWN)
+        sideband.value = RxSideband.UNKNOWN
+        state.value = state.value.copy(mistune = 1)
         showReceiver()
         compose.onNodeWithText(text(R.string.tune_hint_signal_high)).assertIsDisplayed()
         compose.onNodeWithText(text(R.string.tune_hint_signal_high_detail)).assertIsDisplayed()
@@ -69,7 +74,7 @@ class TransceiverTuneHintTest {
     }
 
     @Test fun hintDisappearsInSyncWithoutSignalInV1AndWhileNotReceiving() {
-        state.value = state.value.copy(mistune = 1, rxSideband = RxSideband.UPPER)
+        state.value = state.value.copy(mistune = 1)
         showReceiver()
         compose.onNodeWithTag("tune_hint").assertIsDisplayed()
 
@@ -84,23 +89,24 @@ class TransceiverTuneHintTest {
 
         update { copy(mistune = 1, radeV2Mode = false) }     // V1
         compose.onNodeWithTag("tune_hint").assertDoesNotExist()
-        update { copy(radeV2Mode = true, isTx = true) }      // transmitting
-        compose.onNodeWithTag("tune_hint").assertDoesNotExist()
-        update { copy(isTx = false, isRunning = false) }     // stopped
+        update { copy(radeV2Mode = true, isRunning = false) } // stopped
         compose.onNodeWithTag("tune_hint").assertDoesNotExist()
     }
 
-    @Test fun clockOffsetIsShownOnceEstimatedAndFlaggedBeyond125Ppm() {
+    @Test fun clockOffsetLineShowsWhatTheEstimateIsWorth() {
         showReceiver()
-        compose.onNodeWithTag("clock_offset").assertDoesNotExist()
-
-        update { copy(clockOffsetPpm = 37.4f) }
+        // There from the start, so the screen below it does not jump later.
         compose.onNodeWithTag("clock_offset").assertIsDisplayed()
-            .assertTextEquals(text(R.string.clock_offset, "+37"))
+            .assertTextEquals(text(R.string.clock_offset_none))
 
-        update { copy(clockOffsetPpm = -180.2f) }
-        compose.onNodeWithTag("clock_offset").assertIsDisplayed()
-            .assertTextEquals(text(R.string.clock_offset_out_of_spec, "-180"))
+        update { copy(clockOffsetPpm = 37.4f) }              // early in an over: still creeping up
+        compose.onNodeWithTag("clock_offset").assertTextEquals(text(R.string.clock_offset_preliminary, "+37"))
+
+        update { copy(clockOffsetPpm = 98.2f, clockOffsetSettled = true) }
+        compose.onNodeWithTag("clock_offset").assertTextEquals(text(R.string.clock_offset, "+98"))
+
+        update { copy(clockOffsetPpm = -180.2f, clockOffsetSettled = false) }
+        compose.onNodeWithTag("clock_offset").assertTextEquals(text(R.string.clock_offset_out_of_spec, "-180"))
 
         update { copy(radeV2Mode = false) }                  // V1 has no estimate
         compose.onNodeWithTag("clock_offset").assertDoesNotExist()

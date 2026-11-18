@@ -656,6 +656,17 @@ void AudioEngine::feedModem(const int16_t *samples8k, int count) {
     }
 }
 
+// The modem counts the indicator's 2 s hold in processed audio, so it would
+// stand for as long as no audio arrives (network audio stalled, RX input
+// paused for a keep-alive TX). Without recent modem frames there is nothing
+// to indicate.
+constexpr int64_t MISTUNE_STALE_NS = 1000000000LL;
+
+int AudioEngine::getMistune() const {
+    if (nowNs() - lastModemFrameNs_.load() > MISTUNE_STALE_NS) return 0;
+    return mistune_.load();
+}
+
 void AudioEngine::processModemFrame() {
     if (!rade_) return;
 
@@ -681,13 +692,12 @@ void AudioEngine::processModemFrame() {
     int oldSync = syncState_.exchange(newSync);
     snrEstimate_.store((int)rade_snrdB_3k_est(rade_));  // API returns float since V2 merge
     freqOffset_.store(rade_freq_offset(rade_));
-    // V2 tuning indicator and clock offset (both 0 on V1). rade_mistune() is
-    // documented as 0 in sync, but the modem refreshes it before its state
-    // machine runs: on the rade_rx() call that acquires, it still carries the
-    // direction of the vetoed attempts while rade_sync() already reports
-    // sync. Report "no indication" for that call too.
-    mistune_.store(newSync ? 0 : rade_mistune(rade_));
+    // V2 tuning indicator and clock offset (both 0 on V1). The indicator is
+    // not rade_mistune() as is: never in sync, and only once the modem has
+    // held the same direction for 3 s (tune_indicator.h explains why).
+    mistune_.store(tune_indicator_update(&tuneIndicator_, rade_mistune(rade_), newSync != 0, nin));
     clockOffsetPpm_.store(rade_clock_offset_ppm(rade_));
+    lastModemFrameNs_.store(nowNs());
 
     if (newSync != oldSync && callback_)
         callback_->onSyncStateChanged(newSync);
@@ -973,6 +983,7 @@ bool AudioEngine::initModem() {
          radeV2_.load() ? "V2 (experimental)" : "V1");
     // A new modem has no tuning indication or clock estimate: do not let the
     // previous one's last value stand until the first frame is processed.
+    tune_indicator_reset(&tuneIndicator_);
     mistune_.store(0);
     clockOffsetPpm_.store(0.0f);
 
@@ -1804,10 +1815,10 @@ void AudioEngine::feedNetRx(const int16_t *pcm, int count) {
     const int64_t now = nowNs();
     if (now - rxPlaybackLogTime_ >= 5000000000LL) {
         rxPlaybackLogTime_ = now;
-        LOGI("Net RX playback: queued=%dms dropped=%llums monitor=%d",
+        LOGI("Net RX playback: queued=%dms dropped=%llums monitor=%d sync=%d mistune=%d clk=%.0fppm",
              playbackRing_.availableToRead() * 1000 / SPEECH_SAMPLE_RATE,
              (unsigned long long)(rxPlaybackDropped_.load() * 1000 / SPEECH_SAMPLE_RATE),
-             analogMonitor_.load());
+             analogMonitor_.load(), syncState_.load(), mistune_.load(), clockOffsetPpm_.load());
     }
 }
 

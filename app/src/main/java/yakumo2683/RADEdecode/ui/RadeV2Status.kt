@@ -40,7 +40,7 @@ private val SSB_MODE = Regex("(?:PKT|ECSS)?(USB|LSB)(?:-D[0-9])?")
  * @param rigMode the Hamlib mode name last read from the rig ("" before the
  *   first read).
  */
-internal fun rxSideband(hermesDirect: Boolean, rigConnected: Boolean, rigMode: String): RxSideband {
+internal fun rxSidebandOf(hermesDirect: Boolean, rigConnected: Boolean, rigMode: String): RxSideband {
     if (hermesDirect) return RxSideband.UPPER
     if (!rigConnected) return RxSideband.UNKNOWN
     return when (SSB_MODE.matchEntire(rigMode.trim().uppercase())?.groupValues?.get(1)) {
@@ -86,17 +86,37 @@ internal fun tuneHintFor(
  */
 internal const val CLOCK_OFFSET_SPEC_PPM = 125f
 
-/**
- * Whether the receiver screen shows the V2 clock offset. The modem reports
- * exactly 0 until its timing loop has moved after an acquisition (and always
- * on V1), which is "no estimate" rather than a perfect match.
- */
-internal fun shouldShowClockOffset(radeV2: Boolean, receiving: Boolean, clockOffsetPpm: Float): Boolean =
-    radeV2 && receiving && clockOffsetPpm.isFinite() && clockOffsetPpm != 0f
+/** What the receiver screen shows on its V2 clock offset line. */
+enum class ClockOffsetDisplay {
+    /** Not V2, or not receiving: no line at all. */
+    HIDDEN,
+    /** No estimate yet. The line stays, so the screen below it does not jump. */
+    NONE,
+    /** An estimate from less than 45 s of sync: it still reads low. */
+    PRELIMINARY,
+    SETTLED,
+    /** Beyond [CLOCK_OFFSET_SPEC_PPM]. The estimate approaches the real offset
+     *  from below, so this is shown whether or not it has settled. */
+    OUT_OF_SPEC
+}
 
-/** True when the estimated clock offset is outside what V2 is specified for. */
-internal fun clockOffsetOutOfSpec(clockOffsetPpm: Float): Boolean =
-    abs(clockOffsetPpm) > CLOCK_OFFSET_SPEC_PPM
+/**
+ * The state of the V2 clock offset line. The modem reports exactly 0 until
+ * its timing loop has moved after an acquisition (and always on V1), which
+ * is "no estimate" rather than a perfect match.
+ */
+internal fun clockOffsetDisplayFor(
+    radeV2: Boolean,
+    receiving: Boolean,
+    clockOffsetPpm: Float,
+    settled: Boolean
+): ClockOffsetDisplay = when {
+    !radeV2 || !receiving -> ClockOffsetDisplay.HIDDEN
+    !clockOffsetPpm.isFinite() || clockOffsetPpm == 0f -> ClockOffsetDisplay.NONE
+    abs(clockOffsetPpm) > CLOCK_OFFSET_SPEC_PPM -> ClockOffsetDisplay.OUT_OF_SPEC
+    settled -> ClockOffsetDisplay.SETTLED
+    else -> ClockOffsetDisplay.PRELIMINARY
+}
 
 /** Whole ppm with an explicit sign ("+37", "-180"), and a plain "0". */
 internal fun formatClockOffsetPpm(clockOffsetPpm: Float): String {

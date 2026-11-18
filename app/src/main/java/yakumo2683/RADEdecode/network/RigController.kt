@@ -140,7 +140,13 @@ class RigController internal constructor(
                     recoveryJob?.cancel()
                     recoveryJob = null
                     consecutiveTimeouts = 0
-                    _state.update { it.copy(connected = true, host = host, port = port, error = "") }
+                    // The mode is not carried over: the radio may be on another
+                    // band and sideband when a link returns, and the receiver
+                    // screen draws the V2 tuning arrow from it. It reads "" until
+                    // the first get_mode on this connection succeeds.
+                    _state.update {
+                        it.copy(connected = true, host = host, port = port, error = "", mode = "", bandwidth = 0)
+                    }
                     lastConnectMs = System.currentTimeMillis()
                     Log.i(TAG, "Connected to rigctld at $host:$port (ordered ERP)")
                     transport.start()

@@ -19,6 +19,7 @@
 #include <cstdio>
 
 #include "audio_ring_buffer.h"
+#include "tune_indicator.h"
 #include "tx_input_health.h"
 
 extern "C" {
@@ -162,13 +163,15 @@ public:
     int getSyncState() const { return syncState_.load(); }
     int getSnrEstimate() const { return snrEstimate_.load(); }
     float getFreqOffset() const { return freqOffset_.load(); }
-    /** RADE V2 tuning indicator (rade_mistune): +1 = the received signal is
-     *  too high in audio frequency, -1 = too low, 0 = no indication (no signal,
-     *  in sync, not enough evidence yet). Non-zero only while the V2 receiver
-     *  refuses to sync on a signal about 31-94 Hz off frequency. Always 0 on
-     *  V1. On an SSB radio "too high" is corrected by tuning the receiver up
-     *  on USB and down on LSB. */
-    int getMistune() const { return mistune_.load(); }
+    /** RADE V2 tuning indicator: +1 = the received signal is too high in
+     *  audio frequency, -1 = too low, 0 = no indication (no signal, in sync,
+     *  not enough evidence yet, or no audio reaching the modem). It is
+     *  rade_mistune() once the modem has held the same direction for 3 s (see
+     *  tune_indicator.h), so it shows about 4.5 s after a V2 signal about
+     *  31-94 Hz off frequency starts and clears about 2 s after it ends.
+     *  Always 0 on V1. On an SSB radio "too high" is corrected by tuning the
+     *  receiver up on USB and down on LSB. */
+    int getMistune() const;
     /** RADE V2 Tx/Rx sample clock offset in ppm (rade_clock_offset_ppm), the
      *  combined offset of both stations' sound cards; positive when the Rx
      *  clock is the faster one. Updated while in sync (about 3/4 of the real
@@ -266,6 +269,8 @@ private:
     std::atomic<float> freqOffset_{0.0f};
     std::atomic<int> mistune_{0};              // V2 tuning indicator, see getMistune()
     std::atomic<float> clockOffsetPpm_{0.0f};  // V2 clock offset, see getClockOffsetPpm()
+    tune_indicator tuneIndicator_{};           // confirmation state, modem thread only
+    std::atomic<int64_t> lastModemFrameNs_{0}; // when processModemFrame last ran
     std::atomic<bool> unprocessedRejected_{false};
     std::atomic<bool> radeV2_{false};
     /* Analog SSB monitor: when set, feedModem routes the 8 kHz channel audio

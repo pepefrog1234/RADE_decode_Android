@@ -38,6 +38,9 @@ class TransceiverLayoutTest {
                 unprocessedRejected = true, pttControlError = true, rxRestartError = true,
                 radeV2Mode = true, mistune = 1, clockOffsetPpm = 180f)
         }
+        // The RADE V2 hint and clock line are part of what must not displace the controls.
+        compose.onNodeWithTag("tune_hint").assertExists()
+        compose.onNodeWithTag("clock_offset").assertExists()
         compose.onNodeWithTag("tx_control").assertIsDisplayed().performClick()
         compose.onNodeWithTag("start_stop_control").assertIsDisplayed().performClick()
         assertEquals(before, compose.onNodeWithTag("tx_control").fetchSemanticsNode().boundsInRoot)

@@ -8,13 +8,17 @@
  * silently turn the hint around. This check generates signals with rade_tx(),
  * detunes or resamples them the way a mistuned SSB receiver or an off-rate
  * sound card would, and feeds them to rade_rx() through the same int16
- * conversion and the same status reads as AudioEngine::processModemFrame.
+ * conversion as AudioEngine::processModemFrame and the app's own indicator
+ * logic (tune_indicator.h: nothing in sync, a direction only once the modem
+ * has held it for 3 s).
  *
  * Exit code 0 = every scenario behaved as the UI assumes:
  *   - V2 signal +45 Hz / -45 Hz off: never syncs, indicator +1 / -1 only,
- *     appears within 3 s, clears within 3.5 s after the signal ends
+ *     shown 3 s after the modem first reports it, cleared within 3.5 s after
+ *     the signal ends
  *   - on frequency, noise only, V1: no indication
  *   - retuned into range: syncs, and no indication from then on
+ *   - a direction the modem reports for less than 3 s is never shown
  *   - Rx clock 100 ppm fast / slow: estimate positive / negative, held
  *     after the over
  */
@@ -24,6 +28,7 @@
 #include <stdint.h>
 #include <math.h>
 #include "rade_api.h"
+#include "tune_indicator.h"   /* the app's own header, app/src/main/cpp */
 
 #define FS        8000.0
 #define LEAD_IN_S 1.0     /* silence before the signal */
@@ -53,6 +58,7 @@ typedef struct {
     int    saw_minus;         /* ... or -1 */
     double first_ind_s;       /* first indication, seconds after the signal starts */
     double last_ind_s;        /* last indication, seconds after the signal starts */
+    double first_raw_s;       /* first non-zero rade_mistune(), same time base */
     double signal_end_s;
     int    ind_before_signal; /* indication during the lead-in silence */
     int    ind_after_sync;    /* indication on any call after the first sync */
@@ -75,16 +81,10 @@ static double lcg_gauss(void) {
     return sqrt(-2.0 * log(u)) * cos(2.0 * M_PI * lcg_uniform());
 }
 
-/* The tuning indicator exactly as AudioEngine::processModemFrame stores it:
- * rade_mistune(), but "no indication" whenever the receiver is in sync. */
-static int app_mistune(struct rade *r) {
-    return rade_sync(r) ? 0 : rade_mistune(r);
-}
-
 static result run(const scenario *sc) {
     result res;
     memset(&res, 0, sizeof(res));
-    res.sync_at_s = res.first_ind_s = res.last_ind_s = -1.0;
+    res.sync_at_s = res.first_ind_s = res.last_ind_s = res.first_raw_s = -1.0;
     lcg_state = 20261117u;
 
     int flags = RADE_USE_C_ENCODER | RADE_USE_C_DECODER | RADE_VERBOSE_0
@@ -155,7 +155,10 @@ static result run(const scenario *sc) {
     }
 
     /* Receive exactly like the app: rade_nin() samples per call, int16 scaled
-       by RADE_RX_REAL_SCALE into the real part, then the status reads. */
+       by RADE_RX_REAL_SCALE into the real part, then the status reads and the
+       indicator update AudioEngine::processModemFrame makes. */
+    tune_indicator indicator;
+    tune_indicator_reset(&indicator);
     float *featOut = calloc(nFeat > 0 ? nFeat : 1, sizeof(float));
     float *eooOut = calloc(nEooBits > 0 ? nEooBits : 1, sizeof(float));
     RADE_COMP *rxIn = calloc(ninMax, sizeof(RADE_COMP));
@@ -175,8 +178,12 @@ static result run(const scenario *sc) {
         double t = (double)(pos - leadIn) / FS;
         int sync = rade_sync(r) != 0;
         int raw = rade_mistune(r);
-        ind = app_mistune(r);
-        if (raw) { res.raw_nonzero++; if (sync) res.raw_in_sync++; }
+        ind = tune_indicator_update(&indicator, raw, sync, nin);
+        if (raw) {
+            res.raw_nonzero++;
+            if (sync) res.raw_in_sync++;
+            if (res.first_raw_s < 0.0) res.first_raw_s = t;
+        }
         /* Before the indication is judged: the call that acquires counts as
            "in sync", which is exactly where the library still reports the
            old direction. */
@@ -220,13 +227,15 @@ static result report(const scenario *sc) {
     if (res.first_ind_s >= 0.0)
         fprintf(stderr, " (from %.2f s to %.2f s; signal ends at %.2f s)",
                 res.first_ind_s, res.last_ind_s, res.signal_end_s);
+    if (res.first_raw_s >= 0.0)
+        fprintf(stderr, ", rade_mistune() from %.2f s", res.first_raw_s);
     fprintf(stderr, ", rade_mistune()!=0 while in sync: %ld call%s, clock=%.1f ppm\n",
             res.raw_in_sync, res.raw_in_sync == 1 ? "" : "s", (double)res.clock_ppm);
     return res;
 }
 
 /* A V2 signal the receiver must refuse to sync on, with the indicator
-   pointing one way only, appearing and clearing in the documented time. */
+   pointing one way only, appearing and clearing when the app promises. */
 static void expect_mistuned(const result *res, int direction) {
     expect(!res->ever_sync, "receiver never syncs");
     if (direction > 0) {
@@ -237,8 +246,10 @@ static void expect_mistuned(const result *res, int direction) {
         expect(!res->saw_plus, "indicator never reports +1");
     }
     expect(!res->ind_before_signal, "no indication before the signal starts");
-    expect(res->first_ind_s > 0.0 && res->first_ind_s <= 3.0,
-           "indication appears within 3 s of the signal starting");
+    expect(res->first_raw_s > 0.0 && res->first_raw_s <= 3.0,
+           "rade_mistune() reports it within 3 s of the signal starting");
+    expect(res->first_ind_s >= res->first_raw_s + 2.9 && res->first_ind_s <= res->first_raw_s + 3.1,
+           "indication is shown once the modem has held that direction for 3 s");
     expect(res->last_ind_s > res->signal_end_s - 0.1
                && res->last_ind_s <= res->signal_end_s + 3.5,
            "indication lasts to the end of the signal and clears within 3.5 s");
@@ -249,18 +260,18 @@ int main(void) {
     result res;
 
     scenario high = { .name = "V2 signal 45 Hz too high",
-                      .v2 = 1, .signal_s = 6.0, .offset_hz = 45.0 };
+                      .v2 = 1, .signal_s = 8.0, .offset_hz = 45.0 };
     res = report(&high);
     expect_mistuned(&res, +1);
 
     scenario low = { .name = "V2 signal 45 Hz too low",
-                     .v2 = 1, .signal_s = 6.0, .offset_hz = -45.0 };
+                     .v2 = 1, .signal_s = 8.0, .offset_hz = -45.0 };
     res = report(&low);
     expect_mistuned(&res, -1);
 
     /* Phone microphone levels are low; the receiver's input AGC covers it. */
     scenario quiet = { .name = "V2 signal 45 Hz too low, 30 dB below nominal level",
-                       .v2 = 1, .signal_s = 6.0, .offset_hz = -45.0, .level_db = -30.0 };
+                       .v2 = 1, .signal_s = 8.0, .offset_hz = -45.0, .level_db = -30.0 };
     res = report(&quiet);
     expect_mistuned(&res, -1);
 
@@ -270,15 +281,25 @@ int main(void) {
     expect(res.ever_sync, "receiver syncs");
     expect(!res.saw_plus && !res.saw_minus, "indicator stays 0");
 
-    /* The operator follows the hint: 45 Hz too high for 4 s, then in range. */
-    scenario retune = { .name = "V2 signal 45 Hz too high, retuned onto frequency after 4 s",
-                        .v2 = 1, .signal_s = 8.0, .offset_hz = 45.0,
-                        .retune = 1, .retune_at_s = 4.0, .retune_hz = 0.0 };
+    /* The operator follows the hint: 45 Hz too high for 7 s, then one step of
+       60 Hz in the indicated direction (the hint's "about 60 Hz"). */
+    scenario retune = { .name = "V2 signal 45 Hz too high, receiver tuned up 60 Hz after 7 s",
+                        .v2 = 1, .signal_s = 12.0, .offset_hz = 45.0,
+                        .retune = 1, .retune_at_s = 7.0, .retune_hz = -15.0 };
     res = report(&retune);
     expect(res.saw_plus && !res.saw_minus, "indicator reports +1 only");
-    expect(res.first_ind_s > 0.0 && res.first_ind_s < 4.0, "indication appears before the retune");
-    expect(res.ever_sync && res.sync_at_s > 4.0, "receiver syncs after the retune");
+    expect(res.first_ind_s > 0.0 && res.first_ind_s < 7.0, "indication appears before the retune");
+    expect(res.ever_sync && res.sync_at_s > 7.0 && res.sync_at_s < 8.0, "receiver syncs within 1 s of the retune");
     expect(!res.ind_after_sync, "no indication from the moment of sync on");
+
+    /* A direction the modem holds for less than 3 s is not shown: a 2 s
+       signal has rade_mistune() non-zero from about 1.3 s until its 2 s hold
+       runs out at about 3.9 s, which is 2.6 s. */
+    scenario brief = { .name = "V2 signal 45 Hz too high for 2 s only",
+                       .v2 = 1, .signal_s = 2.0, .offset_hz = 45.0 };
+    res = report(&brief);
+    expect(res.raw_nonzero > 0, "rade_mistune() does report it");
+    expect(!res.saw_plus && !res.saw_minus, "indicator stays 0");
 
     scenario noise = { .name = "V2 receiver, noise only",
                        .v2 = 1, .noise_rms = 2000.0, .tail_s = 10.0 };

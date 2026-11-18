@@ -128,10 +128,11 @@ class AudioBridge private constructor(
 
     /** RADE V2 tuning indicator: +1 when the received signal is too high in
      *  audio frequency, -1 when too low, 0 when there is no indication (no
-     *  signal, in sync, or not enough evidence yet). Non-zero only while the
-     *  V2 receiver refuses to sync on a signal about 31–94 Hz off frequency;
-     *  appears about 1.5 s after the signal starts and is held about 2 s
-     *  after it ends. Always 0 on V1. */
+     *  signal, in sync, not enough evidence yet, or no audio reaching the
+     *  modem). Non-zero only while the V2 receiver refuses to sync on a signal
+     *  about 31–94 Hz off frequency, and only once the modem has held the same
+     *  direction for 3 s: it appears about 4.5 s after the signal starts and
+     *  clears about 2 s after it ends. Always 0 on V1. */
     val mistune: Int get() = nativeGetMistune()
 
     /** RADE V2 Tx/Rx sample clock offset in ppm — the combined offset of both

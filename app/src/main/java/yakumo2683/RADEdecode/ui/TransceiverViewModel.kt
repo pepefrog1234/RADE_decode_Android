@@ -12,11 +12,13 @@ import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.flow.stateIn
 import yakumo2683.RADEdecode.AudioBridge
 import yakumo2683.RADEdecode.RxOutputTester
 import yakumo2683.RADEdecode.location.LocationTracker
@@ -94,6 +96,20 @@ class TransceiverViewModel(application: Application) : AndroidViewModel(applicat
     private val vbanNetwork = VbanNetworkManager(application)
     val vbanState: StateFlow<VbanNetworkManager.State> = vbanNetwork.state
 
+    /**
+     * Sideband of the receiver the modem listens to: decides which way the
+     * RADE V2 tuning hint points. Known from the rig's CAT mode, or fixed for
+     * a directly connected Hermes-Lite 2, whose I/Q the app itself
+     * demodulates as USB; unknown otherwise. A flow of its own rather than a
+     * [UiState] field: with this single writer, a concurrent copy() of the UI
+     * state cannot lose a sideband change and leave the arrow reversed.
+     */
+    val rxSideband: StateFlow<RxSideband> = rigController.state
+        .combine(hermesNetwork.state) { rs, hs ->
+            rxSidebandOf(hermesDirect = hs.connected, rigConnected = rs.connected, rigMode = rs.mode)
+        }
+        .stateIn(viewModelScope, SharingStarted.Eagerly, RxSideband.UNKNOWN)
+
     data class UiState(
         val isRunning: Boolean = false,    // RX is active
         val leCommActive: Boolean = false, // LE Audio (LC3) communication session active
@@ -111,7 +127,7 @@ class TransceiverViewModel(application: Application) : AndroidViewModel(applicat
         val freqOffsetHz: Float = 0f,
         val mistune: Int = 0,                // RADE V2 tuning indicator: +1 signal too high in audio frequency, -1 too low, 0 none
         val clockOffsetPpm: Float = 0f,      // RADE V2 Tx/Rx sound-card clock offset in ppm (0 = no estimate; always 0 on V1)
-        val rxSideband: RxSideband = RxSideband.UNKNOWN, // receiver sideband (CAT mode / HL2), decides which way the tuning hint points
+        val clockOffsetSettled: Boolean = false, // that estimate had 45 s of sync to settle; before, it reads low
         val inputLevelDb: Float = -100f,
         val outputLevelDb: Float = -100f,
         val txLevelDb: Float = -100f,
@@ -142,13 +158,14 @@ class TransceiverViewModel(application: Application) : AndroidViewModel(applicat
 
         val isSynced: Boolean get() = syncState == 2
 
-        /** RADE V2 "tune up / tune down" hint shown next to the sync indicator. */
-        val tuneHint: TuneHint
-            get() = tuneHintFor(radeV2Mode, isRunning && !isTx, isSynced, mistune, rxSideband)
+        /** RADE V2 "tune up / tune down" hint shown under the sync indicator,
+         *  for a receiver on [sideband] ([TransceiverViewModel.rxSideband]). */
+        fun tuneHint(sideband: RxSideband): TuneHint =
+            tuneHintFor(radeV2Mode, isRunning && !isTx, isSynced, mistune, sideband)
 
-        /** True when the RADE V2 clock offset is worth showing (an estimate exists). */
-        val showClockOffset: Boolean
-            get() = shouldShowClockOffset(radeV2Mode, isRunning && !isTx, clockOffsetPpm)
+        /** What the RADE V2 clock offset line under the SNR/FREQ cards shows. */
+        val clockOffsetDisplay: ClockOffsetDisplay
+            get() = clockOffsetDisplayFor(radeV2Mode, isRunning && !isTx, clockOffsetPpm, clockOffsetSettled)
     }
 
     private val _uiState = MutableStateFlow(UiState())
@@ -358,20 +375,6 @@ class TransceiverViewModel(application: Application) : AndroidViewModel(applicat
                     }
                 }
             }
-        }
-
-        // Receiver sideband → which way the RADE V2 tuning hint points. Known
-        // from the rig's CAT mode, or fixed for a directly connected HL2,
-        // whose I/Q the app itself demodulates as USB; unknown without CAT.
-        viewModelScope.launch {
-            rigController.state
-                .combine(hermesNetwork.state) { rs, hs ->
-                    rxSideband(hermesDirect = hs.connected, rigConnected = rs.connected, rigMode = rs.mode)
-                }
-                .distinctUntilChanged()
-                .collect { sideband ->
-                    _uiState.value = _uiState.value.copy(rxSideband = sideband)
-                }
         }
 
         // Hermes-Lite 2 state → forward frequency changes like the rigctld path.
@@ -1126,6 +1129,7 @@ class TransceiverViewModel(application: Application) : AndroidViewModel(applicat
             freqOffsetHz = 0f,
             mistune = 0,
             clockOffsetPpm = 0f,
+            clockOffsetSettled = false,
             inputLevelDb = -100f,
             outputLevelDb = -100f,
             txLevelDb = -100f,
@@ -2039,6 +2043,7 @@ class TransceiverViewModel(application: Application) : AndroidViewModel(applicat
                     freqOffsetHz = svcState.freqOffsetHz,
                     mistune = svcState.mistune,
                     clockOffsetPpm = svcState.clockOffsetPpm,
+                    clockOffsetSettled = svcState.clockOffsetSettled,
                     inputLevelDb = svcState.inputLevelDb,
                     outputLevelDb = svcState.outputLevelDb,
                     txLevelDb = svcState.txLevelDb,

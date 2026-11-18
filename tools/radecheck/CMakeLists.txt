@@ -86,7 +86,7 @@ target_link_libraries(loopback PRIVATE rade m)
 # V2 tuning indicator + clock offset through the app's int16 conversion and
 # status reads (AudioEngine::processModemFrame); see the header comment.
 add_executable(tunecheck tunecheck.c)
-target_include_directories(tunecheck PRIVATE ${CPP_DIR}/radae)
+target_include_directories(tunecheck PRIVATE ${CPP_DIR}/radae ${CPP_DIR})
 target_link_libraries(tunecheck PRIVATE rade m)
 
 # Full speech A/B: 16k wav → lpcnet features → rade tx/rx → FARGAN → wav,

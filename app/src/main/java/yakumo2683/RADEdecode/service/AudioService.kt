@@ -125,12 +125,15 @@ class AudioService : LifecycleService() {
         val snrDb: Int = 0,
         val freqOffsetHz: Float = 0f,
         /** RADE V2 tuning indicator ([AudioBridge.mistune]): +1 = received
-         *  signal too high in audio frequency, -1 = too low, 0 = none.
-         *  Always 0 on V1. */
+         *  signal too high in audio frequency, -1 = too low, 0 = none. Already
+         *  confirmed by the engine (same direction for 3 s). Always 0 on V1. */
         val mistune: Int = 0,
         /** RADE V2 Tx/Rx sample clock offset in ppm
          *  ([AudioBridge.clockOffsetPpm]); 0 on V1 and until the first sync. */
         val clockOffsetPpm: Float = 0f,
+        /** That estimate comes from at least 45 s of uninterrupted sync
+         *  ([ClockOffsetSettling]); before that it still reads low. */
+        val clockOffsetSettled: Boolean = false,
         val inputLevelDb: Float = -100f,
         val outputLevelDb: Float = -100f,
         val txLevelDb: Float = -100f,
@@ -1885,6 +1888,9 @@ class AudioService : LifecycleService() {
     private fun handleSyncChange(newState: Int) {
         // Always update UI state regardless of session (atomic update)
         _state.update { it.copy(syncState = newState) }
+        // Every acquisition restarts the modem's clock offset estimate, also
+        // one that falls between two polls of the status loop.
+        if (newState == AudioBridge.SYNC_SYNCED) rxAcquired.set(true)
 
         // Log to DB only if we have an active session
         val session = currentSession ?: return
@@ -1931,9 +1937,14 @@ class AudioService : LifecycleService() {
 
     /* ── Polling ─────────────────────────────────────────────── */
 
+    /** Set by the sync callback (modem thread), consumed by the status loop. */
+    private val rxAcquired = java.util.concurrent.atomic.AtomicBoolean(false)
+
     private fun startPolling() {
+        rxAcquired.set(false)
         pollingJob = lifecycleScope.launch {
             var lastSpectrumFrame = 0L
+            val clockSettling = ClockOffsetSettling()
             while (isActive) {
                 val bridge = audioBridge ?: break
                 // Power-save mode: skip the native FFT entirely — it's the most
@@ -1975,6 +1986,9 @@ class AudioService : LifecycleService() {
                 val freq = bridge.freqOffset
                 val mistune = bridge.mistune
                 val clockPpm = bridge.clockOffsetPpm
+                val clockSettled = clockSettling.poll(
+                    isSynced, rxAcquired.getAndSet(false), android.os.SystemClock.elapsedRealtime()
+                )
                 val inLvl = bridge.inputLevel
                 val outLvl = if (rxAudioTrack != null) rxJavaOutputLevelDb else bridge.outputLevel
                 val cs = bridge.lastCallsign
@@ -1989,6 +2003,7 @@ class AudioService : LifecycleService() {
                     freqOffsetHz = freq,
                     mistune = mistune,
                     clockOffsetPpm = clockPpm,
+                    clockOffsetSettled = clockSettled,
                     inputLevelDb = inLvl,
                     outputLevelDb = outLvl,
                     // Display sticks until a NEW callsign decodes: a fresh

@@ -52,6 +52,7 @@ import yakumo2683.RADEdecode.ui.theme.*
 @Composable
 fun TransceiverScreen(viewModel: TransceiverViewModel = viewModel()) {
     val state by viewModel.uiState.collectAsState()
+    val rxSideband by viewModel.rxSideband.collectAsState()
     val context = LocalContext.current
 
     var hasAudioPermission by remember {
@@ -67,6 +68,7 @@ fun TransceiverScreen(viewModel: TransceiverViewModel = viewModel()) {
 
     TransceiverContent(
         state = state,
+        rxSideband = rxSideband,
         onToggleAnalogMonitor = viewModel::toggleAnalogMonitor,
         onToggleTx = { if (state.isTx) viewModel.switchToRx() else viewModel.switchToTx() },
         onHoldPress = viewModel::switchToTx,
@@ -92,7 +94,9 @@ internal fun TransceiverContent(
     onHoldPress: () -> Unit,
     onHoldRelease: () -> Unit,
     onStartStop: () -> Unit,
-    modifier: Modifier = Modifier
+    modifier: Modifier = Modifier,
+    /** Sideband of the receiver, for the direction of the RADE V2 tuning hint. */
+    rxSideband: RxSideband = RxSideband.UNKNOWN
 ) {
     // Engine is doing something — including the TX→RX hand-over (EOO drain +
     // RF tail + PTT release), during which neither flag is set for ~0.3–0.5 s.
@@ -116,7 +120,7 @@ internal fun TransceiverContent(
             if (state.isTx) {
                 TxHeader()
             } else {
-                SyncHeader(state)
+                SyncHeader(state, rxSideband)
             }
             if (state.pttControlError) {
                 Text(stringResource(R.string.ptt_control_failed), color = Red400, fontSize = 12.sp)
@@ -140,9 +144,12 @@ internal fun TransceiverContent(
                     InfoCard(stringResource(R.string.label_snr), "${state.snrDb}", stringResource(R.string.unit_db), Modifier.weight(1f))
                     InfoCard(stringResource(R.string.label_freq), String.format("%.1f", state.freqOffsetHz), stringResource(R.string.unit_hz), Modifier.weight(1f))
                 }
-                // RADE V2 only: Tx/Rx sound-card clock offset, once the modem has an estimate.
-                if (state.showClockOffset) {
-                    ClockOffsetLine(state.clockOffsetPpm)
+                // RADE V2 only: Tx/Rx sound-card clock offset. The line is there
+                // from the start (with a dash) so nothing below it moves when
+                // an estimate appears or restarts with the next over.
+                val clockOffsetDisplay = state.clockOffsetDisplay
+                if (clockOffsetDisplay != ClockOffsetDisplay.HIDDEN) {
+                    ClockOffsetLine(clockOffsetDisplay, state.clockOffsetPpm)
                 }
             }
 
@@ -267,7 +274,7 @@ private fun hasRecordAudioPermission(context: android.content.Context): Boolean 
 /* ── Sync Header (RX) ────────────────────────────────────────── */
 
 @Composable
-private fun SyncHeader(state: TransceiverViewModel.UiState) {
+private fun SyncHeader(state: TransceiverViewModel.UiState, rxSideband: RxSideband) {
     val syncColor by animateColorAsState(
         targetValue = when (state.syncState) {
             2 -> GreenBright
@@ -315,7 +322,7 @@ private fun SyncHeader(state: TransceiverViewModel.UiState) {
         }
 
         // RADE V2: a signal is there but too far off frequency to sync on.
-        val tuneHint = state.tuneHint
+        val tuneHint = state.tuneHint(rxSideband)
         if (tuneHint != TuneHint.NONE) {
             Spacer(Modifier.height(8.dp))
             TuneHintLine(tuneHint)
@@ -406,16 +413,19 @@ private fun TuneHintLine(hint: TuneHint) {
 /* ── RADE V2 clock offset ────────────────────────────────────── */
 
 /** Tx/Rx sound-card clock offset estimated by the V2 receiver. Shown dim as
- *  plain information; amber once it is outside what V2 is specified for. */
+ *  plain information — marked preliminary until the estimate has had time to
+ *  settle — and amber once it is outside what V2 is specified for. */
 @Composable
-private fun ClockOffsetLine(clockOffsetPpm: Float) {
-    val outOfSpec = clockOffsetOutOfSpec(clockOffsetPpm)
+private fun ClockOffsetLine(display: ClockOffsetDisplay, clockOffsetPpm: Float) {
+    val ppm = formatClockOffsetPpm(clockOffsetPpm)
     Text(
-        text = stringResource(
-            if (outOfSpec) R.string.clock_offset_out_of_spec else R.string.clock_offset,
-            formatClockOffsetPpm(clockOffsetPpm)
-        ),
-        color = if (outOfSpec) Amber400 else OnSurfaceDim,
+        text = when (display) {
+            ClockOffsetDisplay.NONE -> stringResource(R.string.clock_offset_none)
+            ClockOffsetDisplay.PRELIMINARY -> stringResource(R.string.clock_offset_preliminary, ppm)
+            ClockOffsetDisplay.OUT_OF_SPEC -> stringResource(R.string.clock_offset_out_of_spec, ppm)
+            else -> stringResource(R.string.clock_offset, ppm)
+        },
+        color = if (display == ClockOffsetDisplay.OUT_OF_SPEC) Amber400 else OnSurfaceDim,
         fontSize = 11.sp,
         lineHeight = 14.sp,
         textAlign = TextAlign.Center,

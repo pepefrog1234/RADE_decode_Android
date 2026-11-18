@@ -47,6 +47,35 @@ class RigctldTransportTest {
         }
     }
 
+    /** The receiver screen draws the RADE V2 tuning arrow from the mode: the
+     *  radio may be on another band and sideband when a link comes back. */
+    @Test fun newConnectionDoesNotInheritThePreviousSessionsMode() = runBlocking {
+        FakeRig { input, output ->
+            assertEquals("+\\get_mode", input.readLine())
+            output.print("get_mode:\nMode: USB\nPassband: 2400\nRPRT 0\n"); output.flush()
+            assertNull(input.readLine())
+        }.use { oldRig ->
+            FakeRig { input, output ->
+                assertEquals("+\\get_mode", input.readLine())
+                output.print("get_mode:\nMode: LSB\nPassband: 2400\nRPRT 0\n"); output.flush()
+            }.use { newRig ->
+                val controller = RigController(pollingEnabled = false)
+                try {
+                    controller.connect("127.0.0.1", oldRig.port)
+                    assertEquals("USB" to 2400, controller.getMode())
+
+                    controller.connect("127.0.0.1", newRig.port)
+                    assertTrue(controller.state.value.connected)
+                    assertEquals("Mode must be unknown until it is read again", "", controller.state.value.mode)
+                    assertEquals(0, controller.state.value.bandwidth)
+                    assertEquals("LSB" to 2400, controller.getMode())
+                    oldRig.checkFinished()
+                    newRig.checkFinished()
+                } finally { controller.destroy() }
+            }
+        }
+    }
+
     @Test fun freshFrequencyProbeCannotFollowAReplacementConnection() = runBlocking {
         val oldSeen = CompletableDeferred<Unit>()
         FakeRig { input, _ ->

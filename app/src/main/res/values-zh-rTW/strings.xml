@@ -31,15 +31,17 @@
     <string name="analog_monitor_hint">正在直接播放接收音訊 — 發射前可確認頻率是否被其他 SSB 通聯佔用。\n監聽期間 RADE 解碼語音暫停（同步指示仍有效）。再次點按返回 RADE 解碼。</string>
     <!-- RADE V2 調諧提示（rade_mistune）與時脈偏差，顯示在接收畫面 -->
     <string name="tune_hint_up">頻率往上調</string>
-    <string name="tune_hint_up_detail">訊號頻率有偏差 — 請調高電台的頻率。</string>
+    <string name="tune_hint_up_detail">訊號頻率有偏差 — 請把電台頻率調高約 60 Hz。</string>
     <string name="tune_hint_down">頻率往下調</string>
-    <string name="tune_hint_down_detail">訊號頻率有偏差 — 請調低電台的頻率。</string>
+    <string name="tune_hint_down_detail">訊號頻率有偏差 — 請把電台頻率調低約 60 Hz。</string>
     <string name="tune_hint_signal_high">訊號頻率偏高</string>
-    <string name="tune_hint_signal_high_detail">USB 把頻率往上調，LSB 往下調。</string>
+    <string name="tune_hint_signal_high_detail">約 60 Hz：USB 往上調，LSB 往下調。</string>
     <string name="tune_hint_signal_low">訊號頻率偏低</string>
-    <string name="tune_hint_signal_low_detail">USB 把頻率往下調，LSB 往上調。</string>
-    <string name="clock_offset">收發兩端聲卡時脈偏差：%1$s ppm</string>
-    <string name="clock_offset_out_of_spec">收發兩端聲卡時脈偏差：%1$s ppm — 超過 ±125 ppm，其中一方的聲卡不合規格</string>
+    <string name="tune_hint_signal_low_detail">約 60 Hz：USB 往下調，LSB 往上調。</string>
+    <string name="clock_offset_none">收發兩端音效卡時脈偏差：—</string>
+    <string name="clock_offset_preliminary">收發兩端音效卡時脈偏差：%1$s ppm（暫定）</string>
+    <string name="clock_offset">收發兩端音效卡時脈偏差：%1$s ppm</string>
+    <string name="clock_offset_out_of_spec">收發兩端音效卡時脈偏差：%1$s ppm — 超過 ±125 ppm，其中一方的音效卡不合規格</string>
     <string name="tx_hint_ready">對著麥克風說話，然後點擊發射。\n使用手機音量鍵調整發射音量 — ALC 應盡量不起錶。</string>
     <string name="tx_hint_active">發射中… 再次點擊發射以切回接收。\nALC 應盡量不起錶 — 如果 ALC 有偏轉，請降低手機音量。</string>
     <string name="tx_hint_hold_ready">按住發射鍵並說話，放開即返回接收。\n使用手機音量鍵調整發射音量 — ALC 應盡量不起錶。</string>
