@@ -19,7 +19,10 @@ import java.net.Socket
  */
 class RigController internal constructor(
     private val pollingEnabled: Boolean,
-    private val catHealth: RigCatHealth = RigCatHealth()
+    private val catHealth: RigCatHealth = RigCatHealth(),
+    /** For tests: runs just before [confirmKeyed] hands a repeated key-on to
+     *  the transport, the last moment another PTT command can get in first. */
+    private val beforeRepeatedKeyOn: suspend () -> Unit = {}
 ) {
 
     constructor() : this(pollingEnabled = true)
@@ -71,9 +74,12 @@ class RigController internal constructor(
     private var unconfirmedFrequencyHz: Long? = null
     private val frequencyMutex = kotlinx.coroutines.sync.Mutex()
     private val pttOperation = java.util.concurrent.atomic.AtomicLong()
-    /** The [pttOperation] that last asked for transmit. [confirmKeyed] acts
-     *  only while that is still the newest PTT command. */
-    @Volatile private var keyOnOperation = 0L
+    /** The [pttOperation] that last asked for transmit, -1 until one has.
+     *  [confirmKeyed] acts only while that is still the newest PTT command. */
+    @Volatile private var keyOnOperation = -1L
+    /** The key-on [confirmKeyed] has taken up: each is checked, and repeated,
+     *  by one call only, however often it is called. Guarded by [lock]. */
+    private var checkedKeyOn = -1L
     /** Whether this rig's PTT status tells transmit from receive, as learned on
      *  this connection: null until a key-on has been checked, true once the
      *  status has read "transmit", false after a key-on and its repeats only
@@ -132,7 +138,12 @@ class RigController internal constructor(
 
     /* ── Connection ─────────────────────────────────────────── */
 
-    suspend fun connect(host: String, port: Int = DEFAULT_PORT, verifyPttOff: Boolean = false) {
+    suspend fun connect(host: String, port: Int = DEFAULT_PORT, verifyPttOff: Boolean = false) =
+        connect(host, port, verifyPttOff, sameRig = false)
+
+    /** [sameRig]: this reconnects to the rigctld already in use, so what was
+     *  learned about its rig ([txStatusTrusted]) still holds. */
+    internal suspend fun connect(host: String, port: Int, verifyPttOff: Boolean, sameRig: Boolean) {
         disconnect()
         val generation = synchronized(lock) {
             userDisconnected = false
@@ -151,7 +162,7 @@ class RigController internal constructor(
                     val transport = RigctldTransport(socket, ::transportFailed, onResponse = ::recordCatResponse)
                     connection = transport
                     requirePttOffReadback = verifyPttOff
-                    txStatusTrusted = null
+                    if (!sameRig) txStatusTrusted = null
                     catHealth.reset()
                     recoveryJob?.cancel()
                     recoveryJob = null
@@ -258,9 +269,17 @@ class RigController internal constructor(
         // Polling must not add work behind a timed-out transaction. Its reader
         // continues draining independently, and PTT can still queue an OFF.
         if (!allowQueue && (transport.hasPending || userCmdPending.get() > 0)) return null
+        val previousCommand = lastCommand
         lastCommand = "$name $args".trim()
-        val response = transport.command(name, args, timeoutMs, allowQueue, guard)
+        var declined = false
+        val response = transport.command(name, args, timeoutMs, allowQueue,
+            guard?.let { ask -> { ask().also { declined = !it } } })
         if (connection !== transport) return null
+        if (declined) {
+            // Never written, so neither a timeout nor a command to report as sent.
+            lastCommand = previousCommand
+            return null
+        }
         if (response == null) {
             consecutiveTimeouts++
             Log.w(TAG, "CAT '$name $args' reply pending/timed out; old reply remains assigned to its transaction")
@@ -307,7 +326,7 @@ class RigController internal constructor(
             )
             scope.launch {
                 delay(700)
-                if (!userDisconnected && !_state.value.connected) connect(host, port, verifyOff)
+                if (!userDisconnected && !_state.value.connected) connect(host, port, verifyOff, sameRig = true)
             }
         } else {
             _state.value = _state.value.copy(connected = false, error = detail)
@@ -516,8 +535,9 @@ class RigController internal constructor(
      * @return true once the rig reports transmit; false if a rig known to
      *   report transmit still reports receive after [rekeys] repeats (it is
      *   left as it is); null if nothing could be concluded — the status was
-     *   unreadable or not yet [txStatusTrusted], a repeat went unanswered, or a
-     *   newer PTT command or connection took over.
+     *   unreadable or not yet [txStatusTrusted], a repeat went unanswered, a
+     *   newer PTT command or connection took over, or there is no key-on left
+     *   to check (none was sent, or an earlier call took this one).
      */
     suspend fun confirmKeyed(
         settleMs: Long = PTT_VERIFY_SETTLE_MS,
@@ -525,8 +545,10 @@ class RigController internal constructor(
     ): Boolean? = withContext(Dispatchers.IO) {
         val (keyOn, session) = synchronized(lock) {
             val active = connection ?: return@withContext null
-            if (keyOnOperation != pttOperation.get()) return@withContext null
-            keyOnOperation to active
+            val newest = keyOnOperation
+            if (newest != pttOperation.get() || newest == checkedKeyOn) return@withContext null
+            checkedKeyOn = newest
+            newest to active
         }
         var operation = keyOn
         val startedNs = System.nanoTime()
@@ -553,16 +575,30 @@ class RigController internal constructor(
             if (trusted == false) return@withContext null
             if (repeats == rekeys) break
             repeats++
-            Log.w(TAG, "PTT ON was acknowledged but the rig reports RX — keying again ($repeats/$rekeys)")
             val next = operation + 1
             var claimed = false
-            val answer = priority {
-                sendCommand("set_ptt", "1", PTT_TIMEOUT_MS, allowQueue = true, expectedConnection = session,
-                    guard = { pttOperation.compareAndSet(operation, next).also { claimed = it } })
+            var superseded = false
+            beforeRepeatedKeyOn()
+            val answer = try {
+                priority {
+                    sendCommand("set_ptt", "1", PTT_TIMEOUT_MS, allowQueue = true, expectedConnection = session,
+                        guard = { pttOperation.compareAndSet(operation, next).also { claimed = it; superseded = !it } })
+                }
+            } finally {
+                // Also when cancelled while waiting for its answer: the log
+                // must show every key-on that was sent, and none that was not.
+                if (claimed) {
+                    Log.w(TAG, "PTT ON was acknowledged but the rig reported RX — keyed again ($repeats/$rekeys)")
+                } else {
+                    Log.i(TAG, "confirmKeyed: key-on not repeated — " +
+                        if (superseded) "a newer PTT command took over" else "it was not sent")
+                }
             }
             ensureActive()
             if (!claimed) return@withContext null
-            synchronized(lock) { if (pttOperation.get() == next) keyOnOperation = next }
+            synchronized(lock) {
+                if (pttOperation.get() == next) { keyOnOperation = next; checkedKeyOn = next }
+            }
             // Unanswered, the next status could be Hamlib repeating this
             // command back rather than the rig's own.
             if (answer == null) return@withContext null

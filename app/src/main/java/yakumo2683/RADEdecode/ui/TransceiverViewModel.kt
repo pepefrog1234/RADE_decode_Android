@@ -743,16 +743,16 @@ class TransceiverViewModel(application: Application) : AndroidViewModel(applicat
             val keyed = CompletableDeferred<PttKeyOutcome>()
             keyOutcome = keyed
             pttKeyJob = viewModelScope.launch(Dispatchers.IO) {
-                try {
-                    val outcome = keyRigForTx(requestId)
-                    // Before the status check: TX start must not wait for it.
-                    keyed.complete(outcome)
-                    if (outcome == PttKeyOutcome.ACKED || outcome == PttKeyOutcome.CONFIRMED) {
-                        confirmRigKeyed(requestId)
-                    }
-                } finally {
-                    keyed.cancel() // Cancelled before an outcome; no effect after one.
+                val outcome = keyRigForTx(requestId)
+                // Before the status check: TX start must not wait for it.
+                keyed.complete(outcome)
+                if (outcome == PttKeyOutcome.ACKED || outcome == PttKeyOutcome.CONFIRMED) {
+                    confirmRigKeyed(requestId)
                 }
+            }.also { job ->
+                // Whoever awaits the outcome must be released when the job ends
+                // without one, also when it is cancelled before it ever ran.
+                job.invokeOnCompletion { keyed.cancel() }
             }
         } else if (hermesNetwork.isConnected) {
             // HL2 direct: the MOX bit rides the protocol-1 C&C stream.

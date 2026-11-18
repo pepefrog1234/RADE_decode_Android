@@ -123,6 +123,8 @@ internal class RigctldTransport(
      * be queued; returning false sends nothing. A caller whose command is only
      * valid while some state still holds can test and claim that state there:
      * whatever changes it afterwards is necessarily written after this command.
+     * It must not block or take a lock of its own: session teardown closes this
+     * transport while holding the controller's.
      */
     suspend fun command(
         name: String,
