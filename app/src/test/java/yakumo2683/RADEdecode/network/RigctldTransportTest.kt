@@ -12,6 +12,7 @@ import java.net.Socket
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.atomic.AtomicReference
 import kotlin.concurrent.thread
 
@@ -986,6 +987,41 @@ class RigctldTransportTest {
                 assertEquals(0, transport.command("get_freq", timeoutMs = 2000)?.result)
                 rig.checkFinished()
             }
+        }
+    }
+
+    /** Each failed S-meter read makes rigctld hold up the commands behind it
+     *  (see MeterPollBackoff), so the poller must not repeat it every cycle. */
+    @Test fun pollerStopsAskingForAnSMeterTheRigFailsToGive() = runBlocking {
+        val meterReads = AtomicInteger()
+        val frequencyReads = AtomicInteger()
+        FakeRig { input, output ->
+            while (true) {
+                val line = input.readLine() ?: break // The controller hung up.
+                when (line) {
+                    "+\\get_level STRENGTH" -> {
+                        meterReads.incrementAndGet()
+                        output.print("get_level: STRENGTH\nRPRT -8\n")
+                    }
+                    "+\\get_freq" -> {
+                        frequencyReads.incrementAndGet()
+                        output.print("get_freq:\nFrequency: 7100000\nRPRT 0\n")
+                    }
+                    "+\\get_ptt" -> output.print("get_ptt:\nPTT: 0\nRPRT 0\n")
+                    "+\\get_mode" -> output.print("get_mode:\nMode: USB\nPassband: 2400\nRPRT 0\n")
+                    else -> fail("The poller sent $line")
+                }
+                output.flush()
+            }
+        }.use { rig ->
+            val controller = RigController() // Polling on.
+            try {
+                controller.connect("127.0.0.1", rig.port)
+                // Four poll cycles: the meter would be due in each of the first three.
+                withTimeout(15_000) { while (frequencyReads.get() < 4) delay(50) }
+                assertEquals(1, meterReads.get())
+            } finally { controller.destroy() }
+            rig.checkFinished()
         }
     }
 

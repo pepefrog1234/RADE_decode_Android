@@ -87,6 +87,9 @@ class RigController internal constructor(
      *  rig is doing (uSDX-class firmware has a constant in that field), so a
      *  rig is held to that answer only after it has given the other one. */
     @Volatile private var txStatusTrusted: Boolean? = null
+    /** Stops the poller asking for an S-meter this rig fails to give.
+     *  Guarded by [lock]. */
+    private val sMeterPolls = MeterPollBackoff()
     /** Installed only for the Icom network tunnel. */
     var onCatUnresponsive: (() -> Unit)? = null
     /** True while audio TX or its transition is active. This must exclude an
@@ -162,7 +165,10 @@ class RigController internal constructor(
                     val transport = RigctldTransport(socket, ::transportFailed, onResponse = ::recordCatResponse)
                     connection = transport
                     requirePttOffReadback = verifyPttOff
-                    if (!sameRig) txStatusTrusted = null
+                    if (!sameRig) {
+                        txStatusTrusted = null
+                        sMeterPolls.reset()
+                    }
                     catHealth.reset()
                     recoveryJob?.cancel()
                     recoveryJob = null
@@ -243,7 +249,15 @@ class RigController internal constructor(
             if (name == "get_freq" || name == "set_freq") {
                 Log.i(TAG, "Frequency reply: '$name $args' RPRT=${response.result} values=${response.lines}")
             }
-            val recover = if (catHealth.record(name, args, response, System.nanoTime() / 1_000_000,
+            val nowMs = System.nanoTime() / 1_000_000
+            if (name == "get_level" && args == "STRENGTH") {
+                val pauseMs = sMeterPolls.record(response.result == 0, nowMs)
+                if (pauseMs > 0) {
+                    Log.w(TAG, "S-meter read failed (RPRT ${response.result}); not polling it for " +
+                        "${pauseMs / 1000} s — a failed read holds up every other CAT command, PTT included")
+                }
+            }
+            val recover = if (catHealth.record(name, args, response, nowMs,
                     confirmOffByReadback = requirePttOffReadback)) onCatUnresponsive else null
             if (recover != null) requestRecovery(recover, "Essential radio CAT commands repeatedly failed")
         }
@@ -648,6 +662,8 @@ class RigController internal constructor(
         _state.value.sMeter
     }
 
+    private fun sMeterDue(): Boolean = synchronized(lock) { sMeterPolls.due(System.nanoTime() / 1_000_000) }
+
     suspend fun getRfPower(): Float = withContext(Dispatchers.IO) {
         val power = sendCommand("get_level", "RFPOWER")?.level()?.toFloatOrNull()
         if (power != null) _state.update { it.copy(rfPower = power) }
@@ -688,8 +704,9 @@ class RigController internal constructor(
                     gate(); getPtt()
                     delay(100)
                     // Avoid slow/unsupported RX meter reads holding the CAT
-                    // lock when the operator releases PTT during TX.
-                    gate(); if (!_state.value.ptt) getSmeter()
+                    // lock when the operator releases PTT during TX, or, once
+                    // the rig has kept failing them, when a key-on is pressed.
+                    gate(); if (!_state.value.ptt && sMeterDue()) getSmeter()
                     // Re-read mode every ~5s — mode changes rarely but the user
                     // may flip USB/LSB on the rig face, and we want the UI to
                     // reflect that without forcing them to reconnect.
