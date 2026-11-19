@@ -18,7 +18,8 @@ private val FAST_PTY_CAT_MODELS = setOf(
     3076, // Xiegu X108G
     3087, // Xiegu X6100
     3088, // Xiegu G90
-    3089  // Xiegu X5105
+    3089, // Xiegu X5105
+    3091  // Xiegu X6200
 )
 
 /**

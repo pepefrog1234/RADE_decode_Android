@@ -51,6 +51,9 @@ Hamlib 4.5.5 was bundled until v1.6.33. What the app had to follow:
 - **Icom.** Hamlib no longer selects VFOs or retunes to find out which VFO is
   in use when it opens the rig. `IcomTuningGuard` and `IcomCivExchange` stay:
   `HamlibIcomTuningTest` fails without the latter.
+- **New models** are appended to the list in `RigModels.kt`. The selected
+  model is saved as its position in that list, so nothing may be inserted
+  before the end (`RigModelsTest`).
 
 ## Rebuilding
 

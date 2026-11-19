@@ -62,7 +62,7 @@ This app runs the full RADE V1 signal chain natively on the phone:
 - Adjustable TX drive level with ALC setup guidance built into the UI
 
 **Rig control (CAT)**
-- Bundled **Hamlib 4.7.2 `rigctld`** (arm64 binary) — 340+ rig models, no PC needed
+- Bundled **Hamlib 4.7.2 `rigctld`** (arm64 binary) — 180+ rig models, no PC needed
 - Four connection modes:
   - **Serial (local):** USB CAT cable via OTG — CDC-ACM, CP210x, FTDI, Prolific,
     CH340/CH341 chips supported, with DTR/RTS control
@@ -186,7 +186,7 @@ bridged to the USB cable through a native pty driver.
 1. Plug in the CAT cable (CDC-ACM, CP210x, FTDI, Prolific, and CH340/CH341
    chips are supported; composite devices like the Xiegu X6100 list each port
    separately).
-2. Pick your **Manufacturer / Model** (340+ Hamlib models, searchable by name or
+2. Pick your **Manufacturer / Model** (180+ Hamlib models, searchable by name or
    Hamlib ID), set the **baud rate**, and for Icom rigs optionally the **CI-V
    address** (hex, usually auto).
 3. **DTR/RTS:** DTR defaults on, RTS defaults off — *leave RTS off if your CAT

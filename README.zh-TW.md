@@ -53,7 +53,7 @@
 - TX 推動電平可調，介面內建 ALC 調整指引
 
 **電台控制（CAT）**
-- 內建 **Hamlib 4.7.2 `rigctld`**（arm64 原生執行檔）——支援 340+ 種電台型號，不需電腦
+- 內建 **Hamlib 4.7.2 `rigctld`**（arm64 原生執行檔）——支援 180+ 種電台型號，不需電腦
 - 四種連線模式：
   - **Serial（本機）：** USB CAT 線（OTG）——支援 CDC-ACM、CP210x、FTDI、Prolific、
     CH340/CH341 晶片，可控制 DTR/RTS
@@ -157,7 +157,7 @@ App 內建貨真價實的 Hamlib 4.7.2 `rigctld`（arm64），直接在手機上
 
 1. 插上 CAT 線（支援 CDC-ACM、CP210x、FTDI、Prolific、CH340/CH341 晶片；
    像 Xiegu X6100 這種複合裝置會把每個埠分開列出）。
-2. 選擇**廠牌／型號**（340+ 種 Hamlib 型號，可用名稱或 Hamlib ID 搜尋）、
+2. 選擇**廠牌／型號**（180+ 種 Hamlib 型號，可用名稱或 Hamlib ID 搜尋）、
    設定**鮑率**，Icom 機種可選填 **CI-V 位址**（十六進位，通常 auto 即可）。
 3. **DTR/RTS：** DTR 預設開、RTS 預設關——*如果你的 CAT 線把 RTS 接到 PTT，
    請保持 RTS 關閉*，否則一連線電台就會進入發射。

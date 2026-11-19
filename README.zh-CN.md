@@ -54,7 +54,7 @@ SDR 主机），你就拥有了一台口袋里的 RADE 电台——内置 CAT �
 - 发射驱动电平可调，界面内置 ALC 调整指引
 
 **电台控制（CAT）**
-- 内置 **Hamlib 4.7.2 `rigctld`**（arm64 原生可执行文件）——支持 340+ 种电台型号，
+- 内置 **Hamlib 4.7.2 `rigctld`**（arm64 原生可执行文件）——支持 180+ 种电台型号，
   不需要电脑
 - 四种连接模式：
   - **串口（本机）：** USB CAT 线（OTG）——支持 CDC-ACM、CP210x、FTDI、Prolific、
@@ -158,7 +158,7 @@ App 内置货真价实的 Hamlib 4.7.2 `rigctld`（arm64），直接在手机上
 
 1. 插上 CAT 线（支持 CDC-ACM、CP210x、FTDI、Prolific、CH340/CH341 芯片；
    像协谷 X6100 这种复合设备会把每个端口分开列出）。
-2. 选择**制造商／型号**（340+ 种 Hamlib 型号，可按名称或 Hamlib ID 搜索）、
+2. 选择**制造商／型号**（180+ 种 Hamlib 型号，可按名称或 Hamlib ID 搜索）、
    设置**波特率**，Icom 机型可选填 **CI-V 地址**（十六进制，通常 auto 即可）。
 3. **DTR/RTS：** DTR 默认开、RTS 默认关——*如果你的 CAT 线把 RTS 接到了 PTT，
    请保持 RTS 关闭*，否则一连接电台就会进入发射状态。

@@ -79,7 +79,7 @@ class RigctldCommandTest {
 
     @Test fun xieguTimeoutsApplyToAPtyOnly() {
         val cached = "--set-conf=poll_interval=0,cache_timeout=500"
-        for (model in listOf(3076, 3087, 3088, 3089)) {
+        for (model in listOf(3076, 3087, 3088, 3089, 3091)) {
             assertEquals("$cached,timeout=200,retry=1",
                 rigctldCommand("rigctld", model, 4532, "/dev/pts/3", 19200, pty = true).last())
             assertEquals(cached, rigctldCommand("rigctld", model, 4532, "/dev/ttyUSB0", 19200).last())
