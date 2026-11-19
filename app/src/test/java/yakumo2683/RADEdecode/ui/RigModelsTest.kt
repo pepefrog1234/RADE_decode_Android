@@ -6,9 +6,10 @@ import org.junit.Test
 class RigModelsTest {
     /**
      * The Rig tab saves the selected model as its position in [rigModels]
-     * ("rig_index"). These are the positions of the list as released with
-     * v1.6.33: a model inserted or removed before the end would silently give
-     * every user who had selected a later one a different rig.
+     * ("rig_index"). These are the positions the list had in v1.6.31, the
+     * last release before models were added: a model inserted or removed
+     * before the end would silently give every user who had selected a later
+     * one a different rig.
      */
     private val releasedOrder = listOf(
         1, 2, 4, 7, 1001, 1002, 1003, 1004, 1005, 1006, 1007, 1008, 1009, 1010,
