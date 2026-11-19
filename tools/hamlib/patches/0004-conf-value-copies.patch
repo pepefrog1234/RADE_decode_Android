@@ -1,0 +1,43 @@
+conf: copy configuration values no further than the caller's buffer
+
+rigctld 4.7 lets a client set configuration values (set_conf) and list them
+(dump_conf). The list is built in 128 bytes, and three values were copied
+into it with strcpy(): the PTT and DCD device paths, up to 511 bytes long,
+and the Dummy rig's free-text value, as long as the client made it.
+
+diff --git a/rigs/dummy/dummy.c b/rigs/dummy/dummy.c
+--- a/rigs/dummy/dummy.c
++++ b/rigs/dummy/dummy.c
+@@ -427,7 +427,9 @@ static int dummy_get_conf(RIG *rig, hamlib_token_t token, char *val)
+     switch (token)
+     {
+     case TOK_CFG_MAGICCONF:
+-        strcpy(val, priv->magic_conf);
++        /* [RADE] As long as the client that set it wanted; callers of this
++         * old interface give 128 bytes, as the next case assumes too. */
++        SNPRINTF(val, 128, "%s", priv->magic_conf);
+         break;
+ 
+     case TOK_CFG_STATIC_DATA:
+diff --git a/src/conf.c b/src/conf.c
+--- a/src/conf.c
++++ b/src/conf.c
+@@ -1161,7 +1161,8 @@ static int frontend_get_conf2(RIG *rig, hamlib_token_t token, char *val,
+         break;
+ 
+     case TOK_PTT_PATHNAME:
+-        strcpy(val, pttp->pathname);
++        /* [RADE] A path has up to HAMLIB_FILPATHLEN bytes, val has val_len. */
++        SNPRINTF(val, val_len, "%s", pttp->pathname);
+         break;
+ 
+     case TOK_PTT_BITNUM:
+@@ -1215,7 +1216,7 @@ static int frontend_get_conf2(RIG *rig, hamlib_token_t token, char *val,
+         break;
+ 
+     case TOK_DCD_PATHNAME:
+-        strcpy(val, dcdp->pathname);
++        SNPRINTF(val, val_len, "%s", dcdp->pathname);
+         break;
+ 
+     case TOK_LO_FREQ:

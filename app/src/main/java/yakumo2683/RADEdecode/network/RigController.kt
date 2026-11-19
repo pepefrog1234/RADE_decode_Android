@@ -41,10 +41,11 @@ class RigController internal constructor(
         // "set_ptt: 1;RPRT 0" is still the real answer. 1000 ms cut those off
         // and made every PTT look unacknowledged.
         private const val PTT_TIMEOUT_MS = 2500L
-        // Hamlib answers get_ptt from a 500 ms cache of the value it was last
-        // told to set (and its Kenwood backend caches IF; for as long), so a
-        // readback any sooner after a key-on only echoes the command back.
-        private const val PTT_VERIFY_SETTLE_MS = 600L
+        // Hamlib answers get_ptt from a cache of the value it was last told to
+        // set, for as long as the bundled rigctld is started with (and its
+        // Kenwood backend caches IF; for 500 ms), so a readback any sooner
+        // after a key-on only echoes the command back.
+        private const val PTT_VERIFY_SETTLE_MS = RIGCTLD_CACHE_MS + 100L
         private const val PTT_VERIFY_REKEYS = 2
         private const val DEFAULT_PORT = 4532
     }
@@ -428,7 +429,7 @@ class RigController internal constructor(
      * Set mode. Passband defaults to -1 (RIG_PASSBAND_NOCHANGE) so hamlib preserves
      * the rig's current filter.
      *
-     * If hamlib rejects PKTUSB/PKTLSB (common in 4.5.5), we:
+     * If hamlib rejects PKTUSB/PKTLSB (RPRT -9: the rig refused it), we:
      *   1. Query the rig's current data-mode + filter via CI-V before we change anything.
      *   2. Switch to the base mode (USB/LSB) with passband=NOCHANGE.
      *   3. Re-enable data mode via CI-V using the *preserved* filter byte, so the user's
@@ -538,7 +539,7 @@ class RigController internal constructor(
      * took effect, and key it again while it still reports receive.
      *
      * rigctld's "RPRT 0" is not that check. For Kenwood-protocol rigs (QMX,
-     * TS-480, Elecraft, TX-500 …) Hamlib 4.5.5 sends "TX;" followed by "ID;"
+     * TS-480, Elecraft, TX-500 …) Hamlib sends "TX;" followed by "ID;"
      * and takes the ID reply as success — also when "TX;" never reached the
      * rig, or the rig answered it with "?;". The app then transmits into a rig
      * that is still receiving.

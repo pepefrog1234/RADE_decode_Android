@@ -62,7 +62,7 @@ This app runs the full RADE V1 signal chain natively on the phone:
 - Adjustable TX drive level with ALC setup guidance built into the UI
 
 **Rig control (CAT)**
-- Bundled **Hamlib 4.5.5 `rigctld`** (arm64 binary) — 340+ rig models, no PC needed
+- Bundled **Hamlib 4.7.2 `rigctld`** (arm64 binary) — 340+ rig models, no PC needed
 - Four connection modes:
   - **Serial (local):** USB CAT cable via OTG — CDC-ACM, CP210x, FTDI, Prolific,
     CH340/CH341 chips supported, with DTR/RTS control
@@ -180,7 +180,7 @@ without data modes).
 
 ### Serial (local) — USB CAT cable
 
-The app ships a real Hamlib 4.5.5 `rigctld` for arm64 and runs it on the phone,
+The app ships a real Hamlib 4.7.2 `rigctld` for arm64 and runs it on the phone,
 bridged to the USB cable through a native pty driver.
 
 1. Plug in the CAT cable (CDC-ACM, CP210x, FTDI, Prolific, and CH340/CH341
@@ -363,7 +363,7 @@ TX:  microphone (48 kHz)
 | Service | `service/AudioService` | Foreground service (mic + media playback types); session lifecycle, snapshots, recording |
 | JNI bridge | `AudioBridge`, `RADEWrapper` | Oboe engine control / RADE + FARGAN processing |
 | Native | `app/src/main/cpp/` | `audio_engine.cpp` (Oboe streams, decimation, frame dispatch), `rade_jni.cpp`, `radae/` (RADE modem, unity build), `opus/` (FARGAN), `eoo/` (callsign codec) |
-| Rig control | `network/`, `usb/` | Bundled Hamlib 4.5.5 `rigctld` (arm64) + native USB-serial→pty bridge; Icom RS-BA1 UDP client and openHPSDR protocol-1 client (Hermes-Lite 2, with in-app SSB modem) in Kotlin |
+| Rig control | `network/`, `usb/` | Bundled Hamlib 4.7.2 `rigctld` (arm64) + native USB-serial→pty bridge; Icom RS-BA1 UDP client and openHPSDR protocol-1 client (Hermes-Lite 2, with in-app SSB modem) in Kotlin |
 | Data | `data/` | Raw SQLite (no Room): sessions, signal snapshots, sync events, callsign events |
 | Reporter | `network/FreeDVReporter` | Socket.IO v4 over WebSocket via OkHttp |
 

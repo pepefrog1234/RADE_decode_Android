@@ -60,7 +60,7 @@ USB オーディオでスマートフォンを HF SSB リグに接続するか�
 - 送信ドライブレベル調整可能、ALC 調整ガイドを UI に内蔵
 
 **リグ制御（CAT）**
-- **Hamlib 4.5.5 `rigctld`**（arm64 ネイティブバイナリ）を内蔵——340 種類以上の
+- **Hamlib 4.7.2 `rigctld`**（arm64 ネイティブバイナリ）を内蔵——340 種類以上の
   リグに対応、PC 不要
 - 4 つの接続モード：
   - **シリアル（ローカル）：** USB CAT ケーブル（OTG）——CDC-ACM、CP210x、FTDI、
@@ -173,7 +173,7 @@ LSB/PKTLSB、以上は USB/PKTUSB。データモード非対応機種は通常�
 
 ### シリアル（ローカル）— USB CAT ケーブル
 
-本物の Hamlib 4.5.5 `rigctld`（arm64）をアプリに内蔵してスマートフォン上で実行し、
+本物の Hamlib 4.7.2 `rigctld`（arm64）をアプリに内蔵してスマートフォン上で実行し、
 ネイティブの pty ドライバーで USB ケーブルとブリッジします。
 
 1. CAT ケーブルを接続します（CDC-ACM、CP210x、FTDI、Prolific、CH340/CH341
@@ -365,7 +365,7 @@ TX：マイク（48 kHz）
 | サービス | `service/AudioService` | フォアグラウンドサービス（マイク + メディア再生タイプ）。セッション管理、信号スナップショット、録音 |
 | JNI ブリッジ | `AudioBridge`、`RADEWrapper` | Oboe エンジン制御／RADE + FARGAN 処理 |
 | ネイティブ | `app/src/main/cpp/` | `audio_engine.cpp`（Oboe ストリーム、デシメーション、フレーム分配）、`rade_jni.cpp`、`radae/`（RADE モデム、ユニティビルド）、`opus/`（FARGAN）、`eoo/`（コールサインコーデック） |
-| リグ制御 | `network/`、`usb/` | 内蔵 Hamlib 4.5.5 `rigctld`（arm64）+ ネイティブ USB シリアル→pty ブリッジ。Icom RS-BA1 UDP クライアントと openHPSDR プロトコル 1 クライアント（Hermes-Lite 2、アプリ内 SSB モデム付き）は Kotlin 実装 |
+| リグ制御 | `network/`、`usb/` | 内蔵 Hamlib 4.7.2 `rigctld`（arm64）+ ネイティブ USB シリアル→pty ブリッジ。Icom RS-BA1 UDP クライアントと openHPSDR プロトコル 1 クライアント（Hermes-Lite 2、アプリ内 SSB モデム付き）は Kotlin 実装 |
 | データ | `data/` | 生 SQLite（Room 不使用）：受信セッション、信号スナップショット、同期イベント、コールサインイベント |
 | Reporter | `network/FreeDVReporter` | OkHttp による Socket.IO v4 over WebSocket |
 

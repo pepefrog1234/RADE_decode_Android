@@ -12,7 +12,7 @@ import java.net.ServerSocket
 import java.net.Socket
 
 /**
- * Optional host integration: RADE_TEST_RIGCTLD=/path/to/rigctld of Hamlib 4.5.5,
+ * Optional host integration: RADE_TEST_RIGCTLD=/path/to/rigctld of Hamlib 4.7.2,
  * the version bundled in the APK (as for [HamlibIcomTuningTest]).
  *
  * rigctld has no login. Started the way the app starts it, it must answer on

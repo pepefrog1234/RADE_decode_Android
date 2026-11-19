@@ -26,10 +26,24 @@ class RigctldCommandTest {
         assertEquals("127.0.0.1", RIGCTLD_LISTEN_ADDRESS)
     }
 
+    /**
+     * Hamlib 4.7 left to itself caches for 1000 ms, longer than RigController
+     * waits before it asks whether a key-on took effect, and runs a publisher
+     * thread nothing listens to.
+     */
+    @Test fun everyCommandLineSaysHowLongHamlibMayCache() {
+        for (command in commands) {
+            val conf = command.single { it.startsWith("--set-conf=") }.removePrefix("--set-conf=").split(",")
+            assertTrue("$command", "poll_interval=0" in conf)
+            assertEquals("$command", 1, conf.count { it.startsWith("cache_timeout=") })
+        }
+        assertEquals(500, RIGCTLD_CACHE_MS)
+    }
+
     @Test fun usbSerialPty() {
         assertEquals(
             listOf("/app/lib/librigctld.so", "-m", "3073", "-t", "4532", "-T", "127.0.0.1",
-                "-r", "/dev/pts/3", "-s", "19200", "-c", "0x94"),
+                "-r", "/dev/pts/3", "-s", "19200", "-c", "0x94", "--set-conf=poll_interval=0,cache_timeout=500"),
             commands[0]
         )
     }
@@ -45,11 +59,12 @@ class RigctldCommandTest {
     @Test fun networkRigHasNoBaudRate() {
         assertEquals(
             listOf("/app/lib/librigctld.so", "-m", "2048", "-t", "4532", "-T", "127.0.0.1",
-                "-r", "192.168.1.20:13013"),
+                "-r", "192.168.1.20:13013", "--set-conf=poll_interval=0,cache_timeout=500"),
             commands[2]
         )
         assertEquals(
-            listOf("/app/lib/librigctld.so", "-m", "1", "-t", "4532", "-T", "127.0.0.1"),
+            listOf("/app/lib/librigctld.so", "-m", "1", "-t", "4532", "-T", "127.0.0.1",
+                "--set-conf=poll_interval=0,cache_timeout=500"),
             commands[4]
         )
     }
@@ -63,11 +78,12 @@ class RigctldCommandTest {
     }
 
     @Test fun xieguTimeoutsApplyToAPtyOnly() {
-        val timeouts = "--set-conf=timeout=200,retry=1"
+        val cached = "--set-conf=poll_interval=0,cache_timeout=500"
         for (model in listOf(3076, 3087, 3088, 3089)) {
-            assertTrue(timeouts in rigctldCommand("rigctld", model, 4532, "/dev/pts/3", 19200, pty = true))
-            assertFalse(timeouts in rigctldCommand("rigctld", model, 4532, "/dev/ttyUSB0", 19200))
+            assertEquals("$cached,timeout=200,retry=1",
+                rigctldCommand("rigctld", model, 4532, "/dev/pts/3", 19200, pty = true).last())
+            assertEquals(cached, rigctldCommand("rigctld", model, 4532, "/dev/ttyUSB0", 19200).last())
         }
-        assertFalse(timeouts in rigctldCommand("rigctld", 3085, 4532, "/dev/pts/3", 115200, pty = true))
+        assertEquals(cached, rigctldCommand("rigctld", 3085, 4532, "/dev/pts/3", 115200, pty = true).last())
     }
 }

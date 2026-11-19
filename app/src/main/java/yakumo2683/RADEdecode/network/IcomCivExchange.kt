@@ -36,11 +36,15 @@ internal class IcomCivFramer {
 }
 
 /**
- * Hamlib 4.5.5 does not validate the reply opcode/address, and determines its
- * echo mode only at startup. A lost/reordered radio echo can therefore become
- * another command's answer (even a plausible but wrong BCD frequency).
+ * Hamlib does not reliably tell which command a CI-V frame answers. A lost,
+ * late or repeated frame from the radio can therefore become another command's
+ * answer (Hamlib 4.5.5, which also settled its echo mode once at startup, even
+ * read a mode reply as a plausible but wrong BCD frequency).
  * The bridge supplies one local echo for every request and only passes a
  * matching radio response. Access is serialized by IcomStream.sendLock.
+ *
+ * Still needed with Hamlib 4.7.2: without it five of the nine scenarios of
+ * HamlibIcomTuningTest fail.
  */
 internal class IcomCivExchange {
     private val framer = IcomCivFramer()

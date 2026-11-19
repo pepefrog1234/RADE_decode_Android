@@ -54,7 +54,7 @@ SDR 主机），你就拥有了一台口袋里的 RADE 电台——内置 CAT �
 - 发射驱动电平可调，界面内置 ALC 调整指引
 
 **电台控制（CAT）**
-- 内置 **Hamlib 4.5.5 `rigctld`**（arm64 原生可执行文件）——支持 340+ 种电台型号，
+- 内置 **Hamlib 4.7.2 `rigctld`**（arm64 原生可执行文件）——支持 340+ 种电台型号，
   不需要电脑
 - 四种连接模式：
   - **串口（本机）：** USB CAT 线（OTG）——支持 CDC-ACM、CP210x、FTDI、Prolific、
@@ -153,7 +153,7 @@ S 表，并可直接输入频率——输入频率时会自动选择正确的边
 
 ### 串口（本机）— USB CAT 线
 
-App 内置货真价实的 Hamlib 4.5.5 `rigctld`（arm64），直接在手机上运行，
+App 内置货真价实的 Hamlib 4.7.2 `rigctld`（arm64），直接在手机上运行，
 通过原生 pty 驱动桥接 USB 线。
 
 1. 插上 CAT 线（支持 CDC-ACM、CP210x、FTDI、Prolific、CH340/CH341 芯片；
@@ -319,7 +319,7 @@ TX：麦克风（48 kHz）
 | 服务 | `service/AudioService` | 前台服务（麦克风 + 媒体播放类型）；接收记录生命周期、信号快照、录音 |
 | JNI 桥接 | `AudioBridge`、`RADEWrapper` | Oboe 引擎控制／RADE + FARGAN 处理 |
 | 原生层 | `app/src/main/cpp/` | `audio_engine.cpp`（Oboe 流、降采样、帧分发）、`rade_jni.cpp`、`radae/`（RADE 调制解调器，unity build）、`opus/`（FARGAN）、`eoo/`（呼号编解码） |
-| 电台控制 | `network/`、`usb/` | 内置 Hamlib 4.5.5 `rigctld`（arm64）+ 原生 USB 串口→pty 桥接；Kotlin 实现的 Icom RS-BA1 UDP 客户端与 openHPSDR（协议 1）客户端（Hermes-Lite 2，SSB 调制解调在 App 内完成） |
+| 电台控制 | `network/`、`usb/` | 内置 Hamlib 4.7.2 `rigctld`（arm64）+ 原生 USB 串口→pty 桥接；Kotlin 实现的 Icom RS-BA1 UDP 客户端与 openHPSDR（协议 1）客户端（Hermes-Lite 2，SSB 调制解调在 App 内完成） |
 | 数据 | `data/` | 原生 SQLite（不用 Room）：接收记录、信号快照、同步事件、呼号事件 |
 | Reporter | `network/FreeDVReporter` | 基于 OkHttp 的 Socket.IO v4 over WebSocket |
 

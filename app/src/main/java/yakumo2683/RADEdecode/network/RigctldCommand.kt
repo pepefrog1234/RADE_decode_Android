@@ -8,6 +8,12 @@ package yakumo2683.RADEdecode.network
  */
 internal const val RIGCTLD_LISTEN_ADDRESS = "127.0.0.1"
 
+/**
+ * How long the bundled rigctld may answer from Hamlib's cache, in ms.
+ * [RigController] waits longer than this before it trusts a PTT status.
+ */
+internal const val RIGCTLD_CACHE_MS = 500
+
 private val FAST_PTY_CAT_MODELS = setOf(
     3076, // Xiegu X108G
     3087, // Xiegu X6100
@@ -49,21 +55,24 @@ internal fun rigctldCommand(
     if (speed > 0) addAll(listOf("-s", speed.toString()))
     if (civAddr.isNotEmpty()) addAll(listOf("-c", civAddrArg(civAddr)))
 
-    if (uncachedReadback) {
-        // The owned Icom network daemon must query the radio after Set/OFF,
-        // not immediately echo the value that Hamlib cached on an ACK.
-        // Hamlib's background publisher overwrites the cache timeout with
-        // poll_interval on startup, even without a subscriber. We use
-        // RigController polling, so disable this unused publisher too.
-        add("--set-conf=poll_interval=0,cache_timeout=0")
-    }
+    // How long Hamlib answers a read from what it last read or was told to
+    // set, instead of asking the radio. Always given: left to itself Hamlib
+    // 4.7 starts a publisher thread (for multicast listeners this app does not
+    // have) that sets the cache to its poll interval, 1000 ms, and
+    // RigController.confirmKeyed would then read back its own key-on.
+    // poll_interval=0 keeps that thread from starting; RigController polls.
+    // The owned Icom network daemon must query the radio after Set/OFF, not
+    // echo the value that Hamlib cached on an ACK.
+    val conf = mutableListOf("poll_interval=0", "cache_timeout=${if (uncachedReadback) 0 else RIGCTLD_CACHE_MS}")
 
     if (pty && model in FAST_PTY_CAT_MODELS) {
         // Bound Xiegu CI-V/PTT readback stalls without applying the tight
         // timeout to Icom RS-BA1/IC-705 network ptys. IC-705 Wi-Fi can exceed
         // 200 ms and then fails get_freq, preventing FreeDV Reporter freq_change.
-        add("--set-conf=timeout=200,retry=1")
+        conf += listOf("timeout=200", "retry=1")
     }
+
+    add("--set-conf=" + conf.joinToString(","))
 }
 
 /**

@@ -11,7 +11,14 @@ import java.util.Collections
 import java.util.concurrent.atomic.AtomicReference
 import kotlin.concurrent.thread
 
-/** Optional host integration: RADE_TEST_RIGCTLD=/path/to/Hamlib-4.5.5/tests/rigctld. */
+/**
+ * Optional host integration: RADE_TEST_RIGCTLD=/path/to/rigctld of Hamlib 4.7.2,
+ * the version bundled in the APK.
+ *
+ * Runs the real daemon, started with the app's command line for an Icom network
+ * radio, against the app's CI-V bridge ([IcomCivExchange], [IcomTuningGuard])
+ * and a radio behind a real PTY.
+ */
 class HamlibIcomTuningTest {
     @Test fun selectedBWithEcho() = exercise(echo = true, equal = false)
     @Test fun selectedBWithoutEcho() = exercise(echo = false, equal = false)
@@ -40,9 +47,10 @@ class HamlibIcomTuningTest {
         Radio(echo, equal, fault).use { radio ->
             val port = ServerSocket(0).use { it.localPort }
             val log = File.createTempFile("rade-hamlib-tuning-", ".log")
-            val process = ProcessBuilder(binary, "-m", "3085", "-r", radio.path,
-                "-t", "$port", "-vvvv", "--set-conf=poll_interval=0,cache_timeout=0")
-                .redirectErrorStream(true).redirectOutput(log).start()
+            // The command line the app gives its Icom network pty, plus Hamlib's log.
+            val command = rigctldCommand(binary, model = 3085, port = port, device = radio.path,
+                speed = 115200, pty = true, uncachedReadback = true) + "-vvvv"
+            val process = ProcessBuilder(command).redirectErrorStream(true).redirectOutput(log).start()
             var passed = false
             try {
                 val deadline = System.nanoTime() + 15_000_000_000L
@@ -61,7 +69,9 @@ class HamlibIcomTuningTest {
                         return checkNotNull(reader.readLine()) { log.readText() }
                     }
                     assertEquals("7177000", command("f"))
-                    assertTrue("Expected actual startup VFO probes", radio.blocked.isNotEmpty())
+                    // Hamlib 4.5.5 selected VFOs and tuned 100 Hz away and
+                    // back to find out which VFO it was on; 4.7.2 only reads.
+                    assertEquals("Hamlib wrote to the radio while opening it", emptyList<String>(), radio.blocked)
                     assertEquals(1, radio.selected)
                     assertEquals(7_177_000L, radio.frequencies[1])
                     radio.faultArmed = true
@@ -84,7 +94,9 @@ class HamlibIcomTuningTest {
                         assertEquals("0", command("t"))
                         assertEquals("7142000", command("f"))
                     }
+                    assertEquals("Hamlib selected a VFO or tuned on its own", emptyList<String>(), radio.blocked)
                     assertEquals("Unrequested frequency write was not rejected", "RPRT -9", command("F 7065000"))
+                    assertEquals("Only the unrequested write is refused", 1, radio.blocked.size)
                     assertEquals("7142000", command("f"))
                     assertEquals(1, radio.selected)
                     assertEquals(if (equal) 7_177_000L else 7_065_000L, radio.frequencies[0])
@@ -197,8 +209,8 @@ class HamlibIcomTuningTest {
             if (fault == Fault.WRONG_COMMAND_REPLY &&
                 (body[0].toInt() and 255) in listOf(0x03, 0x25)) {
                 injectedFaults++
-                // A late 26 mode response was accepted as BCD frequency by
-                // Hamlib 4.5.5: logs contained spurious 1,010,000 Hz readings.
+                // Hamlib 4.5.5 accepted a late 26 mode response as a BCD
+                // frequency: logs contained spurious 1,010,000 Hz readings.
                 val mode = byteArrayOf(-2, -2, frame[3], frame[2], 0x26, 0, 1, 1, 1, -3)
                 return physicalEcho + mode + reply
             }

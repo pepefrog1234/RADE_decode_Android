@@ -1,0 +1,19 @@
+set_channel: read the description into the space it has
+
+The channel description was read with "%31s" into 30 bytes
+(HAMLIB_MAXCHANDESC) and copied into another 30: two bytes past each, of the
+client's choosing.
+
+diff --git a/tests/rigctl_parse.c b/tests/rigctl_parse.c
+--- a/tests/rigctl_parse.c
++++ b/tests/rigctl_parse.c
+@@ -4405,7 +4405,8 @@ declare_proto_rig(set_channel)
+             fprintf_flush(fout, "channel desc: ");
+         }
+ 
+-        CHKSCN1ARG(scanfc(fin, "%31s", s));
++        /* [RADE] s and channel_desc hold HAMLIB_MAXCHANDESC (30) bytes. */
++        CHKSCN1ARG(scanfc(fin, "%29s", s));
+         strcpy(chan.channel_desc, s);
+     }
+ 

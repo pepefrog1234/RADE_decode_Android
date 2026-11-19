@@ -53,7 +53,7 @@
 - TX 推動電平可調，介面內建 ALC 調整指引
 
 **電台控制（CAT）**
-- 內建 **Hamlib 4.5.5 `rigctld`**（arm64 原生執行檔）——支援 340+ 種電台型號，不需電腦
+- 內建 **Hamlib 4.7.2 `rigctld`**（arm64 原生執行檔）——支援 340+ 種電台型號，不需電腦
 - 四種連線模式：
   - **Serial（本機）：** USB CAT 線（OTG）——支援 CDC-ACM、CP210x、FTDI、Prolific、
     CH340/CH341 晶片，可控制 DTR/RTS
@@ -152,7 +152,7 @@ App 未上架 Play 商店，更新都以 GitHub Release 發佈。
 
 ### Serial（本機）— USB CAT 線
 
-App 內建貨真價實的 Hamlib 4.5.5 `rigctld`（arm64），直接在手機上執行，
+App 內建貨真價實的 Hamlib 4.7.2 `rigctld`（arm64），直接在手機上執行，
 透過原生 pty 驅動橋接 USB 線。
 
 1. 插上 CAT 線（支援 CDC-ACM、CP210x、FTDI、Prolific、CH340/CH341 晶片；
@@ -317,7 +317,7 @@ TX：麥克風（48 kHz）
 | 服務 | `service/AudioService` | 前景服務（麥克風 + 媒體播放類型）；接收紀錄生命週期、訊號快照、錄音 |
 | JNI 橋接 | `AudioBridge`、`RADEWrapper` | Oboe 引擎控制／RADE + FARGAN 處理 |
 | 原生層 | `app/src/main/cpp/` | `audio_engine.cpp`（Oboe 串流、降取樣、訊框分派）、`rade_jni.cpp`、`radae/`（RADE 數據機，unity build）、`opus/`（FARGAN）、`eoo/`（呼號編解碼） |
-| 電台控制 | `network/`、`usb/` | 內建 Hamlib 4.5.5 `rigctld`（arm64）+ 原生 USB-serial→pty 橋接；Kotlin 實作的 Icom RS-BA1 UDP 客戶端與 openHPSDR protocol-1 客戶端（Hermes-Lite 2，含 App 內 SSB 數據機） |
+| 電台控制 | `network/`、`usb/` | 內建 Hamlib 4.7.2 `rigctld`（arm64）+ 原生 USB-serial→pty 橋接；Kotlin 實作的 Icom RS-BA1 UDP 客戶端與 openHPSDR protocol-1 客戶端（Hermes-Lite 2，含 App 內 SSB 數據機） |
 | 資料 | `data/` | 原生 SQLite（不用 Room）：接收紀錄、訊號快照、同步事件、呼號事件 |
 | Reporter | `network/FreeDVReporter` | 以 OkHttp 實作 Socket.IO v4 over WebSocket |
 

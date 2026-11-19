@@ -1,17 +1,17 @@
 icom: read frames into the caller's buffer, not MAXFRAMELEN
 
-read_icom_frame() told read_string() that every buffer holds MAXFRAMELEN (200)
-bytes, and read_string() clears that many before it reads. One caller has
-less: icom_get_usb_echo_off(), run by rig_open() for every Icom-protocol rig,
-reads into 16 bytes once it has seen its command echoed. 184 bytes of its
-stack frame were zeroed then, and a long frame from the rig would have been
-written there. (AddressSanitizer reports it in every scenario of
-HamlibIcomTuningTest.)
+read_icom_frame() tells read_string() that every buffer holds MAXFRAMELEN
+(200) bytes, and read_string() clears that many before it reads. One caller
+has less: icom_get_usb_echo_off(), run by rig_open() for every Icom-protocol
+rig, reads into 16 bytes when the answer to its frequency read is one byte
+long. 184 bytes of its stack frame are zeroed then, and a long frame from
+the rig is written there. A rig, or whatever else is on that line, gets
+there by answering the read with a bare acknowledgement.
 
 diff --git a/rigs/icom/frame.c b/rigs/icom/frame.c
 --- a/rigs/icom/frame.c
 +++ b/rigs/icom/frame.c
-@@ -485,14 +485,17 @@ static int read_icom_frame_generic(hamlib_port_t *p,
+@@ -585,14 +585,17 @@ static int read_icom_frame_generic(hamlib_port_t *p,
      {
          int i;
  

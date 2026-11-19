@@ -26,6 +26,7 @@ import yakumo2683.RADEdecode.network.IcomNetworkManager
 import yakumo2683.RADEdecode.network.RigController
 import yakumo2683.RADEdecode.network.RigctldProcess
 import yakumo2683.RADEdecode.network.VbanNetworkManager
+import yakumo2683.RADEdecode.network.rigModeAfterTuning
 import yakumo2683.RADEdecode.service.AudioService
 import yakumo2683.RADEdecode.usb.UsbSerialManager
 
@@ -1985,9 +1986,6 @@ class TransceiverViewModel(application: Application) : AndroidViewModel(applicat
         }
     }
 
-    /** Manufacturers whose rigs do NOT support PKTUSB/PKTLSB data modes */
-    private val noDataModeMfgs = setOf("Xiegu", "Alinco", "Drake", "AOR", "JRC")
-
     private var frequencySetJob: Job? = null
 
     fun rigSetFreq(hz: Long) {
@@ -2013,13 +2011,7 @@ class TransceiverViewModel(application: Application) : AndroidViewModel(applicat
             // Auto-pick data mode for the band. RigController.setMode preserves the
             // rig's current filter (queries filter byte via CI-V before switching),
             // so the user's FIL1/FIL2/FIL3 selection stays intact.
-            val useDataMode = rigMfg !in noDataModeMfgs
-            val autoMode = if (hz < 10_000_000L) {
-                if (useDataMode) "PKTLSB" else "LSB"
-            } else {
-                if (useDataMode) "PKTUSB" else "USB"
-            }
-            rigController.setMode(autoMode)
+            rigController.setMode(rigModeAfterTuning(hz, rigMfg))
         }
     }
 

@@ -12,11 +12,12 @@ import java.util.concurrent.atomic.AtomicReference
 import kotlin.concurrent.thread
 
 /**
- * Optional host integration: RADE_TEST_RIGCTLD=/path/to/rigctld of Hamlib 4.5.5,
+ * Optional host integration: RADE_TEST_RIGCTLD=/path/to/rigctld of Hamlib 4.7.2,
  * the version bundled in the APK (as for [HamlibIcomTuningTest]).
  *
- * Runs the app's own [RigController] against the real daemon and a QMX-style
- * radio (Kenwood TS-480 CAT, model 2052) behind a real PTY.
+ * Runs the app's own [RigController] against the real daemon, started with the
+ * app's command line, and a QMX-style radio (Kenwood TS-480 CAT) behind a real
+ * PTY. Hamlib has two models for it: 2052 "QCX/QDX", and 2057 "QMX" since 4.7.
  */
 class HamlibKenwoodPttTest {
     @Test fun keyOnThatReachesTheRadioIsConfirmedWithoutARepeat() = exercise { radio, controller ->
@@ -29,7 +30,13 @@ class HamlibKenwoodPttTest {
     }
 
     /** Hamlib sends "TX;" and then "ID;", and is satisfied by the answer to ID. */
-    @Test fun keyOnLostOnItsWayIsAcknowledgedByHamlibAndRepeatedByTheCheck() = exercise { radio, controller ->
+    @Test fun keyOnLostOnItsWayIsAcknowledgedByHamlibAndRepeatedByTheCheck() =
+        exercise { radio, controller -> assertLostKeyOnIsRepeated(radio, controller) }
+
+    @Test fun keyOnLostOnItsWayIsRepeatedForTheQmxModelToo() =
+        exercise(model = 2057) { radio, controller -> assertLostKeyOnIsRepeated(radio, controller) }
+
+    private suspend fun assertLostKeyOnIsRepeated(radio: Radio, controller: RigController) {
         radio.keyOnsToLose = 1
         assertTrue("Hamlib acknowledged a key-on the radio never received", controller.setPtt(true))
         assertFalse(radio.transmitting)
@@ -48,6 +55,23 @@ class HamlibKenwoodPttTest {
         assertEquals(true, controller.confirmKeyed())
         assertTrue(radio.transmitting)
         assertTrue(controller.setPtt(false))
+    }
+
+    /**
+     * Hamlib sends the packet modes to these rigs as FSK ("MD6;", "MD9;"), the
+     * QMX's single-tone Digi mode. The app must tune a QMX with the sidebands.
+     */
+    @Test fun sidebandModesSelectSsbAndPacketModesTheDigiMode() {
+        for (model in listOf(2052, 2057)) exercise(model = model) { radio, controller ->
+            controller.setMode(rigModeAfterTuning(14_236_000, "QRP Labs"))
+            assertEquals("USB, model $model", 2, radio.mode)
+            controller.setMode(rigModeAfterTuning(7_177_000, "QRP Labs"))
+            assertEquals("LSB, model $model", 1, radio.mode)
+            controller.setMode("PKTUSB")
+            assertEquals("PKTUSB, model $model", 9, radio.mode)
+            controller.setMode("PKTLSB")
+            assertEquals("PKTLSB, model $model", 6, radio.mode)
+        }
     }
 
     /**
@@ -93,6 +117,7 @@ class HamlibKenwoodPttTest {
     private fun exercise(
         sMeterAnswers: List<String> = listOf("SM0005;"),
         polling: Boolean = false,
+        model: Int = 2052,
         test: suspend (Radio, RigController) -> Unit
     ) {
         val binary = System.getenv("RADE_TEST_RIGCTLD")
@@ -101,8 +126,10 @@ class HamlibKenwoodPttTest {
         Radio(sMeterAnswers).use { radio ->
             val port = ServerSocket(0).use { it.localPort }
             val log = File.createTempFile("rade-hamlib-kenwood-", ".log")
-            val process = ProcessBuilder(binary, "-m", "2052", "-r", radio.path, "-s", "115200", "-t", "$port", "-vvvv")
-                .redirectErrorStream(true).redirectOutput(log).start()
+            // The command line the app gives a USB serial rig, plus Hamlib's log.
+            val command = rigctldCommand(binary, model = model, port = port, device = radio.path,
+                speed = 115200, pty = true) + "-vvvv"
+            val process = ProcessBuilder(command).redirectErrorStream(true).redirectOutput(log).start()
             val controller = if (polling) RigController() else RigController(pollingEnabled = false)
             var passed = false
             try {
@@ -151,6 +178,8 @@ class HamlibKenwoodPttTest {
         @Volatile var keyOnsToLose = 0
         @Volatile var keyOnsToRefuse = 0
         @Volatile var keyedAtNs = 0L
+        /** As "MD;" numbers it: 1 LSB, 2 USB, 6 FSK, 9 FSK reverse. */
+        @Volatile var mode = 2
         val keyOns = AtomicInteger()
         val sMeterReads = AtomicInteger()
         private var sMeterPolls = 0
@@ -184,12 +213,19 @@ class HamlibKenwoodPttTest {
             }
             "RX", "TQ0" -> { transmitting = false; "" }
             "ID" -> "ID020;"
+            // Hamlib reads the firmware version when it opens the rig, and
+            // does not open it without an answer.
+            "VN" -> "VN1_04_003QMX;"
+            // Read once, also while opening. The manual gives no format for
+            // the keyer speed; whatever comes back, the rig is opened.
+            "KS" -> "KS012;"
             // Frequency, 5 spaces, RIT, RIT/XIT/bank, channel, transmit flag,
             // mode, VFO/scan/split/tone, tone number, space.
-            "IF" -> "IF00007074000     +000000000${if (transmitting) 1 else 0}2000000 ;"
+            "IF" -> "IF00007074000     +000000000${if (transmitting) 1 else 0}${mode}000000 ;"
             "FA" -> "FA00007074000;"
             "FB" -> "FB00007074000;"
-            "MD" -> "MD2;"
+            "MD" -> "MD$mode;"
+            "MD1", "MD2", "MD6", "MD9" -> { mode = command.substring(2).toInt(); "" }
             "PS" -> "PS1;"
             "AI" -> "AI0;"
             "SM" -> {

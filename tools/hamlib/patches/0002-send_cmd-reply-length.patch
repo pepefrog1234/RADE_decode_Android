@@ -1,0 +1,25 @@
+send_cmd: limit the reply length to the reply buffer
+
+send_cmd_rx takes the number of reply bytes from the client and hands it to
+read_string() unchecked: read_string() first clears that many bytes of the
+512 byte reply buffer and then fills them, so a large length overwrites the
+stack and a negative one, taken as a size, runs off it.
+
+Not reached with the Dummy rig, which answers without a port.
+
+diff --git a/tests/rigctl_parse.c b/tests/rigctl_parse.c
+--- a/tests/rigctl_parse.c
++++ b/tests/rigctl_parse.c
+@@ -5392,6 +5392,12 @@ declare_proto_rig(send_cmd)
+             eom_buf[0] = 0;
+         }
+ 
++        /* [RADE] The length is the client's; read_string() clears and fills
++         * as many bytes of buf as it is told. */
++        if (rxbytes < 0) { rxbytes = 0; }
++
++        if (rxbytes > BUFSZ) { rxbytes = BUFSZ; }
++
+         if (simulate)
+         {
+             if (retval == 0)

@@ -11,11 +11,11 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ./gradlew bundleRelease        # Build signed release AAB (signing credentials required)
 ./gradlew build                # Full build (debug + release; signing credentials required)
 ./gradlew testDebugUnitTest    # Run unit tests
-RADE_TEST_RIGCTLD=/usr/bin/rigctld ./gradlew testDebugUnitTest --rerun  # ...and the real-Hamlib integration tests
+RADE_TEST_RIGCTLD=/tmp/hamlib-4.7.2/tests/rigctld ./gradlew testDebugUnitTest --rerun  # ...and the real-Hamlib integration tests
 ./gradlew connectedDebugAndroidTest  # Run instrumented tests (device required)
 ```
 
-The `Hamlib*Test` classes are skipped unless `RADE_TEST_RIGCTLD` points at a rigctld of Hamlib 4.5.5, the version bundled in the APK (`rigctld --version` shows `SHA=6eecd3`). Ubuntu 24.04's `libhamlib-utils` package is that version.
+The `Hamlib*Test` classes are skipped unless `RADE_TEST_RIGCTLD` points at a rigctld of Hamlib 4.7.2, the version bundled in the APK (`rigctld --version` shows `SHA=40f63488f`): a host build of the patched sources, as [tools/hamlib/README.md](tools/hamlib/README.md) describes. They assert what that version does and fail against others (Ubuntu 24.04's `libhamlib-utils` is 4.5.5).
 
 Native C++ is built automatically via CMake 3.22.1 integration in AGP. No separate native build step needed.
 
@@ -72,8 +72,8 @@ cmake --build build -j8 && ./build/loopback
 
 ### Updating the bundled rigctld (`tools/hamlib/`)
 
-- `app/src/main/jniLibs/arm64-v8a/librigctld.so` and its copy `app/src/main/assets/rigctld` are the output of `tools/hamlib/build-rigctld.sh`: the Hamlib 4.5.5 release tarball plus `tools/hamlib/patches/`, NDK r28c. Never replace them by hand: change the patches or the script, run it with `--install`, and commit both files with `tools/hamlib/librigctld.so.sha256`. The build is reproducible, so that hash identifies the committed binary.
-- rigctld has no login. Start it only with the command line from `rigctldCommand()` (`RigctldCommand.kt`), which binds it to `127.0.0.1`.
+- `app/src/main/jniLibs/arm64-v8a/librigctld.so` and its copy `app/src/main/assets/rigctld` are the output of `tools/hamlib/build-rigctld.sh`: the Hamlib 4.7.2 release tarball plus `tools/hamlib/patches/`, NDK r28c. Never replace them by hand: change the patches or the script, run it with `--install`, and commit both files with `tools/hamlib/librigctld.so.sha256`. The build is reproducible, so that hash identifies the committed binary.
+- rigctld has no login. Start it only with the command line from `rigctldCommand()` (`RigctldCommand.kt`), which binds it to `127.0.0.1` and sets how long Hamlib may answer from its cache (`RigController` waits longer than that before it trusts a PTT status).
 - The binary is built with stack protector and `_FORTIFY_SOURCE`: an overflow in Hamlib now ends rigctld (`DIED: killed by SIGABRT` in the Rig tab) instead of going unnoticed.
 - After a change, run the `Hamlib*Test` classes against a host build of the same patched sources (see [tools/hamlib/README.md](tools/hamlib/README.md)), then connect a rig on a device.
 

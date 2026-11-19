@@ -1,0 +1,40 @@
+android: build with configure and make
+
+Build fixes only, nothing rigctld uses on Android:
+
+- before API 28 bionic has no glob(), which looks for microHAM devices under
+  /dev/serial. tools/hamlib/build-rigctld.sh tells configure that there is no
+  <glob.h>; the search that is then left out is still called.
+- the Android sensor rotator, which is C++ and links libandroid, is left out
+  the same way (no <android/sensor.h>), but stays in the table of rotators
+  whenever the target is Android.
+
+diff --git a/src/microham.c b/src/microham.c
+--- a/src/microham.c
++++ b/src/microham.c
+@@ -202,6 +202,13 @@ static void close_microham()
+ /* static void finddevices() */
+ /* { */
+ /* } */
++#ifndef WIN32
++/* [RADE] Android has no glob() before API 28, and configure is told that
++ * there is no <glob.h>: nothing is searched for, so nothing is found. */
++static void finddevices()
++{
++}
++#endif
+ 
+ #else
+ 
+diff --git a/src/rot_reg.c b/src/rot_reg.c
+--- a/src/rot_reg.c
++++ b/src/rot_reg.c
+@@ -137,7 +137,7 @@ static struct
+ #if HAVE_LIBINDI
+     { ROT_INDI, ROT_BACKEND_INDI, ROT_FUNCNAMA(indi) },
+ #endif
+-#if defined(ANDROID) || defined(__ANDROID__)
++#if HAVE_ANDROID_SENSOR  /* [RADE] as its declaration above: only when it is built */
+     { ROT_ANDROIDSENSOR, ROT_BACKEND_ANDROIDSENSOR, ROT_FUNCNAMA(androidsensor) },
+ #endif
+     { ROT_GRBLTRK, ROT_BACKEND_GRBLTRK, ROT_FUNCNAMA(grbltrk) },

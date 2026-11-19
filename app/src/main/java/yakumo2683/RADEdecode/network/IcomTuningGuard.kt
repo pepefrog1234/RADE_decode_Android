@@ -2,18 +2,21 @@ package yakumo2683.RADEdecode.network
 
 /**
  * The network profile controls the radio's selected VFO only. Hamlib 4.5.5
- * probes its identity by switching VFOs and sometimes tuning +100 Hz and back.
+ * found out which VFO that was by switching VFOs and sometimes tuning +100 Hz
+ * and back, every time it opened the rig. Hamlib 4.7.2 opens it with reads
+ * only (HamlibIcomTuningTest), but still runs that probe after a power-on.
  * Those writes must not reach a radio that the operator has already tuned.
  * Access is serialized by IcomStream.sendLock, including retransmissions.
  *
  * Only virtual VFO A/B selection is acknowledged locally. Denied frequency,
  * memory and VFO-copy writes must not be reported as successful.
- * v1.6.27 answered NAK; field log (IC-7300MK2, LTE): after one lost 0x25
- * reply Hamlib sets `x25cmdfails` and from then on issues `set_vfo` (07 00)
- * before EVERY read, so the NAK turned every get_freq/get_ptt/get_level into
- * "RPRT -9" — the CAT-health tracker then tore the session down mid-over.
- * Treating A/B selection as a virtual operation lets Hamlib's fallback use
- * selected-VFO commands without moving the physical radio's VFO.
+ * v1.6.27 answered NAK; field log (IC-7300MK2, LTE, Hamlib 4.5.5): after one
+ * lost 0x25 reply Hamlib set `x25cmdfails` and from then on issued `set_vfo`
+ * (07 00) before EVERY read, so the NAK turned every get_freq/get_ptt/
+ * get_level into "RPRT -9" — the CAT-health tracker then tore the session
+ * down mid-over. Treating A/B selection as a virtual operation lets such a
+ * fallback use selected-VFO commands without moving the physical radio's VFO.
+ * (Hamlib 4.7.2 keeps to 0x25 for the IC-705 model this profile runs.)
  */
 internal class IcomTuningGuard(private val nowMs: () -> Long = { System.nanoTime() / 1_000_000 }) {
     private var generation = 0L

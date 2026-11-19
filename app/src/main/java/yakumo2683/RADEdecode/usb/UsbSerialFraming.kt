@@ -24,7 +24,7 @@ internal enum class UsbSerialFraming(val stopBits: Int) {
 
     companion object {
         fun forRigModel(model: Int): UsbSerialFraming = when (model) {
-            // Hamlib 4.5.5 rigs/yaesu/ft897.c: 8 data, no parity, 2 stop bits.
+            // Hamlib rigs/yaesu/ft897.c: 8 data, no parity, 2 stop bits.
             1023, 1043 -> EIGHT_N_TWO // FT-897, FT-897D
             else -> EIGHT_N_ONE
         }

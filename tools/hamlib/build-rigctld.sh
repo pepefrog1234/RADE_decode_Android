@@ -12,8 +12,8 @@
 # See tools/hamlib/README.md.
 set -euo pipefail
 
-HAMLIB_VERSION=4.5.5
-HAMLIB_SHA256=601c89f32ed225e9527ade3d64d0d05d23202c05ae21ffa77e59d70ee4597fcd
+HAMLIB_VERSION=4.7.2
+HAMLIB_SHA256=ae1fcf2dbc80ea0786ea8f047b09399c3f7737d1930442f61a031708ed33e88f
 HAMLIB_URL="https://github.com/Hamlib/Hamlib/releases/download/$HAMLIB_VERSION/hamlib-$HAMLIB_VERSION.tar.gz"
 NDK_VERSION=28.2.13676358   # r28c
 API=26                      # the app's minSdk
@@ -60,14 +60,19 @@ LDFLAGS="-pie -Wl,-z,relro -Wl,-z,now -Wl,-z,noexecstack -Wl,--build-id=sha1"
 # ac_cv_header_glob_h=no: bionic has <glob.h> but declares glob() from API 28
 # only. Without the header Hamlib leaves out its search for microHAM devices
 # under /dev/serial, which Android does not have.
+# ac_cv_header_android_sensor_h=no: leaves out the rotator that reads the
+# phone's own sensors. It is C++ and would make rigctld need libandroid and a
+# C++ runtime.
 ./configure --host="$TARGET" \
   --disable-shared --enable-static \
   --without-cxx-binding --without-libusb --without-readline --without-indi --disable-winradio \
-  ac_cv_header_glob_h=no \
+  ac_cv_header_glob_h=no ac_cv_header_android_sensor_h=no \
   CC="$BIN/$TARGET$API-clang" AR="$BIN/llvm-ar" RANLIB="$BIN/llvm-ranlib" STRIP="$BIN/llvm-strip" \
   CFLAGS="$CFLAGS" LDFLAGS="$LDFLAGS" > "$WORK/configure.log" 2>&1 \
   || { tail -20 "$WORK/configure.log" >&2; exit 1; }
-make -j"$(nproc)" > "$WORK/make.log" 2>&1 || { tail -30 "$WORK/make.log" >&2; exit 1; }
+# LDFLAGS again: for Android, configure appends -lc++ to them (for that
+# rotator), and rigctld would then need libc++_shared.so without using it.
+make -j"$(nproc)" LDFLAGS="$LDFLAGS" > "$WORK/make.log" 2>&1 || { tail -30 "$WORK/make.log" >&2; exit 1; }
 
 OUT="$WORK/librigctld.so"
 "$BIN/llvm-strip" --strip-all -o "$OUT" tests/rigctld
