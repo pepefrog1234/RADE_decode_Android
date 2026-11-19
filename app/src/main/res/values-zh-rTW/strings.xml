@@ -67,6 +67,19 @@
     <string name="stations_connect_hint">連線至 qso.freedv.org 以檢視在線電台</string>
     <string name="stations_anonymous">匿名</string>
     <string name="stations_rx_only">僅接收</string>
+    <string name="stations_sort">排序方式</string>
+    <string name="stations_sort_frequency">頻率</string>
+    <string name="stations_sort_callsign">呼號</string>
+    <string name="stations_sort_recent">最近活動</string>
+    <string name="stations_sort_frequency_menu">頻率 → 呼號</string>
+    <string name="stations_sort_callsign_menu">呼號 A → Z</string>
+    <string name="stations_sort_recent_menu">最近活動</string>
+    <string name="stations_frequency_unknown">頻率未知</string>
+    <plurals name="stations_group_count">
+        <item quantity="other">%d 台</item>
+    </plurals>
+    <string name="stations_group_transmitting">%1$d TX</string>
+    <string name="ptt_dock_on_air">發射中</string>
 
     <!-- 記錄畫面 -->
     <string name="header_reception_log">接收記錄</string>

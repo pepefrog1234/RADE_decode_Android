@@ -116,20 +116,8 @@ internal fun TransceiverContent(
             } else {
                 SyncHeader(state)
             }
-            if (state.pttControlError) {
-                Text(stringResource(R.string.ptt_control_failed), color = Red400, fontSize = 12.sp)
-            }
-            if (state.pttStillReceiving) {
-                Text(stringResource(R.string.ptt_still_receiving), color = Red400, fontSize = 12.sp)
-            }
-            if (state.txStartError) {
-                Text(stringResource(R.string.tx_start_failed), color = Red400, fontSize = 12.sp)
-            }
-            if (state.txInputError) {
-                Text(stringResource(R.string.tx_input_failed), color = Red400, fontSize = 12.sp)
-            }
-            if (state.rxRestartError) {
-                Text(stringResource(R.string.rx_restart_failed), color = Red400, fontSize = 12.sp)
+            for (message in txErrorMessages(state)) {
+                Text(stringResource(message), color = Red400, fontSize = 12.sp)
             }
 
             // ── Signal info cards (RX) ──
@@ -261,16 +249,34 @@ private fun hasRecordAudioPermission(context: android.content.Context): Boolean 
     ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO) ==
         PackageManager.PERMISSION_GRANTED
 
+/** PTT, TX and RX-restart problems, shown wherever there is a TX button. */
+internal fun txErrorMessages(state: TransceiverViewModel.UiState): List<Int> = buildList {
+    if (state.pttControlError) add(R.string.ptt_control_failed)
+    if (state.pttStillReceiving) add(R.string.ptt_still_receiving)
+    if (state.txStartError) add(R.string.tx_start_failed)
+    if (state.txInputError) add(R.string.tx_input_failed)
+    if (state.rxRestartError) add(R.string.rx_restart_failed)
+}
+
+internal fun syncStateColor(syncState: Int): Color = when (syncState) {
+    2 -> GreenBright
+    1 -> Amber400
+    else -> OnSurfaceDim
+}
+
+internal fun syncStateLabelRes(syncState: Int): Int = when (syncState) {
+    0 -> R.string.sync_search
+    1 -> R.string.sync_candidate
+    2 -> R.string.sync_sync
+    else -> R.string.sync_unknown
+}
+
 /* ── Sync Header (RX) ────────────────────────────────────────── */
 
 @Composable
 private fun SyncHeader(state: TransceiverViewModel.UiState) {
     val syncColor by animateColorAsState(
-        targetValue = when (state.syncState) {
-            2 -> GreenBright
-            1 -> Amber400
-            else -> OnSurfaceDim
-        },
+        targetValue = syncStateColor(state.syncState),
         animationSpec = tween(300), label = "sync"
     )
 
@@ -297,12 +303,7 @@ private fun SyncHeader(state: TransceiverViewModel.UiState) {
                 modifier = Modifier.size(12.dp)
             )
             Text(
-                text = when (state.syncState) {
-                    0 -> stringResource(R.string.sync_search)
-                    1 -> stringResource(R.string.sync_candidate)
-                    2 -> stringResource(R.string.sync_sync)
-                    else -> stringResource(R.string.sync_unknown)
-                },
+                text = stringResource(syncStateLabelRes(state.syncState)),
                 color = syncColor,
                 fontSize = 18.sp,
                 fontWeight = FontWeight.Black,
@@ -562,12 +563,6 @@ private fun waterfallColorInt(v: Float): Int {
 
 @Composable
 fun LevelMeter(label: String, levelDb: Float, modifier: Modifier = Modifier) {
-    val segments = 24
-    val dbMin = -60f
-    val dbMax = 0f
-    val norm = ((levelDb - dbMin) / (dbMax - dbMin)).coerceIn(0f, 1f)
-    val active = (norm * segments).toInt()
-
     Column(modifier = modifier, horizontalAlignment = Alignment.CenterHorizontally) {
         Row(
             modifier = Modifier.fillMaxWidth(),
@@ -580,29 +575,40 @@ fun LevelMeter(label: String, levelDb: Float, modifier: Modifier = Modifier) {
             )
         }
         Spacer(Modifier.height(3.dp))
-        Canvas(
-            modifier = Modifier
-                .fillMaxWidth()
-                .height(10.dp)
-                .clip(RoundedCornerShape(5.dp))
-                .background(Surface0)
-        ) {
-            val segW = size.width / segments
-            val gap = 1.5f
-            for (i in 0 until segments) {
-                val isActive = i < active
-                val segColor = when {
-                    i >= segments - 2 -> if (isActive) Color(0xFFFF1744) else Color(0xFF2A0A0A)
-                    i >= segments - 5 -> if (isActive) Color(0xFFFFD600) else Color(0xFF2A2A0A)
-                    else -> if (isActive) Color(0xFF00E676) else Color(0xFF0A2A0A)
-                }
-                drawRoundRect(
-                    color = segColor,
-                    topLeft = Offset(i * segW + gap, 1f),
-                    size = Size(segW - gap * 2, size.height - 2f),
-                    cornerRadius = CornerRadius(2f)
-                )
+        LevelBar(levelDb, Modifier.fillMaxWidth())
+    }
+}
+
+/** The bar of [LevelMeter] without its caption. */
+@Composable
+internal fun LevelBar(levelDb: Float, modifier: Modifier = Modifier) {
+    val segments = 24
+    val dbMin = -60f
+    val dbMax = 0f
+    val norm = ((levelDb - dbMin) / (dbMax - dbMin)).coerceIn(0f, 1f)
+    val active = (norm * segments).toInt()
+
+    Canvas(
+        modifier = modifier
+            .height(10.dp)
+            .clip(RoundedCornerShape(5.dp))
+            .background(Surface0)
+    ) {
+        val segW = size.width / segments
+        val gap = 1.5f
+        for (i in 0 until segments) {
+            val isActive = i < active
+            val segColor = when {
+                i >= segments - 2 -> if (isActive) Color(0xFFFF1744) else Color(0xFF2A0A0A)
+                i >= segments - 5 -> if (isActive) Color(0xFFFFD600) else Color(0xFF2A2A0A)
+                else -> if (isActive) Color(0xFF00E676) else Color(0xFF0A2A0A)
             }
+            drawRoundRect(
+                color = segColor,
+                topLeft = Offset(i * segW + gap, 1f),
+                size = Size(segW - gap * 2, size.height - 2f),
+                cornerRadius = CornerRadius(2f)
+            )
         }
     }
 }
@@ -646,12 +652,14 @@ private fun AnalogMonitorButton(active: Boolean, onClick: () -> Unit) {
 /* ── TX Button ───────────────────────────────────────────────── */
 
 @Composable
-private fun TxButton(
+internal fun TxButton(
     isTx: Boolean,
     holdMode: Boolean,
     onClick: () -> Unit,
     onHoldPress: () -> Unit,
-    onHoldRelease: () -> Unit
+    onHoldRelease: () -> Unit,
+    modifier: Modifier = Modifier,
+    contentPadding: PaddingValues = ButtonDefaults.ContentPadding
 ) {
     val containerColor by animateColorAsState(
         targetValue = if (isTx) Color(0xFF880000) else Red400,
@@ -678,12 +686,13 @@ private fun TxButton(
 
     Button(
         onClick = { if (!holdMode) onClick() },
-        modifier = Modifier
+        modifier = modifier
             .testTag("tx_control")
             .fillMaxWidth()
             .height(54.dp),
         shape = RoundedCornerShape(14.dp),
         colors = ButtonDefaults.buttonColors(containerColor = containerColor),
+        contentPadding = contentPadding,
         interactionSource = interactionSource
     ) {
         Icon(
@@ -692,11 +701,19 @@ private fun TxButton(
             modifier = Modifier.size(26.dp)
         )
         Spacer(Modifier.width(10.dp))
+        val label = if (isTx && !holdMode) stringResource(R.string.btn_back_to_rx) else stringResource(R.string.btn_tx)
+        // The button is narrower on the Stations and Map tabs. A label that
+        // does not fit on its line is made smaller: wrapped, it would be cut
+        // off by the fixed height.
+        var labelScale by remember(label) { mutableFloatStateOf(1f) }
         Text(
-            text = if (isTx && !holdMode) stringResource(R.string.btn_back_to_rx) else stringResource(R.string.btn_tx),
-            fontSize = 16.sp,
+            text = label,
+            fontSize = 16.sp * labelScale,
             fontWeight = FontWeight.Black,
-            letterSpacing = 3.sp
+            letterSpacing = 3.sp * labelScale,
+            maxLines = 1,
+            softWrap = false,
+            onTextLayout = { if (it.hasVisualOverflow && labelScale > 0.6f) labelScale *= 0.9f }
         )
     }
 }

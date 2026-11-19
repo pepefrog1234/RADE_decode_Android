@@ -8,15 +8,18 @@ import android.content.Intent
 import android.content.ServiceConnection
 import android.media.AudioDeviceInfo
 import android.os.IBinder
+import android.os.SystemClock
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.flow.stateIn
 import yakumo2683.RADEdecode.AudioBridge
 import yakumo2683.RADEdecode.RxOutputTester
 import yakumo2683.RADEdecode.location.LocationTracker
@@ -99,6 +102,9 @@ class TransceiverViewModel(application: Application) : AndroidViewModel(applicat
         val isRunning: Boolean = false,    // RX is active
         val leCommActive: Boolean = false, // LE Audio (LC3) communication session active
         val isTx: Boolean = false,         // TX is active
+        /** When the current over began, on the SystemClock.elapsedRealtime()
+         *  clock. Only meaningful while [isTx]. */
+        val txStartedAtMs: Long = 0L,
         /** TX→RX hand-over in progress (EOO drain, RF tail, PTT release): the
          *  engine is momentarily neither RX nor TX, but the UI must not fall back
          *  to the Start screen for that second. */
@@ -248,6 +254,10 @@ class TransceiverViewModel(application: Application) : AndroidViewModel(applicat
     private val _reporterEnabledPref = MutableStateFlow(false)
     val reporterEnabledPref: StateFlow<Boolean> = _reporterEnabledPref.asStateFlow()
 
+    /** Order of the Stations list, remembered across launches. */
+    private val _stationSort = MutableStateFlow(StationSort.FREQUENCY)
+    val stationSort: StateFlow<StationSort> = _stationSort.asStateFlow()
+
     /**
      * Manually entered dial frequency (Hz), used when no rig is connected —
      * shown on the Rig tab and reported to FreeDV Reporter, mirroring
@@ -256,6 +266,13 @@ class TransceiverViewModel(application: Application) : AndroidViewModel(applicat
      */
     private val _manualFreqHz = MutableStateFlow(0L)
     val manualFreqHz: StateFlow<Long> = _manualFreqHz.asStateFlow()
+
+    /** The dial frequency this station is listed under on FreeDV Reporter
+     *  ([currentReportFreqHz]), shown next to the TX button of the Stations
+     *  and Map tabs. 0 when none is known. */
+    val reportFreqHz: StateFlow<Long> =
+        combine(rigController.state, hermesNetwork.state, _manualFreqHz, ::pickReportFreqHz)
+            .stateIn(viewModelScope, SharingStarted.Eagerly, 0L)
 
     /** Result of the last RX-output route test (1 kHz tone), shown in Settings. */
     private val _rxRouteTest = MutableStateFlow<String?>(null)
@@ -300,6 +317,7 @@ class TransceiverViewModel(application: Application) : AndroidViewModel(applicat
         // Reporter toggle defaults to ON so the app auto-connects to qso.freedv.org
         // on launch; users can still opt out in Settings.
         _reporterEnabledPref.value = prefs.getBoolean("reporter_enabled", true)
+        _stationSort.value = StationSort.fromPref(prefs.getString("station_sort", null))
 
         // Power-save mode (效能節約模式) — off by default; restored across launches.
         _uiState.value = _uiState.value.copy(
@@ -454,10 +472,15 @@ class TransceiverViewModel(application: Application) : AndroidViewModel(applicat
     }
 
     /** Dial frequency to report: a connected rig wins, else the manual entry. */
-    private fun currentReportFreqHz(): Long = when {
-        rigController.isConnected -> rigController.state.value.freqHz
-        hermesNetwork.isConnected -> hermesNetwork.state.value.freqHz
-        else -> _manualFreqHz.value
+    private fun currentReportFreqHz(): Long =
+        pickReportFreqHz(rigController.state.value, hermesNetwork.state.value, _manualFreqHz.value)
+
+    private fun pickReportFreqHz(
+        rig: RigController.RigState, hermes: HermesNetworkManager.State, manualHz: Long
+    ): Long = when {
+        rig.connected -> rig.freqHz
+        hermes.connected -> hermes.freqHz
+        else -> manualHz
     }
 
     /**
@@ -561,6 +584,11 @@ class TransceiverViewModel(application: Application) : AndroidViewModel(applicat
         prefs.edit().putBoolean("reporter_enabled", enabled).apply()
         _reporterEnabledPref.value = enabled
         syncReporterState()
+    }
+
+    fun setStationSort(sort: StationSort) {
+        prefs.edit().putString("station_sort", sort.prefValue).apply()
+        _stationSort.value = sort
     }
 
     /* ── Performance (效能節約模式) ─────────────────────────── */
@@ -2045,12 +2073,20 @@ class TransceiverViewModel(application: Application) : AndroidViewModel(applicat
         serviceCollectJob?.cancel()
         val service = audioService ?: return
         serviceCollectJob = viewModelScope.launch {
+            var wasTx = false
             service.state.collect { svcState ->
                 if (audioService !== service || service.state.value !== svcState) return@collect
+                val txStartedAtMs = when {
+                    !svcState.isTx -> 0L
+                    wasTx -> _uiState.value.txStartedAtMs
+                    else -> SystemClock.elapsedRealtime()
+                }
+                wasTx = svcState.isTx
                 _uiState.value = _uiState.value.copy(
                     isRunning = svcState.isRunning,
                     leCommActive = svcState.leCommActive,
                     isTx = svcState.isTx,
+                    txStartedAtMs = txStartedAtMs,
                     syncState = svcState.syncState,
                     snrDb = svcState.snrDb,
                     freqOffsetHz = svcState.freqOffsetHz,

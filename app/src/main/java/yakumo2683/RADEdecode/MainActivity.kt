@@ -6,6 +6,7 @@ import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
+import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material.icons.Icons
@@ -57,6 +58,9 @@ private val navItems = listOf(
     NavItem("log", R.string.nav_log, Icons.Default.History),
     NavItem("settings", R.string.nav_settings, Icons.Default.Settings),
 )
+
+/** Tabs that show live activity and therefore get a TX button of their own. */
+private val pttDockRoutes = setOf("stations", "map")
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -110,38 +114,44 @@ fun RADEDecodeApp(viewModel: TransceiverViewModel = viewModel()) {
             )
         },
         bottomBar = {
-            NavigationBar(
-                containerColor = MaterialTheme.colorScheme.surface,
-                tonalElevation = 0.dp
-            ) {
-                navItems.forEach { item ->
-                    NavigationBarItem(
-                        icon = { Icon(item.icon, contentDescription = stringResource(item.labelResId)) },
-                        label = {
-                            Text(
-                                stringResource(item.labelResId),
-                                fontSize = 11.sp,
-                                fontWeight = FontWeight.Medium
-                            )
-                        },
-                        selected = currentRoute == item.route,
-                        colors = NavigationBarItemDefaults.colors(
-                            selectedIconColor = MaterialTheme.colorScheme.primary,
-                            selectedTextColor = MaterialTheme.colorScheme.primary,
-                            indicatorColor = MaterialTheme.colorScheme.primary.copy(alpha = 0.12f),
-                            unselectedIconColor = MaterialTheme.colorScheme.onSurfaceVariant,
-                            unselectedTextColor = MaterialTheme.colorScheme.onSurfaceVariant
-                        ),
-                        onClick = {
-                            if (currentRoute != item.route) {
-                                navController.navigate(item.route) {
-                                    popUpTo("receiver") { saveState = true }
-                                    launchSingleTop = true
-                                    restoreState = true
+            Column {
+                // Here rather than inside the two screens: it is then one and
+                // the same button on both, and stays held when another finger
+                // switches between Stations and Map.
+                if (currentRoute in pttDockRoutes) PttDock(viewModel)
+                NavigationBar(
+                    containerColor = MaterialTheme.colorScheme.surface,
+                    tonalElevation = 0.dp
+                ) {
+                    navItems.forEach { item ->
+                        NavigationBarItem(
+                            icon = { Icon(item.icon, contentDescription = stringResource(item.labelResId)) },
+                            label = {
+                                Text(
+                                    stringResource(item.labelResId),
+                                    fontSize = 11.sp,
+                                    fontWeight = FontWeight.Medium
+                                )
+                            },
+                            selected = currentRoute == item.route,
+                            colors = NavigationBarItemDefaults.colors(
+                                selectedIconColor = MaterialTheme.colorScheme.primary,
+                                selectedTextColor = MaterialTheme.colorScheme.primary,
+                                indicatorColor = MaterialTheme.colorScheme.primary.copy(alpha = 0.12f),
+                                unselectedIconColor = MaterialTheme.colorScheme.onSurfaceVariant,
+                                unselectedTextColor = MaterialTheme.colorScheme.onSurfaceVariant
+                            ),
+                            onClick = {
+                                if (currentRoute != item.route) {
+                                    navController.navigate(item.route) {
+                                        popUpTo("receiver") { saveState = true }
+                                        launchSingleTop = true
+                                        restoreState = true
+                                    }
                                 }
                             }
-                        }
-                    )
+                        )
+                    }
                 }
             }
         }
@@ -156,10 +166,13 @@ fun RADEDecodeApp(viewModel: TransceiverViewModel = viewModel()) {
             composable("stations") {
                 val uiState by viewModel.uiState.collectAsState()
                 val reporterEnabled by viewModel.reporterEnabledPref.collectAsState()
+                val stationSort by viewModel.stationSort.collectAsState()
                 StationsScreen(
                     reporter = viewModel.reporter,
                     txCallsign = uiState.txCallsign,
-                    reporterEnabled = reporterEnabled
+                    reporterEnabled = reporterEnabled,
+                    sort = stationSort,
+                    onSortChange = viewModel::setStationSort
                 )
             }
             composable("map") { ReporterMapScreen(viewModel.reporter) }

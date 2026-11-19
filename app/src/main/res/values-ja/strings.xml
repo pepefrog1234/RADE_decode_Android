@@ -67,6 +67,19 @@
     <string name="stations_connect_hint">qso.freedv.org に接続してオンライン局を表示</string>
     <string name="stations_anonymous">匿名</string>
     <string name="stations_rx_only">受信のみ</string>
+    <string name="stations_sort">並べ替え</string>
+    <string name="stations_sort_frequency">周波数</string>
+    <string name="stations_sort_callsign">コールサイン</string>
+    <string name="stations_sort_recent">更新順</string>
+    <string name="stations_sort_frequency_menu">周波数 → コールサイン</string>
+    <string name="stations_sort_callsign_menu">コールサイン A → Z</string>
+    <string name="stations_sort_recent_menu">更新が新しい順</string>
+    <string name="stations_frequency_unknown">周波数不明</string>
+    <plurals name="stations_group_count">
+        <item quantity="other">%d 局</item>
+    </plurals>
+    <string name="stations_group_transmitting">%1$d TX</string>
+    <string name="ptt_dock_on_air">送信中</string>
 
     <!-- ログ画面 -->
     <string name="header_reception_log">受信ログ</string>

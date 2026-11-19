@@ -68,6 +68,20 @@
     <string name="stations_connect_hint">Connect to qso.freedv.org to see active stations</string>
     <string name="stations_anonymous">Anonymous</string>
     <string name="stations_rx_only">RX Only</string>
+    <string name="stations_sort">Sort stations</string>
+    <string name="stations_sort_frequency">Frequency</string>
+    <string name="stations_sort_callsign">Callsign</string>
+    <string name="stations_sort_recent">Recent</string>
+    <string name="stations_sort_frequency_menu">Frequency, then callsign</string>
+    <string name="stations_sort_callsign_menu">Callsign A–Z</string>
+    <string name="stations_sort_recent_menu">Most recent activity</string>
+    <string name="stations_frequency_unknown">No frequency</string>
+    <plurals name="stations_group_count">
+        <item quantity="one">%d station</item>
+        <item quantity="other">%d stations</item>
+    </plurals>
+    <string name="stations_group_transmitting">%1$d TX</string>
+    <string name="ptt_dock_on_air">ON AIR</string>
 
     <!-- Log Screen -->
     <string name="header_reception_log">RECEPTION LOG</string>
