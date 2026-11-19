@@ -81,10 +81,13 @@ This app runs the full RADE V1 signal chain natively on the phone:
   (callsign + SNR), TX status, frequency, and a free-text status message are
   reported live
 - **Stations** tab: all stations currently online, filterable by band
-  (160 m – VHF+)
+  (160 m – VHF+) and sorted by frequency, callsign or latest report; each row
+  shows whether the station transmits or what it receives
 - **Map** tab: OpenStreetMap world map with TX/RX/idle markers, great-circle
   signal paths (solid = callsign confirmed via EOO, dashed = inferred from
   matching frequency) and per-path SNR badges
+- A TX button on both tabs while the receiver is running: key up and watch who
+  receives you on the same screen
 - GPS-derived Maidenhead grid square, updated automatically
 
 **Quality-of-life**
@@ -251,8 +254,13 @@ a live connection to qso.freedv.org:
 - Without a callsign the app connects in view-only mode — you still see everyone
   else.
 
-The **Stations** tab lists all online stations with grid, frequency, and TX
-indication, filterable by band. The **Map** tab plots them on a world map:
+The **Stations** tab lists all online stations with grid, frequency, and what
+each one is doing: `TX`, or what it receives (`RX K1ABC 12 dB`). Filter it by
+band and sort it by frequency (the default: the stations on one frequency are
+grouped under a header), callsign or latest report. While the receiver is
+running, the Stations and Map tabs also carry the Receiver tab's TX button, so
+you can transmit and watch who receives you. The **Map** tab plots the stations
+on a world map:
 
 | Marker / line | Meaning |
 |---|---|
